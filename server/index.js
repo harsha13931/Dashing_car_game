@@ -461,5 +461,14 @@ function applyPowerup(type, player, room) {
     }
 }
 
-app.get('/', (req, res) => res.send('Car Dash Server Running'));
-server.listen(3001, () => console.log('Server listening on :3001'));
+const path = require('path');
+
+// Serve static files from the React app
+app.use(express.static(path.join(__dirname, '../client/dist')));
+
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../client/dist/index.html'));
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server listening on :${PORT}`));
