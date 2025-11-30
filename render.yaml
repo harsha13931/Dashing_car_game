@@ -1,0 +1,27 @@
+services:
+  # Server Service
+  - type: web
+    name: car-dash-server
+    env: node
+    plan: free
+    region: singapore # Change if needed
+    buildCommand: cd server && npm install
+    startCommand: cd server && node index.js
+    envVars:
+      - key: PORT
+        value: 10000
+
+  # Client Service
+  - type: static
+    name: car-dash-client
+    env: static
+    plan: free
+    region: singapore # Change if needed
+    buildCommand: cd client && npm install && npm run build
+    staticPublishPath: client/dist
+    envVars:
+      - key: VITE_SERVER_URL
+        fromService:
+          type: web
+          name: car-dash-server
+          property: url
