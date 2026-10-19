@@ -203,7 +203,7 @@ function roomSummary(room) {
         hostId: room.hostId,
         players: Object.values(room.players).map(p => ({
             id: p.id, name: p.name, alive: p.alive, isBot: p.isBot,
-            carType: p.carType, connected: p.connected !== false,
+            carType: p.carType, connected: p.connected !== false, cosmetics: p.cosmetics,
             kills: p.kills, powerupsCollected: p.powerupsCollected
         })),
         running: room.running,
@@ -523,7 +523,7 @@ function beginRound(room) {
     room.arenaR = room.settings.arenaRadius;
     room.suddenDeath = false;
     room._shrinkAnnounced = false;
-    room._cdlast = 0;
+    room._cdlast = Date.now();      // show "3" for a full second
     room._cdSnap = 0;
     room._lastPU = 0;
     resetPlayers(room);

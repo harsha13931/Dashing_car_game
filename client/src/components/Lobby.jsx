@@ -10,11 +10,13 @@ import {
 import { CAR_VARIANT, tintedCar, preloadCarArt } from '../carArt';
 import { getToken, saveRoom, clearRoom } from '../net/session';
 
+// ─── Menus: home (car stage), garage, play sheets, settings, room ─────────
+
 const DIFFICULTIES = [
-    { key: 'easy', label: 'Easy', color: '#4ade80', desc: 'Relaxed bots' },
-    { key: 'medium', label: 'Medium', color: '#facc15', desc: 'Balanced' },
-    { key: 'hard', label: 'Hard', color: '#f97316', desc: 'Aggressive' },
-    { key: 'insane', label: 'Insane', color: '#ef4444', desc: 'No mercy' },
+    { key: 'easy', label: 'Easy', color: '#4ade80' },
+    { key: 'medium', label: 'Medium', color: '#facc15' },
+    { key: 'hard', label: 'Hard', color: '#f97316' },
+    { key: 'insane', label: 'Insane', color: '#ef4444' },
 ];
 
 const CAR_TYPES = [
@@ -28,19 +30,147 @@ const CAR_TYPES = [
     { key: 'supercar', name: 'Phantom X',     emoji: '⚡', color: '#cc5522', speed: 5, handling: 3, power: 1, weight: 1, desc: 'Pure speed' },
 ];
 
+const INVITE_CODE = (new URLSearchParams(window.location.search).get('room') || '').toUpperCase();
+const SAFE_TOP = 'max(12px, env(safe-area-inset-top))';
+const SAFE_BOTTOM = 'max(14px, env(safe-area-inset-bottom))';
+const SAFE_X = 'max(14px, env(safe-area-inset-left))';
+
+function useViewport() {
+    const get = () => ({ w: window.innerWidth, h: window.innerHeight });
+    const [vp, setVp] = useState(get);
+    useEffect(() => {
+        const on = () => setVp(get());
+        window.addEventListener('resize', on);
+        window.addEventListener('orientationchange', on);
+        return () => { window.removeEventListener('resize', on); window.removeEventListener('orientationchange', on); };
+    }, []);
+    return { ...vp, landscape: vp.w > vp.h && vp.h < 560 };
+}
+
+const click = () => soundManager.playClick();
+
 function StatBar({ value, max = 5, color }) {
     return (
-        <div style={{ display: 'flex', gap: '2px', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
             {Array.from({ length: max }, (_, i) => (
                 <div key={i} style={{
-                    width: '14px', height: '6px', borderRadius: '2px',
-                    background: i < value ? color : 'rgba(255,255,255,0.08)',
+                    width: 18, height: 8, borderRadius: 3, transform: 'skewX(-12deg)',
+                    background: i < value ? `linear-gradient(180deg, ${color}, ${color}bb)` : 'rgba(255,255,255,0.08)',
+                    boxShadow: i < value ? `0 0 6px ${color}66` : 'none',
                     transition: 'background 0.2s',
                 }} />
             ))}
         </div>
     );
 }
+
+function CarStats({ carKey }) {
+    const car = CAR_TYPES.find(c => c.key === carKey);
+    if (!car) return null;
+    const rows = [['SPEED', car.speed, '#33cc77'], ['HANDLING', car.handling, '#33a6ff'], ['POWER', car.power, '#ff4d5e'], ['WEIGHT', car.weight, '#ffaa22']];
+    return (
+        <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '5px 12px', alignItems: 'center' }}>
+            {rows.map(([label, v, c]) => (
+                <React.Fragment key={label}>
+                    <span className="gtitle" style={{ fontSize: '0.62rem', color: '#8fa1b8' }}>{label}</span>
+                    <StatBar value={v} color={c} />
+                </React.Fragment>
+            ))}
+        </div>
+    );
+}
+
+// Small vertical car for player slots
+function SlotCar({ carType, cos, h = 52 }) {
+    const ref = useRef(null);
+    useEffect(() => {
+        const cv = ref.current;
+        if (!cv) return;
+        const ctx = cv.getContext('2d');
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const H = h, W = Math.round(h * 0.62);
+        cv.width = W * dpr; cv.height = H * dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const car = CAR_TYPES.find(c => c.key === carType) || CAR_TYPES[0];
+        const draw = () => {
+            ctx.clearRect(0, 0, W, H);
+            const sprite = tintedCar(CAR_VARIANT[carType] || 1, (cos && paintColor(cos.paint)) || car.color);
+            if (!sprite) return;
+            const sh = H - 4, sw = sh * sprite.width / sprite.height;
+            ctx.drawImage(sprite, W / 2 - sw / 2, 2, sw, sh);
+        };
+        draw();
+        preloadCarArt(draw);
+    }, [carType, cos && cos.paint, h]);
+    return <canvas ref={ref} style={{ width: Math.round(h * 0.62), height: h }} />;
+}
+
+function Sheet({ title, onClose, children }) {
+    return (
+        <div className="sheet-backdrop" onClick={() => { click(); onClose(); }}>
+            <div className="sheet gpanel" onClick={e => e.stopPropagation()}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                    <div className="gtitle" style={{ fontSize: '1.25rem', color: '#ffd84d' }}>{title}</div>
+                    <button onClick={() => { click(); onClose(); }} aria-label="Close" style={{
+                        width: 36, height: 36, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.15)',
+                        background: 'rgba(0,0,0,0.3)', color: '#cdd6e2', fontSize: '1rem', cursor: 'pointer',
+                    }}>✕</button>
+                </div>
+                {children}
+            </div>
+        </div>
+    );
+}
+
+function Pill({ active, onClick, children, color = '#ffd84d', disabled }) {
+    return (
+        <button onClick={onClick} disabled={disabled} className="gtitle" style={{
+            flex: 1, minWidth: 0, padding: '10px 6px', borderRadius: 12, cursor: disabled ? 'default' : 'pointer',
+            fontSize: '0.78rem', background: active ? `${color}26` : 'rgba(0,0,0,0.25)',
+            border: `2px solid ${active ? color : 'rgba(255,255,255,0.1)'}`,
+            color: active ? color : '#8fa1b8', opacity: disabled && !active ? 0.45 : 1,
+        }}>{children}</button>
+    );
+}
+
+function Stepper({ value, min, max, onChange, disabled }) {
+    const btn = (label, d, off) => (
+        <button disabled={disabled || off} onClick={() => { onChange(value + d); click(); }} className="gbtn dark"
+            style={{ width: 44, height: 40, padding: 0, fontSize: '1.2rem', borderRadius: 10 }}>{label}</button>
+    );
+    return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {btn('−', -1, value <= min)}
+            <span className="gtitle" style={{ minWidth: 26, textAlign: 'center', fontSize: '1.3rem', color: '#ffd84d' }}>{value}</span>
+            {btn('+', 1, value >= max)}
+        </div>
+    );
+}
+
+function Toggle({ label, on, onChange }) {
+    return (
+        <button onClick={() => { onChange(!on); click(); }} style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%',
+            padding: '12px 4px', background: 'none', border: 'none', borderBottom: '1px solid rgba(255,255,255,0.06)',
+            cursor: 'pointer', color: '#e6edf5', fontFamily: 'inherit', fontSize: '0.95rem',
+        }}>
+            <span>{label}</span>
+            <span style={{
+                width: 52, height: 30, borderRadius: 15, position: 'relative', transition: 'background 0.15s',
+                background: on ? '#20b155' : 'rgba(255,255,255,0.15)', boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.3)',
+            }}>
+                <span style={{
+                    position: 'absolute', top: 3, left: on ? 25 : 3, width: 24, height: 24, borderRadius: '50%',
+                    background: '#fff', transition: 'left 0.15s', boxShadow: '0 2px 4px rgba(0,0,0,0.4)',
+                }} />
+            </span>
+        </button>
+    );
+}
+
+const Label = ({ children }) => (
+    <div className="gtitle" style={{ fontSize: '0.68rem', color: '#8fa1b8', margin: '14px 0 8px' }}>{children}</div>
+);
 
 // Draws a single car (wheels → body → headlights → topper) centered at the
 // current transform origin, pointing right (+x), matching the in-game look.
@@ -74,7 +204,7 @@ function paintCar(ctx, carKey, baseColor, cos) {
 }
 
 // Large rotating turntable preview of the selected car.
-function CarShowroom({ car, cos }) {
+function CarShowroom({ car, cos, height = 215, scale = 2.8, showName = true, framed = true }) {
     const canvasRef = useRef(null);
 
     useEffect(() => {
@@ -82,8 +212,8 @@ function CarShowroom({ car, cos }) {
         if (!canvas) return;
         const ctx = canvas.getContext('2d');
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const W = canvas.clientWidth || 440;
-        const H = 215;
+        let W = canvas.clientWidth || 440;
+        const H = height;
         canvas.width = W * dpr;
         canvas.height = H * dpr;
         canvas.style.height = H + 'px';
@@ -93,11 +223,17 @@ function CarShowroom({ car, cos }) {
 
         function frame() {
             if (!running) return;
+            if (canvas.clientWidth && canvas.clientWidth !== W) {      // rotated / resized
+                W = canvas.clientWidth;
+                canvas.width = W * dpr;
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            }
             ctx.clearRect(0, 0, W, H);
-            const cx = W / 2, cy = 92;
+            const cx = W / 2, cy = H * 0.43;
+            const PR = Math.min(W * 0.42, H * 0.6);
 
             // Spotlight glow
-            const glow = ctx.createRadialGradient(cx, cy - 10, 0, cx, cy, 150);
+            const glow = ctx.createRadialGradient(cx, cy - 10, 0, cx, cy, H * 0.7);
             glow.addColorStop(0, 'rgba(232,160,48,0.14)');
             glow.addColorStop(0.5, 'rgba(232,160,48,0.04)');
             glow.addColorStop(1, 'rgba(232,160,48,0)');
@@ -106,11 +242,11 @@ function CarShowroom({ car, cos }) {
 
             // Turntable platform (flattened ellipse) beneath the car
             ctx.save();
-            ctx.translate(cx, cy + 52);
+            ctx.translate(cx, cy + 18 * scale);
             ctx.scale(1, 0.3);
             ctx.beginPath();
-            ctx.arc(0, 0, 115, 0, Math.PI * 2);
-            const pg = ctx.createRadialGradient(0, 0, 0, 0, 0, 115);
+            ctx.arc(0, 0, PR, 0, Math.PI * 2);
+            const pg = ctx.createRadialGradient(0, 0, 0, 0, 0, PR);
             pg.addColorStop(0, 'rgba(255,255,255,0.06)');
             pg.addColorStop(1, 'rgba(255,255,255,0.01)');
             ctx.fillStyle = pg;
@@ -119,7 +255,7 @@ function CarShowroom({ car, cos }) {
             ctx.lineWidth = 2.5;
             ctx.stroke();
             ctx.beginPath();
-            ctx.arc(0, 0, 88, 0, Math.PI * 2);
+            ctx.arc(0, 0, PR * 0.77, 0, Math.PI * 2);
             ctx.strokeStyle = 'rgba(232,160,48,0.12)';
             ctx.lineWidth = 1.5;
             ctx.stroke();
@@ -129,32 +265,36 @@ function CarShowroom({ car, cos }) {
             ctx.save();
             ctx.translate(cx, cy);
             ctx.rotate(angle);
-            ctx.scale(2.8, 2.8);   // ≈ the sprite's native size → crisp, not blown up
+            ctx.scale(scale, scale);
             paintCar(ctx, car.key, car.color, cos);
             ctx.restore();
 
             // Bottom scrim so the name stays readable over the platform
+            if (showName) {
             const scrim = ctx.createLinearGradient(0, H - 58, 0, H);
             scrim.addColorStop(0, 'rgba(10,13,19,0)');
             scrim.addColorStop(1, 'rgba(10,13,19,0.85)');
             ctx.fillStyle = scrim;
             ctx.fillRect(0, H - 58, W, 58);
+            }
 
             angle += 0.005;
             raf = requestAnimationFrame(frame);
         }
         frame();
         return () => { running = false; cancelAnimationFrame(raf); };
-    }, [car.key, car.color, cos && cos.paint, cos && cos.wheel, cos && cos.topper]);
+    }, [car.key, car.color, cos && cos.paint, cos && cos.wheel, cos && cos.topper, height, scale, showName]);
 
     return (
         <div style={{
             position: 'relative', borderRadius: '12px', overflow: 'hidden',
-            background: 'radial-gradient(ellipse at 50% 35%, #141922 0%, #0a0d13 100%)',
-            border: '1px solid rgba(255,255,255,0.06)',
+            ...(framed ? {
+                background: 'radial-gradient(ellipse at 50% 35%, #141922 0%, #0a0d13 100%)',
+                border: '1px solid rgba(255,255,255,0.06)',
+            } : {}),
         }}>
             <canvas ref={canvasRef} style={{ width: '100%', display: 'block' }} />
-            <div style={{
+            {showName && <div style={{
                 position: 'absolute', bottom: '10px', left: 0, right: 0,
                 textAlign: 'center', pointerEvents: 'none',
             }}>
@@ -165,75 +305,8 @@ function CarShowroom({ car, cos }) {
                 <div style={{ fontSize: '0.75rem', color: car.color, fontStyle: 'italic' }}>
                     {car.desc}
                 </div>
-            </div>
+            </div>}
         </div>
-    );
-}
-
-// Small static thumbnail used in the picker strip.
-function CarThumb({ car, cos, active, onSelect }) {
-    const canvasRef = useRef(null);
-    useEffect(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const W = 50, H = 38;
-        canvas.width = W * dpr; canvas.height = H * dpr;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        let cancelled = false;
-        const draw = () => {
-            if (cancelled) return;
-            ctx.clearRect(0, 0, W, H);
-            const paint = (cos && paintColor(cos.paint)) || car.color;
-            const sprite = tintedCar(CAR_VARIANT[car.key] || 1, paint);
-            if (sprite) {
-                const h = 34, w = h * sprite.width / sprite.height;
-                ctx.drawImage(sprite, W / 2 - w / 2, H / 2 - h / 2, w, h);
-            } else {
-                ctx.save();
-                ctx.translate(W / 2, H / 2); ctx.rotate(-Math.PI / 2); ctx.scale(1.25, 1.25);
-                drawWheels(ctx, car.key); drawCarBody(ctx, car.key, car.color, false);
-                ctx.restore();
-            }
-        };
-        draw();
-        preloadCarArt(draw);
-        return () => { cancelled = true; };
-    }, [car.key, car.color, cos && cos.paint]);
-
-    return (
-        <button
-            onClick={() => onSelect(car.key)}
-            title={car.name}
-            style={{
-                flex: '1 1 0', minWidth: '48px', height: '46px', padding: 0,
-                background: active ? 'rgba(232,160,48,0.12)' : 'rgba(255,255,255,0.02)',
-                border: `2px solid ${active ? '#e8a030' : 'rgba(255,255,255,0.06)'}`,
-                borderRadius: '8px', cursor: 'pointer', transition: 'all 0.15s',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}
-        >
-            <canvas ref={canvasRef} style={{ width: '50px', height: '38px' }} />
-        </button>
-    );
-}
-
-function NavArrow({ dir, onClick }) {
-    return (
-        <button
-            onClick={onClick}
-            aria-label={dir === 'prev' ? 'Previous car' : 'Next car'}
-            style={{
-                position: 'absolute', top: '50%', transform: 'translateY(-50%)',
-                [dir === 'prev' ? 'left' : 'right']: '10px',
-                width: '40px', height: '40px', borderRadius: '50%',
-                background: 'rgba(0,0,0,0.45)', border: '1px solid rgba(232,160,48,0.4)',
-                color: '#e8a030', fontSize: '1.3rem', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontFamily: 'inherit', lineHeight: 1, zIndex: 2,
-            }}
-        >{dir === 'prev' ? '‹' : '›'}</button>
     );
 }
 
@@ -266,220 +339,322 @@ function TopperThumb({ topperKey }) {
 }
 
 const CUSTOMIZE_TABS = [
-    { key: 'paint',  label: 'Paint' },
+    { key: 'paint', label: 'Paint' },
     { key: 'topper', label: 'Hat' },
-    { key: 'trail',  label: 'Trail' },
+    { key: 'trail', label: 'Trail' },
 ];
 
 function Swatch({ active, onClick, title, children }) {
     return (
-        <button
-            onClick={onClick}
-            title={title}
-            style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px',
-                padding: '7px 4px', cursor: 'pointer', fontFamily: 'inherit',
-                background: active ? 'rgba(232,160,48,0.14)' : 'rgba(255,255,255,0.02)',
-                border: `2px solid ${active ? '#e8a030' : 'rgba(255,255,255,0.07)'}`,
-                borderRadius: '10px', transition: 'all 0.15s', position: 'relative',
-            }}
-        >
+        <button onClick={onClick} title={title} style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+            padding: '8px 4px', cursor: 'pointer', fontFamily: 'inherit',
+            background: active ? 'rgba(255,216,77,0.14)' : 'rgba(0,0,0,0.25)',
+            border: `2px solid ${active ? '#ffd84d' : 'rgba(255,255,255,0.08)'}`,
+            borderRadius: 12, boxShadow: active ? '0 0 12px rgba(255,216,77,0.35)' : 'none',
+        }}>
             {children}
-            <span style={{
-                fontSize: '0.6rem', color: active ? '#e8a030' : '#8899aa',
-                fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.3px',
-            }}>{title}</span>
+            <span className="gtitle" style={{ fontSize: '0.55rem', color: active ? '#ffd84d' : '#8fa1b8' }}>{title}</span>
         </button>
     );
 }
 
-function CustomizeScreen({ car, cos, onChange, onDone }) {
+function TopButton({ children, onClick, color = 'dark', style, label }) {
+    return (
+        <button className={`gbtn ${color}`} onClick={() => { click(); onClick(); }} aria-label={label}
+            style={{ padding: '8px 12px', fontSize: '0.8rem', borderRadius: 12, ...style }}>{children}</button>
+    );
+}
+
+function ArrowBtn({ dir, onClick, style }) {
+    return (
+        <button className="gbtn dark" onClick={onClick} aria-label={dir < 0 ? 'Previous car' : 'Next car'} style={{
+            position: 'absolute', top: '45%', transform: 'translateY(-50%)', width: 48, height: 48, padding: 0,
+            borderRadius: '50%', fontSize: '1.4rem', zIndex: 2, ...style,
+        }}>{dir < 0 ? '‹' : '›'}</button>
+    );
+}
+
+function Logo({ size = '1.9rem' }) {
+    return (
+        <div className="gtitle" style={{
+            fontSize: size, fontStyle: 'italic', lineHeight: 1, color: '#ffc53d',
+            textShadow: '0 3px 0 #8a4f00, 0 0 24px rgba(255,170,40,0.45)', animation: 'logoFloat 4s ease-in-out infinite',
+            whiteSpace: 'nowrap',
+        }}>DASH ARENA</div>
+    );
+}
+
+// ─── Garage: paint / hat / trail for the selected car ─────────────────────
+function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
     const [tab, setTab] = useState('paint');
+    const set = (field, value) => { onChange({ ...cos, [field]: value }); click(); };
+    const stageH = vp.landscape ? Math.max(180, vp.h - 120) : Math.max(170, Math.min(300, vp.h - 520));
 
-    const set = (field, value) => { onChange({ ...cos, [field]: value }); soundManager.playClick(); };
-
-    return (
-        <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.25rem' }}>
-                <button
-                    onClick={() => { onDone(); soundManager.playClick(); }}
-                    style={{ background: 'none', border: 'none', color: '#8899aa', cursor: 'pointer', fontSize: '1.2rem', padding: '4px', fontFamily: 'inherit' }}
-                >←</button>
-                <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8899aa' }}>
-                    Customize · {car.name}
-                </span>
-            </div>
-
-            <CarShowroom car={car} cos={cos} />
-
-            {/* Category tabs */}
-            <div style={{ display: 'flex', gap: '4px' }}>
-                {CUSTOMIZE_TABS.map(t => (
-                    <button
-                        key={t.key}
-                        onClick={() => { setTab(t.key); soundManager.playClick(); }}
-                        style={{
-                            flex: 1, padding: '7px', borderRadius: '6px', cursor: 'pointer',
-                            fontFamily: 'inherit', fontWeight: 700, fontSize: '0.72rem',
-                            textTransform: 'uppercase', letterSpacing: '0.5px',
-                            background: tab === t.key ? 'rgba(232,160,48,0.16)' : 'transparent',
-                            border: `1px solid ${tab === t.key ? '#e8a030' : 'rgba(255,255,255,0.08)'}`,
-                            color: tab === t.key ? '#e8a030' : '#8899aa', transition: 'all 0.15s',
-                        }}
-                    >{t.label}</button>
-                ))}
-            </div>
-
-            {/* Item grid */}
-            <div style={{
-                display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px',
-                background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '10px',
-                maxHeight: '150px', overflowY: 'auto',
-            }}>
-                {tab === 'paint' && PAINTS.map(p => (
-                    <Swatch key={p.key} active={cos.paint === p.key} title={p.name} onClick={() => set('paint', p.key)}>
-                        <div style={{
-                            width: '32px', height: '32px', borderRadius: '50%',
-                            background: p.color || car.color,
-                            border: '2px solid rgba(255,255,255,0.15)',
-                            boxShadow: 'inset 0 -4px 6px rgba(0,0,0,0.35), inset 0 3px 4px rgba(255,255,255,0.25)',
-                        }} />
-                    </Swatch>
-                ))}
-
-                {tab === 'topper' && TOPPERS.map(tp => (
-                    <Swatch key={tp.key} active={cos.topper === tp.key} title={tp.name} onClick={() => set('topper', tp.key)}>
-                        <div style={{ width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            <TopperThumb topperKey={tp.key} />
-                        </div>
-                    </Swatch>
-                ))}
-
-                {tab === 'trail' && TRAILS.map(tr => (
-                    <Swatch key={tr.key} active={cos.trail === tr.key} title={tr.name} onClick={() => set('trail', tr.key)}>
-                        <div style={{
-                            width: '34px', height: '18px', borderRadius: '9px',
-                            background: tr.rainbow
-                                ? 'linear-gradient(90deg,#ff3b3b,#ffb03b,#ffe83b,#3bff6b,#3bc6ff,#b23bff)'
-                                : `linear-gradient(90deg, ${tr.color}, rgba(0,0,0,0))`,
-                        }} />
-                    </Swatch>
-                ))}
-            </div>
-
-            <button className="btn" onClick={() => { onDone(); soundManager.playClick(); }} style={{ marginTop: '0.25rem' }}>
-                DONE
-            </button>
-        </>
+    const items = (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+            {tab === 'paint' && PAINTS.map(p => (
+                <Swatch key={p.key} active={cos.paint === p.key} title={p.name} onClick={() => set('paint', p.key)}>
+                    <div style={{
+                        width: 32, height: 32, borderRadius: '50%', background: p.color || car.color,
+                        border: '2px solid rgba(255,255,255,0.2)',
+                        boxShadow: 'inset 0 -4px 6px rgba(0,0,0,0.35), inset 0 3px 4px rgba(255,255,255,0.3)',
+                    }} />
+                </Swatch>
+            ))}
+            {tab === 'topper' && TOPPERS.map(tp => (
+                <Swatch key={tp.key} active={cos.topper === tp.key} title={tp.name} onClick={() => set('topper', tp.key)}>
+                    <div style={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <TopperThumb topperKey={tp.key} />
+                    </div>
+                </Swatch>
+            ))}
+            {tab === 'trail' && TRAILS.map(tr => (
+                <Swatch key={tr.key} active={cos.trail === tr.key} title={tr.name} onClick={() => set('trail', tr.key)}>
+                    <div style={{
+                        width: 36, height: 18, borderRadius: 9, margin: '7px 0',
+                        background: tr.rainbow
+                            ? 'linear-gradient(90deg,#ff3b3b,#ffb03b,#ffe83b,#3bff6b,#3bc6ff,#b23bff)'
+                            : `linear-gradient(90deg, ${tr.color}, rgba(0,0,0,0))`,
+                    }} />
+                </Swatch>
+            ))}
+        </div>
     );
-}
 
-function StepBtn({ label, onClick, disabled }) {
-    return (
-        <button onClick={onClick} disabled={disabled} style={{
-            width: 34, height: 34, borderRadius: 8, fontFamily: 'inherit', fontWeight: 800, fontSize: '1.1rem',
-            background: 'rgba(232,160,48,0.1)', border: '1px solid rgba(232,160,48,0.6)', color: '#e8a030',
-            cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.35 : 1,
-        }}>{label}</button>
-    );
-}
-
-function CarStats({ carKey }) {
-    const car = CAR_TYPES.find(c => c.key === carKey);
-    if (!car) return null;
     return (
         <div style={{
-            background: 'rgba(0,0,0,0.25)', borderRadius: '8px', padding: '10px 12px',
-            display: 'grid', gridTemplateColumns: '70px 1fr', gap: '4px 8px', alignItems: 'center',
+            position: 'fixed', inset: 0, display: 'flex', flexDirection: vp.landscape ? 'row' : 'column',
+            padding: `${SAFE_TOP} ${SAFE_X} ${SAFE_BOTTOM}`, gap: 12, boxSizing: 'border-box',
         }}>
-            <span className="text-dim" style={{ fontSize: '0.7rem' }}>SPEED</span>
-            <StatBar value={car.speed} color="#33cc77" />
-            <span className="text-dim" style={{ fontSize: '0.7rem' }}>HANDLING</span>
-            <StatBar value={car.handling} color="#3399dd" />
-            <span className="text-dim" style={{ fontSize: '0.7rem' }}>POWER</span>
-            <StatBar value={car.power} color="#dd3344" />
-            <span className="text-dim" style={{ fontSize: '0.7rem' }}>WEIGHT</span>
-            <StatBar value={car.weight} color="#dd8822" />
-            <div style={{ gridColumn: '1 / -1', textAlign: 'center', color: car.color, fontSize: '0.75rem', fontStyle: 'italic', marginTop: '2px' }}>
-                {car.desc}
+            <div style={{ flex: vp.landscape ? 1.1 : 'none', position: 'relative', minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <TopButton onClick={onBack} label="Back">‹ BACK</TopButton>
+                    <div className="gtitle" style={{ fontSize: '1.2rem', color: '#ffd84d' }}>GARAGE</div>
+                </div>
+                <div style={{ position: 'relative', marginTop: 6 }}>
+                    <CarShowroom car={car} cos={cos} height={stageH} scale={Math.min(3.2, stageH / 80)} showName={false} framed={false} />
+                    <ArrowBtn dir={-1} onClick={() => onCycle(-1)} style={{ left: 0 }} />
+                    <ArrowBtn dir={1} onClick={() => onCycle(1)} style={{ right: 0 }} />
+                </div>
+                <div className="gtitle" style={{ textAlign: 'center', fontSize: '1.3rem', color: '#fff', marginTop: -8 }}>{car.name}</div>
+                <div style={{ textAlign: 'center', fontSize: '0.75rem', color: '#8fa1b8' }}>Each car keeps its own look</div>
+            </div>
+            <div className="gpanel" style={{
+                flex: vp.landscape ? 1 : 1, minHeight: 0, padding: 14, display: 'flex', flexDirection: 'column', gap: 12,
+            }}>
+                <div style={{ display: 'flex', gap: 6 }}>
+                    {CUSTOMIZE_TABS.map(t => (
+                        <Pill key={t.key} active={tab === t.key} onClick={() => { setTab(t.key); click(); }}>{t.label}</Pill>
+                    ))}
+                </div>
+                <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>{items}</div>
+                <button className="gbtn yellow" onClick={() => { click(); onBack(); }} style={{ fontSize: '1rem', padding: '12px' }}>DONE</button>
             </div>
         </div>
     );
 }
 
-const INVITE_CODE = (new URLSearchParams(window.location.search).get('room') || '').toUpperCase();
+// ─── Room: player slots, rounds, bots, start ──────────────────────────────
+function RoomScreen({ room, vp, onLeave, onShare, copied }) {
+    const isHost = room.hostId === socket.id;
+    const humans = (room.players || []).filter(p => !p.isBot);
+    const bots = room.settings?.botCount || 0;
+    const canStart = humans.length + bots >= 2;
+    const rounds = room.maxRounds || 3;
+    const update = (settings) => socket.emit('updateSettings', { roomId: room.id, settings });
+    const start = () => { click(); soundManager.playGo(); socket.emit('startMatch', { roomId: room.id }); };
 
-export default function Lobby({ room, setRoom, setPlayer, player, connected, connError }) {
+    const slots = [];
+    humans.forEach(p => slots.push({ kind: 'human', p }));
+    for (let i = 0; i < bots && slots.length < 8; i++) slots.push({ kind: 'bot' });
+    while (slots.length < 8) slots.push({ kind: 'open' });
+    const cols = vp.landscape ? 4 : 2;
+
+    return (
+        <div style={{
+            position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', gap: 10,
+            padding: `${SAFE_TOP} ${SAFE_X} ${SAFE_BOTTOM}`, boxSizing: 'border-box', maxWidth: 900, margin: '0 auto',
+        }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <TopButton onClick={onLeave} label="Leave room">‹ LEAVE</TopButton>
+                <div style={{ textAlign: 'center' }}>
+                    <div className="gtitle" style={{ fontSize: '0.6rem', color: '#8fa1b8' }}>ROOM CODE</div>
+                    <div className="gtitle" style={{ fontSize: '1.5rem', letterSpacing: 4, color: '#fff' }}>{room.id}</div>
+                </div>
+                <TopButton onClick={onShare} color="blue" label="Invite">{copied ? '✓ COPIED' : '🔗 INVITE'}</TopButton>
+            </div>
+
+            <div style={{
+                flex: 1, minHeight: 0, display: 'grid', gap: 8,
+                gridTemplateColumns: `repeat(${cols}, 1fr)`, gridAutoRows: 'minmax(0, 92px)', alignContent: 'center',
+            }}>
+                {slots.map((s, i) => (
+                    <div key={s.kind === 'human' ? s.p.id : `${s.kind}${i}`}
+                        onClick={s.kind === 'open' ? () => { click(); onShare(); } : undefined}
+                        className={s.kind === 'human' ? 'gpanel' : ''}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', minHeight: 0, overflow: 'hidden',
+                            borderRadius: 14, cursor: s.kind === 'open' ? 'pointer' : 'default',
+                            ...(s.kind === 'human' ? {
+                                borderColor: s.p.id === socket.id ? 'rgba(255,216,77,0.7)' : 'rgba(255,255,255,0.08)',
+                            } : {
+                                border: '2px dashed rgba(255,255,255,0.12)', background: 'rgba(0,0,0,0.18)',
+                            }),
+                        }}>
+                        {s.kind === 'human' && <>
+                            <SlotCar carType={s.p.carType} cos={s.p.cosmetics} h={vp.landscape ? 40 : 46} />
+                            <div style={{ minWidth: 0 }}>
+                                <div className="gtitle" style={{
+                                    fontSize: '0.85rem', color: s.p.id === socket.id ? '#ffd84d' : '#fff',
+                                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                                }}>{s.p.name}{s.p.id === room.hostId ? ' 👑' : ''}</div>
+                                <div style={{ fontSize: '0.68rem', color: s.p.connected === false ? '#facc15' : '#8fa1b8' }}>
+                                    {s.p.connected === false ? 'reconnecting…' : s.p.id === socket.id ? 'You' : (CAR_TYPES.find(c => c.key === s.p.carType)?.name || '')}
+                                </div>
+                            </div>
+                        </>}
+                        {s.kind === 'bot' && <>
+                            <div style={{ fontSize: '1.6rem', width: 30, textAlign: 'center' }}>🤖</div>
+                            <div className="gtitle" style={{ fontSize: '0.75rem', color: '#8fa1b8' }}>BOT</div>
+                        </>}
+                        {s.kind === 'open' && (
+                            <div className="gtitle" style={{ fontSize: '0.7rem', color: '#5d6b80', width: '100%', textAlign: 'center' }}>
+                                + INVITE
+                            </div>
+                        )}
+                    </div>
+                ))}
+            </div>
+
+            <div className="gpanel" style={{
+                padding: '10px 14px', display: 'flex', flexWrap: 'wrap', gap: '10px 18px',
+                alignItems: 'center', justifyContent: 'space-between',
+            }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="gtitle" style={{ fontSize: '0.65rem', color: '#8fa1b8' }}>ROUNDS</span>
+                    {[1, 3, 5].map(n => (
+                        <Pill key={n} active={rounds === n} disabled={!isHost}
+                            onClick={() => { if (isHost) { update({ maxRounds: n }); click(); } }}>{n}</Pill>
+                    ))}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="gtitle" style={{ fontSize: '0.65rem', color: '#8fa1b8' }}>BOTS</span>
+                    <Stepper value={bots} min={0} max={8 - humans.length} disabled={!isHost}
+                        onChange={n => update({ botCount: n })} />
+                </div>
+            </div>
+
+            {isHost ? (
+                <button className="gbtn yellow" disabled={!canStart} onClick={start}
+                    style={{ fontSize: vp.landscape ? '1.1rem' : '1.35rem', padding: vp.landscape ? '10px' : '16px' }}>
+                    {canStart ? '▶ START MATCH' : 'NEED 2+ PLAYERS'}
+                </button>
+            ) : (
+                <div className="gpanel gtitle" style={{ textAlign: 'center', padding: 14, color: '#ffd84d', fontSize: '0.9rem' }}>
+                    WAITING FOR HOST TO START…
+                </div>
+            )}
+            <div style={{ textAlign: 'center', color: '#8fa1b8', fontSize: '0.72rem', marginTop: -2 }}>
+                {canStart ? `Push rivals through the fence · ${rounds} round${rounds > 1 ? 's' : ''} · most points wins`
+                    : 'Invite a friend or add a bot to start'}
+            </div>
+        </div>
+    );
+}
+
+// ─── Main menu ────────────────────────────────────────────────────────────
+export default function Lobby({ room, setRoom, setPlayer, connected, connError }) {
+    const vp = useViewport();
     const [name, setName] = useState(() => {
         try { return localStorage.getItem('dasharena.name') || 'Player'; } catch (_) { return 'Player'; }
     });
-    const [rid, setRid] = useState(INVITE_CODE);
-    const [error, setError] = useState('');
-    const [botCount, setBotCount] = useState(3);
-    const [botDifficulty, setBotDifficulty] = useState('medium');
     const [carType, setCarTypeRaw] = useState(() => {
         try {
             const k = localStorage.getItem('dasharena.car');
             return CAR_TYPES.some(c => c.key === k) ? k : 'sports';
         } catch (_) { return 'sports'; }
     });
-    const setCarType = (k) => {
-        setCarTypeRaw(k);
-        try { localStorage.setItem('dasharena.car', k); } catch (_) { /* ignore */ }
-    };
-    const [tab, setTab] = useState('multi');
-    const [copied, setCopied] = useState(false);
-    const [step, setStep] = useState('name');
     const [garage, setGarage] = useState(loadGarage);
-    const cosmetics = cosmeticsFor(garage, carType);   // the selected car's own look
+    const [screen, setScreen] = useState('home');
+    const [sheet, setSheet] = useState(INVITE_CODE ? 'online' : null);
+    const [rid, setRid] = useState(INVITE_CODE);
+    const [botCount, setBotCount] = useState(3);
+    const [botDifficulty, setBotDifficulty] = useState('medium');
+    const [error, setError] = useState('');
+    const [copied, setCopied] = useState(false);
+    const [settings, setSettings] = useState(soundManager.settings);
+    const [ctrlMode, setCtrlMode] = useState(() => {
+        try { return localStorage.getItem('dasharena.ctrlmode') || 'buttons'; } catch (_) { return 'buttons'; }
+    });
+
+    const cosmetics = cosmeticsFor(garage, carType);
+    const car = CAR_TYPES.find(c => c.key === carType) || CAR_TYPES[0];
+    const carIdx = CAR_TYPES.indexOf(car);
 
     useEffect(() => { preloadCarArt(); }, []);
     useEffect(() => {
         try { localStorage.setItem('dasharena.name', name); } catch (_) { /* ignore */ }
     }, [name]);
 
-    function updateCosmetics(next) {
+    const setCarType = (k) => {
+        setCarTypeRaw(k);
+        try { localStorage.setItem('dasharena.car', k); } catch (_) { /* ignore */ }
+    };
+    const cycleCar = (dir) => {
+        const next = CAR_TYPES[(carIdx + dir + CAR_TYPES.length) % CAR_TYPES.length];
+        setCarType(next.key);
+        soundManager.playRev(next.key);
+    };
+    const updateCosmetics = (next) => {
         const g = { ...garage, [carType]: next };
         setGarage(g);
         saveGarage(g);
-    }
+    };
+    const setSetting = (k, v) => { soundManager.setSetting(k, v); setSettings({ ...soundManager.settings }); };
+    const playerName = () => (name.trim() || 'Player').slice(0, 16);
 
-    function createRoom() {
-        soundManager.playClick();
-        socket.connect();
+    function createRoom(mode) {
+        click();
+        setError('');
+        if (!socket.connected) socket.connect();
         socket.emit('createRoom', {
-            name,
-            botCount: tab === 'solo' ? botCount : 0,
-            botDifficulty,
-            carType,
-            cosmetics,
-            token: getToken(),
+            name: playerName(), botCount: mode === 'bots' ? botCount : 0, botDifficulty,
+            carType, cosmetics, token: getToken(),
         }, (res) => {
-            if (res.error) return setError(res.error);
-            if (res.roomId) saveRoom(res.roomId);
-            setRoom(res && res.roomId ? { id: res.roomId } : null);
+            if (!res || res.error) return setError(res?.error || 'Could not create a room');
+            saveRoom(res.roomId);
+            setRoom({ id: res.roomId });
             setPlayer(res.player);
-            setError('');
+            setSheet(null);
+            if (mode === 'bots') { soundManager.playGo(); socket.emit('startMatch', { roomId: res.roomId }); }
         });
     }
 
     function joinRoom() {
-        if (!rid.trim()) return setError('Please enter a Room ID');
-        soundManager.playClick();
-        socket.connect();
         const code = rid.trim().toUpperCase();
-        socket.emit('joinRoom', { roomId: code, name, carType, cosmetics, token: getToken() }, (res) => {
-            if (res && res.error) { setError(res.error); return; }
+        if (!code) return setError('Enter the room code your friend shared');
+        click();
+        setError('');
+        if (!socket.connected) socket.connect();
+        socket.emit('joinRoom', { roomId: code, name: playerName(), carType, cosmetics, token: getToken() }, (res) => {
+            if (!res || res.error) return setError(res?.error || 'Could not join');
             saveRoom(res.roomId || code);
             setRoom({ id: res.roomId || code });
             if (res.player) setPlayer(res.player);
-            setError('');
+            setSheet(null);
         });
+    }
+
+    function leaveRoom() {
+        socket.emit('leaveRoom', { roomId: room.id });
+        clearRoom();
+        setRoom(null);
+        setScreen('home');
     }
 
     function shareInvite() {
         const link = `${window.location.origin}/?room=${room.id}`;
-        soundManager.playClick();
         if (navigator.share) {
             navigator.share({ title: 'Dash Arena', text: `Join my Dash Arena room ${room.id}!`, url: link }).catch(() => {});
             return;
@@ -490,350 +665,187 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
         }).catch(() => {});
     }
 
-    function startMatch() {
-        if (!room) return;
-        soundManager.playClick();
-        socket.emit('startMatch', { roomId: room.id });
+    // Connection status pill (the free server can take a while to wake up)
+    const connPill = !connected && (
+        <div style={{
+            position: 'fixed', top: SAFE_TOP, left: '50%', transform: 'translateX(-50%)', zIndex: 40,
+            background: 'rgba(0,0,0,0.75)', border: '1px solid #facc15', color: '#facc15', borderRadius: 20,
+            padding: '6px 14px', fontSize: '0.75rem', whiteSpace: 'nowrap', maxWidth: '92vw', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+            Connecting to server…{connError ? ' (waking up, ~1 min)' : ''}
+        </div>
+    );
+
+    let content;
+    if (room) {
+        content = <RoomScreen room={room} vp={vp} onLeave={() => { click(); leaveRoom(); }} onShare={shareInvite} copied={copied} />;
+    } else if (screen === 'garage') {
+        content = <GarageScreen car={car} cos={cosmetics} onChange={updateCosmetics} onBack={() => setScreen('home')} onCycle={cycleCar} vp={vp} />;
+    } else {
+        // Home: big car stage + play buttons
+        const L = vp.landscape;
+        const stageH = L ? Math.max(170, vp.h - 150) : Math.max(170, Math.min(340, vp.h - 470));
+        const stage = (
+            <div style={{ position: 'relative', width: '100%' }}>
+                <CarShowroom car={car} cos={cosmetics} height={stageH} scale={Math.min(3.4, stageH / 78)} showName={false} framed={false} />
+                <ArrowBtn dir={-1} onClick={() => { click(); cycleCar(-1); }} style={{ left: 0 }} />
+                <ArrowBtn dir={1} onClick={() => { click(); cycleCar(1); }} style={{ right: 0 }} />
+            </div>
+        );
+        const carInfo = (
+            <div style={{ textAlign: 'center' }}>
+                <div className="gtitle" style={{ fontSize: L ? '1.3rem' : '1.6rem', color: '#fff', textShadow: '0 3px 0 rgba(0,0,0,0.5)' }}>{car.name}</div>
+                <div style={{ fontSize: '0.78rem', color: car.color, fontStyle: 'italic', marginTop: 2 }}>{car.desc}</div>
+                <div style={{ display: 'flex', gap: 5, justifyContent: 'center', marginTop: 8 }}>
+                    {CAR_TYPES.map((c, i) => (
+                        <div key={c.key} onClick={() => { click(); setCarType(c.key); soundManager.playRev(c.key); }} style={{
+                            width: i === carIdx ? 18 : 7, height: 7, borderRadius: 4, cursor: 'pointer',
+                            background: i === carIdx ? '#ffd84d' : 'rgba(255,255,255,0.25)', transition: 'width 0.2s',
+                        }} />
+                    ))}
+                </div>
+            </div>
+        );
+        const buttons = (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: L ? 12 : 14, width: '100%' }}>
+                <button className="gbtn yellow" onClick={() => { click(); setError(''); setSheet('online'); }}
+                    style={{ fontSize: L ? '1.15rem' : '1.4rem', padding: L ? '12px' : '16px' }}>▶ PLAY ONLINE</button>
+                <div style={{ display: 'flex', gap: 12 }}>
+                    <button className="gbtn blue" onClick={() => { click(); setError(''); setSheet('bots'); }}
+                        style={{ flex: 1, fontSize: '0.95rem', padding: L ? '10px 6px' : '13px 6px' }}>🤖 VS BOTS</button>
+                    <button className="gbtn purple" onClick={() => { click(); setScreen('garage'); }}
+                        style={{ flex: 1, fontSize: '0.95rem', padding: L ? '10px 6px' : '13px 6px' }}>🎨 GARAGE</button>
+                </div>
+            </div>
+        );
+        const settingsBtn = (
+            <TopButton onClick={() => setSheet('settings')} label="Settings" style={{ width: 44, height: 40, padding: 0, fontSize: '1.1rem' }}>⚙</TopButton>
+        );
+        const topBar = (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <button onClick={() => { click(); setSheet('settings'); }} style={{
+                    display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(0,0,0,0.35)',
+                    border: '2px solid rgba(255,255,255,0.1)', borderRadius: 24, padding: '4px 14px 4px 4px', cursor: 'pointer',
+                    maxWidth: '55vw',
+                }}>
+                    <span className="gtitle" style={{
+                        width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: 'linear-gradient(180deg,#ffd84d,#f5a300)', color: '#3b2300', fontSize: '1rem',
+                    }}>{playerName()[0].toUpperCase()}</span>
+                    <span className="gtitle" style={{ color: '#fff', fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{playerName()}</span>
+                </button>
+                {!L && <Logo size="1.35rem" />}
+                {!L && settingsBtn}
+            </div>
+        );
+
+        content = L ? (
+            <div style={{ position: 'fixed', inset: 0, display: 'flex', gap: 16, padding: `${SAFE_TOP} ${SAFE_X} ${SAFE_BOTTOM}`, boxSizing: 'border-box' }}>
+                <div style={{ flex: 1.2, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                    {topBar}
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                        {stage}
+                        {carInfo}
+                    </div>
+                </div>
+                <div style={{ width: 'min(330px, 42vw)', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 14 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                        <Logo size="1.7rem" />{settingsBtn}
+                    </div>
+                    <div className="gpanel" style={{ padding: '10px 14px', display: 'flex', justifyContent: 'center' }}><CarStats carKey={carType} /></div>
+                    {buttons}
+                </div>
+            </div>
+        ) : (
+            <div style={{
+                position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', gap: 10,
+                padding: `${SAFE_TOP} ${SAFE_X} ${SAFE_BOTTOM}`, boxSizing: 'border-box', maxWidth: 520, margin: '0 auto',
+            }}>
+                {topBar}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: 0 }}>
+                    {stage}
+                    {carInfo}
+                </div>
+                <div className="gpanel" style={{ padding: '10px 14px', display: 'flex', justifyContent: 'center' }}><CarStats carKey={carType} /></div>
+                {buttons}
+            </div>
+        );
     }
 
-    function leaveRoom() {
-        socket.emit('leaveRoom', { roomId: room.id });
-        clearRoom();
-        setRoom(null);
-        setStep('name');
-    }
-
-    function goToCarSelect() {
-        if (!name.trim()) return setError('Please enter a name');
-        setError('');
-        soundManager.playClick();
-        setStep('car');
-    }
-
-    function cycleCar(dir) {
-        const idx = CAR_TYPES.findIndex(c => c.key === carType);
-        const next = (idx + dir + CAR_TYPES.length) % CAR_TYPES.length;
-        setCarType(CAR_TYPES[next].key);
-        soundManager.playClick();
-    }
-
-    const selectedCar = CAR_TYPES.find(c => c.key === carType) || CAR_TYPES[0];
-
-    // Room seats: humans + bots must make at least two cars
-    const humansInRoom = room?.players?.filter(p => !p.isBot).length || 0;
-    const botsInRoom = room?.settings?.botCount || 0;
-    const canStart = humansInRoom + botsInRoom >= 2;
-    const setBots = (n) => {
-        socket.emit('updateSettings', { roomId: room.id, settings: { botCount: Math.max(0, Math.min(8 - humansInRoom, n)) } });
-        soundManager.playClick();
-    };
+    const errLine = error && (
+        <div style={{ color: '#ff6680', background: 'rgba(255,68,102,0.1)', borderRadius: 10, padding: '8px 10px', fontSize: '0.85rem', marginBottom: 10, textAlign: 'center' }}>{error}</div>
+    );
 
     return (
-        <div className="center full-screen" style={{ overflow: 'auto', padding: '1rem' }}>
-            <div className="lobby-panel panel flex-col" style={{
-                width: '100%', maxWidth: room ? '440px' : '520px', padding: '1.5rem 1.5rem 2rem',
-                border: '1px solid rgba(255,255,255,0.06)',
-                boxShadow: '0 8px 60px rgba(0,0,0,0.6)',
-            }}>
-                <h1 style={{
-                    textAlign: 'center', fontSize: 'clamp(1.6rem,5vw,2.5rem)',
-                    marginBottom: '0.15rem', letterSpacing: '3px',
-                    color: '#e8a030', fontWeight: 800,
-                }}>DASH ARENA</h1>
-                <p style={{ textAlign: 'center', fontSize: '0.8rem', margin: 0, color: '#8899aa' }}>
-                    Knock opponents off the arena to win
-                </p>
+        <>
+            <div className="menu-bg" />
+            {content}
+            {connPill}
 
-                {!connected && (
-                    <div style={{
-                        color: '#facc15', textAlign: 'center',
-                        background: 'rgba(250,204,21,0.08)', padding: '0.5rem', borderRadius: '6px',
-                        fontSize: '0.85rem',
-                    }}>
-                        Connecting to server...
-                        {connError && (
-                            <div style={{ color: '#ff8a8a', fontSize: '0.72rem', marginTop: 4 }}>
-                                {connError} — the free server may be waking up; this can take ~50s on first load.
-                            </div>
-                        )}
+            {sheet === 'online' && !room && (
+                <Sheet title="Play Online" onClose={() => setSheet(null)}>
+                    {errLine}
+                    <button className="gbtn yellow" onClick={() => createRoom('online')} disabled={!connected}
+                        style={{ width: '100%', fontSize: '1.15rem', padding: 14 }}>CREATE ROOM</button>
+                    <div style={{ fontSize: '0.75rem', color: '#8fa1b8', textAlign: 'center', margin: '8px 0 4px' }}>
+                        You'll get a code + link to share with friends
                     </div>
-                )}
-
-                {error && (
-                    <div style={{
-                        color: '#ff4466', textAlign: 'center',
-                        background: 'rgba(255,68,102,0.08)', padding: '0.5rem', borderRadius: '6px',
-                    }}>{error}</div>
-                )}
-
-                {!room ? (
-                    <>
-                        {step === 'name' && (
-                            <>
-                                <div className="flex-col" style={{ gap: '0.5rem' }}>
-                                    <label className="text-dim" style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px' }}>Your Name</label>
-                                    <input
-                                        className="input"
-                                        value={name}
-                                        onChange={e => setName(e.target.value)}
-                                        placeholder="Enter name..."
-                                        maxLength={16}
-                                        onKeyDown={e => e.key === 'Enter' && goToCarSelect()}
-                                    />
-                                </div>
-
-                                <div className="flex-row" style={{ gap: '0', marginTop: '0.5rem' }}>
-                                    {['multi', 'solo'].map(t => (
-                                        <button
-                                            key={t}
-                                            onClick={() => { setTab(t); soundManager.playClick(); }}
-                                            style={{
-                                                flex: 1, padding: '10px',
-                                                background: tab === t ? 'rgba(232, 160, 48, 0.12)' : 'transparent',
-                                                border: `1px solid ${tab === t ? '#e8a030' : 'rgba(255,255,255,0.08)'}`,
-                                                color: tab === t ? '#e8a030' : '#8899aa',
-                                                cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600,
-                                                fontSize: '0.85rem', textTransform: 'uppercase',
-                                                borderRadius: t === 'multi' ? '6px 0 0 6px' : '0 6px 6px 0',
-                                                transition: 'all 0.2s',
-                                            }}
-                                        >
-                                            {t === 'solo' ? 'Solo + Bots' : 'Multiplayer'}
-                                        </button>
-                                    ))}
-                                </div>
-
-                                {tab === 'multi' && (
-                                    <div className="flex-row" style={{ marginTop: '0.5rem' }}>
-                                        <input
-                                            className="input"
-                                            placeholder="Room ID"
-                                            value={rid}
-                                            onChange={e => setRid(e.target.value)}
-                                        />
-                                    </div>
-                                )}
-
-                                <button className="btn" onClick={goToCarSelect} style={{ marginTop: '0.75rem' }}>
-                                    CHOOSE YOUR CAR
-                                </button>
-                            </>
-                        )}
-
-                        {step === 'car' && (
-                            <>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.25rem' }}>
-                                    <button
-                                        onClick={() => { setStep('name'); soundManager.playClick(); }}
-                                        style={{
-                                            background: 'none', border: 'none', color: '#8899aa',
-                                            cursor: 'pointer', fontSize: '1.2rem', padding: '4px',
-                                            fontFamily: 'inherit',
-                                        }}
-                                    >←</button>
-                                    <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8899aa' }}>
-                                        Select Your Vehicle
-                                    </span>
-                                </div>
-
-                                {/* Showroom preview with browse arrows */}
-                                <div style={{ position: 'relative' }}>
-                                    <CarShowroom car={selectedCar} cos={cosmetics} />
-                                    <NavArrow dir="prev" onClick={() => cycleCar(-1)} />
-                                    <NavArrow dir="next" onClick={() => cycleCar(1)} />
-                                </div>
-
-                                {/* Thumbnail picker strip */}
-                                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                                    {CAR_TYPES.map(car => (
-                                        <CarThumb
-                                            key={car.key}
-                                            car={car}
-                                            cos={cosmeticsFor(garage, car.key)}
-                                            active={carType === car.key}
-                                            onSelect={k => { setCarType(k); soundManager.playClick(); }}
-                                        />
-                                    ))}
-                                </div>
-
-                                <button
-                                    onClick={() => { setStep('customize'); soundManager.playClick(); }}
-                                    style={{
-                                        padding: '10px', borderRadius: '8px', cursor: 'pointer',
-                                        fontFamily: 'inherit', fontWeight: 700, fontSize: '0.85rem',
-                                        textTransform: 'uppercase', letterSpacing: '1px',
-                                        background: 'rgba(232,160,48,0.1)', border: '1px solid #e8a030',
-                                        color: '#e8a030',
-                                    }}
-                                >🎨 Customize</button>
-
-                                <CarStats carKey={carType} />
-
-                                {tab === 'solo' && (
-                                    <div className="flex-col" style={{ gap: '0.5rem', background: 'rgba(0,0,0,0.2)', padding: '10px 12px', borderRadius: '8px' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <label className="text-dim" style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                                                Bots: <span style={{ color: '#e8a030', fontWeight: 700 }}>{botCount}</span>
-                                            </label>
-                                            <input
-                                                type="range" min="1" max="7" value={botCount}
-                                                onChange={e => setBotCount(Number(e.target.value))}
-                                                style={{ width: '120px', accentColor: '#e8a030' }}
-                                            />
-                                        </div>
-                                        <div className="flex-row" style={{ gap: '4px', flexWrap: 'wrap' }}>
-                                            {DIFFICULTIES.map(d => (
-                                                <button
-                                                    key={d.key}
-                                                    onClick={() => { setBotDifficulty(d.key); soundManager.playClick(); }}
-                                                    style={{
-                                                        flex: '1 1 0', minWidth: '55px', padding: '5px 2px',
-                                                        background: botDifficulty === d.key ? 'rgba(255,255,255,0.06)' : 'transparent',
-                                                        border: `1px solid ${botDifficulty === d.key ? '#ddd' : 'rgba(255,255,255,0.08)'}`,
-                                                        color: botDifficulty === d.key ? d.color : '#8899aa',
-                                                        borderRadius: '4px', cursor: 'pointer',
-                                                        fontFamily: 'inherit', fontSize: '0.7rem', fontWeight: 600,
-                                                        transition: 'all 0.2s',
-                                                    }}
-                                                >
-                                                    {d.label}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-
-                                <button className="btn" onClick={tab === 'multi' && rid.trim() ? joinRoom : createRoom} style={{ marginTop: '0.25rem' }}>
-                                    {tab === 'solo' ? 'START GAME' : (rid.trim() ? 'JOIN ROOM' : 'CREATE ROOM')}
-                                </button>
-                            </>
-                        )}
-
-                        {step === 'customize' && (
-                            <CustomizeScreen
-                                car={selectedCar}
-                                cos={cosmetics}
-                                onChange={updateCosmetics}
-                                onDone={() => setStep('car')}
-                            />
-                        )}
-                    </>
-                ) : (
-                    <div className="flex-col">
-                        <div className="center flex-col" style={{ gap: '4px' }}>
-                            <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '2px', color: '#8899aa' }}>Room ID</div>
-                            <div style={{
-                                fontSize: 'clamp(1.2rem,4vw,2rem)', letterSpacing: '3px',
-                                fontWeight: 'bold', fontFamily: 'monospace', color: '#fff',
-                            }}>{room.id}</div>
-                            <div style={{ fontSize: '0.65rem', color: '#8899aa' }}>Share this code with friends</div>
-                            <button onClick={shareInvite} style={{
-                                marginTop: '6px', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer',
-                                fontFamily: 'inherit', fontWeight: 700, fontSize: '0.8rem', letterSpacing: '0.5px',
-                                background: 'rgba(232,160,48,0.12)', border: '1px solid #e8a030', color: '#e8a030',
-                            }}>{copied ? '✓ Link copied' : '🔗 Invite friends'}</button>
-                        </div>
-
-                        <div style={{
-                            background: 'rgba(0,0,0,0.25)', padding: '0.75rem',
-                            borderRadius: '8px', minHeight: '100px',
-                        }}>
-                            <h4 style={{ marginBottom: '0.5rem', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8899aa' }}>
-                                Players ({humansInRoom})
-                            </h4>
-                            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                                {room.players?.filter(p => !p.isBot).map(p => {
-                                    const carInfo = CAR_TYPES.find(c => c.key === p.carType);
-                                    return (
-                                        <li key={p.id} className="flex-row" style={{
-                                            padding: '5px 0',
-                                            borderBottom: '1px solid rgba(255,255,255,0.04)',
-                                            gap: '8px',
-                                        }}>
-                                            <div style={{
-                                                width: '8px', height: '8px', borderRadius: '50%',
-                                                background: p.isBot ? '#dd8822' : (p.alive ? '#33cc77' : '#555'),
-                                            }} />
-                                            <span style={{ color: p.id === socket.id ? '#fff' : '#bbb', fontSize: '0.85rem', flex: 1 }}>
-                                                {p.name}
-                                                {p.id === socket.id ? ' (You)' : ''}
-                                                {p.id === room.hostId ? ' 👑' : ''}
-                                                {p.isBot ? ' [BOT]' : ''}
-                                                {p.connected === false && <span style={{ color: '#facc15', fontSize: '0.72rem' }}> · reconnecting…</span>}
-                                            </span>
-                                            {carInfo && (
-                                                <span style={{ fontSize: '0.75rem', color: carInfo.color }}>
-                                                    {carInfo.emoji} {carInfo.name}
-                                                </span>
-                                            )}
-                                        </li>
-                                    );
-                                })}
-                            </ul>
-                        </div>
-
-                        {/* Match length — the host picks how many rounds */}
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                            <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8899aa' }}>Rounds</span>
-                            <div style={{ display: 'flex', gap: 4 }}>
-                                {[1, 3, 5].map(n => {
-                                    const isHost = room.hostId === socket.id;
-                                    const on = (room.maxRounds || 3) === n;
-                                    return (
-                                        <button key={n} disabled={!isHost}
-                                            onClick={() => { socket.emit('updateSettings', { roomId: room.id, settings: { maxRounds: n } }); soundManager.playClick(); }}
-                                            style={{
-                                                minWidth: 44, padding: '6px 10px', borderRadius: 6, fontFamily: 'inherit', fontWeight: 700,
-                                                cursor: isHost ? 'pointer' : 'default', opacity: isHost || on ? 1 : 0.45,
-                                                background: on ? 'rgba(232,160,48,0.16)' : 'transparent',
-                                                border: `1px solid ${on ? '#e8a030' : 'rgba(255,255,255,0.1)'}`,
-                                                color: on ? '#e8a030' : '#8899aa',
-                                            }}>{n}</button>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                        <div style={{ fontSize: '0.72rem', color: '#8899aa', textAlign: 'center', lineHeight: 1.4 }}>
-                            Push rivals through the fence. Last car standing wins the round —
-                            after {room.maxRounds || 3} round{(room.maxRounds || 3) > 1 ? 's' : ''}, the most points wins the match.
-                        </div>
-
-                        {/* Fill empty seats with bots (host only) */}
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                            <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8899aa' }}>Bots</span>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                {room.hostId === socket.id && (
-                                    <StepBtn label="−" onClick={() => setBots(botsInRoom - 1)} disabled={botsInRoom <= 0} />
-                                )}
-                                <span style={{ minWidth: 22, textAlign: 'center', fontWeight: 800, color: '#e8a030' }}>{botsInRoom}</span>
-                                {room.hostId === socket.id && (
-                                    <StepBtn label="+" onClick={() => setBots(botsInRoom + 1)} disabled={humansInRoom + botsInRoom >= 8} />
-                                )}
-                            </div>
-                        </div>
-
-                        {room.hostId === socket.id ? (
-                            <>
-                                <button className="btn" onClick={startMatch} disabled={!canStart} style={{ marginTop: '0.25rem' }}>
-                                    START MATCH
-                                </button>
-                                {!canStart && (
-                                    <div style={{ textAlign: 'center', color: '#facc15', fontSize: '0.78rem', marginTop: -6 }}>
-                                        Need at least 2 players — invite a friend or add a bot
-                                    </div>
-                                )}
-                            </>
-                        ) : (
-                            <div style={{ textAlign: 'center', color: '#e8a030', fontSize: '0.85rem', padding: '10px' }}>
-                                Waiting for the host to start…
-                            </div>
-                        )}
-                        <button className="btn btn-secondary" onClick={leaveRoom} style={{ fontSize: '0.8rem', padding: '8px' }}>
-                            LEAVE ROOM
-                        </button>
+                    <Label>Or join a friend</Label>
+                    <div style={{ display: 'flex', gap: 10 }}>
+                        <input value={rid} onChange={e => setRid(e.target.value.toUpperCase())} placeholder="ROOM CODE" maxLength={6}
+                            onKeyDown={e => e.key === 'Enter' && joinRoom()} className="gtitle" style={{
+                                flex: 1, minWidth: 0, background: 'rgba(0,0,0,0.35)', border: '2px solid rgba(255,255,255,0.12)',
+                                borderRadius: 12, color: '#fff', fontSize: '1.2rem', letterSpacing: 4, textAlign: 'center', padding: '10px',
+                                outline: 'none',
+                            }} />
+                        <button className="gbtn green" onClick={joinRoom} disabled={!connected} style={{ fontSize: '1rem', padding: '10px 18px' }}>JOIN</button>
                     </div>
-                )}
-            </div>
-        </div>
+                </Sheet>
+            )}
+
+            {sheet === 'bots' && !room && (
+                <Sheet title="Race vs Bots" onClose={() => setSheet(null)}>
+                    {errLine}
+                    <Label>Opponents</Label>
+                    <div style={{ display: 'flex', justifyContent: 'center' }}>
+                        <Stepper value={botCount} min={1} max={7} onChange={setBotCount} />
+                    </div>
+                    <Label>Difficulty</Label>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                        {DIFFICULTIES.map(d => (
+                            <Pill key={d.key} color={d.color} active={botDifficulty === d.key}
+                                onClick={() => { setBotDifficulty(d.key); click(); }}>{d.label}</Pill>
+                        ))}
+                    </div>
+                    <button className="gbtn yellow" onClick={() => createRoom('bots')} disabled={!connected}
+                        style={{ width: '100%', fontSize: '1.2rem', padding: 14, marginTop: 18 }}>▶ START RACE</button>
+                </Sheet>
+            )}
+
+            {sheet === 'settings' && (
+                <Sheet title="Settings" onClose={() => setSheet(null)}>
+                    <Label>Your name</Label>
+                    <input value={name} onChange={e => setName(e.target.value.slice(0, 16))} maxLength={16} placeholder="Player" style={{
+                        width: '100%', boxSizing: 'border-box', background: 'rgba(0,0,0,0.35)', border: '2px solid rgba(255,255,255,0.12)',
+                        borderRadius: 12, color: '#fff', fontSize: '1rem', padding: '10px 12px', outline: 'none', fontFamily: 'inherit',
+                    }} />
+                    <Label>Audio</Label>
+                    <Toggle label="🔊 Sound effects" on={settings.sound} onChange={v => setSetting('sound', v)} />
+                    <Toggle label="🎵 Music" on={settings.music} onChange={v => setSetting('music', v)} />
+                    <Toggle label="📳 Vibration" on={settings.vibration} onChange={v => setSetting('vibration', v)} />
+                    <Label>Touch controls</Label>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                        {[['buttons', 'Pedals'], ['joystick', 'Joystick']].map(([k, l]) => (
+                            <Pill key={k} active={ctrlMode === k} onClick={() => {
+                                setCtrlMode(k); click();
+                                try { localStorage.setItem('dasharena.ctrlmode', k); } catch (_) { /* ignore */ }
+                            }}>{l}</Pill>
+                        ))}
+                    </div>
+                    <button className="gbtn yellow" onClick={() => { click(); setSheet(null); }}
+                        style={{ width: '100%', fontSize: '1rem', padding: 12, marginTop: 18 }}>DONE</button>
+                </Sheet>
+            )}
+        </>
     );
 }
