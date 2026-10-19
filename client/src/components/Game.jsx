@@ -9,17 +9,20 @@ const EDGE_RIGHT = 'max(12px, env(safe-area-inset-right))';
 const EDGE_LEFT = 'max(12px, env(safe-area-inset-left))';
 const EDGE_BOTTOM = 'max(16px, env(safe-area-inset-bottom))';
 
-export default function Game({ room, player, onBack, onToRoom }) {
+export default function Game({ room, player, onBack, onToRoom, startInfo }) {
+    // A matchStart that fired just before this screen mounted (only if fresh)
+    const early = startInfo && Date.now() - startInfo.at < 1500 ? startInfo : null;
     const [snapshot, setSnapshot] = useState({ players: [], powerups: [], elapsed: 0 });
     const [rankings, setRankings] = useState([]);
     const [matchData, setMatchData] = useState(null);
-    const [countdown, setCountdown] = useState(0);
-    const [round, setRound] = useState(0);
-    const [maxRounds, setMaxRounds] = useState(room?.maxRounds || 3);
+    const [countdown, setCountdown] = useState(early ? early.count : 0);
+    const [round, setRound] = useState(early ? early.round : (room?.round || 0));
+    const [maxRounds, setMaxRounds] = useState(early?.maxRounds || room?.maxRounds || 3);
     const [feed, setFeed] = useState([]);          // elimination feed
     const [banner, setBanner] = useState(null);    // big arena announcements
     const [myElim, setMyElim] = useState(null);
     const [nextIn, setNextIn] = useState(0);
+    const [goFlash, setGoFlash] = useState(false);
     const [spectateId, setSpectateId] = useState(null);
     const [soloOut, setSoloOut] = useState(null);     // solo run ended → heading back to lobby
     const followRef = useRef(null);
@@ -60,16 +63,35 @@ export default function Game({ room, player, onBack, onToRoom }) {
 
     // ─── Socket listeners ───────────────────────────────────────────────
     useEffect(() => {
-        socket.on('snapshot', snap => setSnapshot(snap));
+        soundManager.playMusic('race');
 
-        socket.on('collision', ({ impact, ids }) => {
+        // Engine + tyre audio follow your own car's measured speed
+        const prev = { x: 0, y: 0, t: 0, v: 0 };
+        socket.on('snapshot', snap => {
+            setSnapshot(snap);
+            const me = snap.players?.find(p => p.id === socket.id);
+            if (!me || !me.alive) { soundManager.stopEngine(); prev.t = 0; return; }
+            soundManager.startEngine(me.carType);
+            if (prev.t && snap.timestamp > prev.t) {
+                const v = Math.hypot(me.x - prev.x, me.y - prev.y) / ((snap.timestamp - prev.t) / 1000);
+                if (v < 3000) prev.v += (v - prev.v) * 0.3;
+            }
+            prev.x = me.x; prev.y = me.y; prev.t = snap.timestamp;
+            soundManager.updateEngine(prev.v, inputRef.current.forward, me.isDashing || me.speedMult > 1);
+            soundManager.setSkid(me.skid ? Math.min(1, 0.35 + prev.v / 500) : 0);
+        });
+
+        socket.on('collision', ({ impact, ids, type }) => {
             // Only your own car's hits (or the car you're watching) make noise
             const focus = followRef.current || socket.id;
-            if (Array.isArray(ids) && ids.includes(focus)) soundManager.playCrash(impact);
+            if (!Array.isArray(ids) || !ids.includes(focus)) return;
+            soundManager.playCrash(impact, type);
+            if (ids.includes(socket.id)) soundManager.vibrate(Math.min(250, 30 + impact / 4));
         });
 
         socket.on('soloOut', (data) => {
             setSoloOut(data);
+            soundManager.stopEngine();
             soundManager.playLose();
             setTimeout(() => (onToRoom || onBack)(), 2800);
         });
@@ -79,7 +101,8 @@ export default function Game({ room, player, onBack, onToRoom }) {
         });
 
         socket.on('playerEliminated', ({ id, name, by, byId, reason }) => {
-            soundManager.playElimination();
+            if (id === socket.id) { soundManager.playElimination(); soundManager.vibrate([80, 60, 160]); }
+            else if (byId === socket.id) soundManager.playPowerup();   // your knock-out!
             const key = `${id}-${Date.now()}`;
             setFeed(f => [...f.slice(-3), { key, id, name, by, byId, reason }]);
             setTimeout(() => setFeed(f => f.filter(e => e.key !== key)), 4500);
@@ -91,14 +114,18 @@ export default function Game({ room, player, onBack, onToRoom }) {
                 ? { title: 'SUDDEN DEATH', sub: 'The fence is electric — touch it and you\'re out!', color: '#4fd8ff' }
                 : { title: 'ARENA SHRINKING', sub: 'Stay inside the fence', color: '#ffb347' };
             setBanner(b);
-            soundManager.playCountdown();
+            soundManager.playArenaWarning();
             setTimeout(() => setBanner(cur => (cur === b ? null : cur)), 2800);
         });
 
         socket.on('countdown', ({ count }) => {
             setCountdown(count);
             if (count > 0) soundManager.playCountdown();
-            if (count === 0) soundManager.playGo();
+            if (count === 0) {
+                soundManager.playGo();
+                setGoFlash(true);
+                setTimeout(() => setGoFlash(false), 800);
+            }
         });
 
         socket.on('matchStart', ({ count, round: r, maxRounds: mr }) => {
@@ -118,6 +145,7 @@ export default function Game({ room, player, onBack, onToRoom }) {
         });
 
         socket.on('matchEnd', (data) => {
+            soundManager.stopEngine();
             setRankings(data.rankings || []);
             setMatchData(data);
             setCountdown(0);
@@ -138,6 +166,7 @@ export default function Game({ room, player, onBack, onToRoom }) {
             socket.off('countdown');
             socket.off('matchStart');
             socket.off('matchEnd');
+            soundManager.stopEngine();
         };
     }, []);
 
@@ -447,14 +476,35 @@ export default function Game({ room, player, onBack, onToRoom }) {
                 )}
             </div>
 
+            {/* GO! flash when the lights go out */}
+            {goFlash && (
+                <div className="full-screen center" style={{ zIndex: 9, pointerEvents: 'none' }}>
+                    <div className="gtitle" style={{
+                        fontSize: '6rem', color: '#4dff88', animation: 'goPop 0.8s ease-out forwards',
+                        textShadow: '0 6px 0 rgba(0,0,0,0.45), 0 0 50px rgba(60,255,120,0.6)',
+                    }}>GO!</div>
+                </div>
+            )}
+
             {/* ─── Countdown Overlay ────────────────────────────────────── */}
             {countdown > 0 && (
                 <div className="full-screen center" style={{ zIndex: 9, pointerEvents: 'none' }}>
                     <div style={{ textAlign: 'center' }}>
-                        <div style={{
-                            fontSize: '8rem', fontWeight: 'bold', color: '#00ddff',
-                            textShadow: '0 0 60px rgba(0,200,255,0.7), 0 0 120px rgba(0,200,255,0.3)',
-                            animation: 'countdownPulse 1s ease-out'
+                        {/* Start lights: one more lights up each second */}
+                        <div className="gpanel" style={{ display: 'inline-flex', gap: 12, padding: '10px 16px', borderRadius: 40, marginBottom: 10 }}>
+                            {[0, 1, 2].map(i => {
+                                const lit = i < 4 - countdown;
+                                return <div key={i} style={{
+                                    width: 34, height: 34, borderRadius: '50%',
+                                    background: lit ? 'radial-gradient(circle at 40% 35%, #ff8a8a, #e01e2e 60%)' : '#2a1416',
+                                    boxShadow: lit ? '0 0 22px #ff2b3d, inset 0 -3px 6px rgba(0,0,0,0.4)' : 'inset 0 2px 6px rgba(0,0,0,0.6)',
+                                }} />;
+                            })}
+                        </div>
+                        <div key={countdown} className="gtitle" style={{
+                            fontSize: '6.5rem', color: '#fff', lineHeight: 1,
+                            textShadow: '0 6px 0 rgba(0,0,0,0.45), 0 0 50px rgba(255,60,60,0.55)',
+                            animation: 'countdownNum 1s ease-out'
                         }}>
                             {countdown}
                         </div>
@@ -473,14 +523,12 @@ export default function Game({ room, player, onBack, onToRoom }) {
             {/* ─── Round End / Match End Screen ─────────────────────────── */}
             {rankings.length > 0 && matchData && (
                 <div className="full-screen center" style={{ background: 'rgba(0,0,0,0.85)', zIndex: 10, pointerEvents: 'auto' }}>
-                    <div style={{
-                        background: 'rgba(10, 15, 30, 0.95)', padding: '2rem 2.5rem',
-                        borderRadius: '16px', border: '2px solid rgba(0,200,255,0.3)',
-                        boxShadow: '0 0 60px rgba(0,200,255,0.15)',
-                        maxWidth: '500px', width: '90vw', maxHeight: '90vh', overflowY: 'auto'
+                    <div className="gpanel" style={{
+                        padding: touchUI ? '1.1rem 1.2rem' : '2rem 2.5rem',
+                        maxWidth: '500px', width: '90vw', maxHeight: '90dvh', overflowY: 'auto', boxSizing: 'border-box',
                     }}>
-                        <h1 style={{
-                            textAlign: 'center', fontSize: '2.5rem', margin: '0 0 0.5rem 0',
+                        <h1 className="gtitle" style={{
+                            textAlign: 'center', fontSize: touchUI ? '1.7rem' : '2.3rem', margin: '0 0 0.5rem 0',
                             color: matchData.matchOver ? 'gold' : '#00ddff',
                             textShadow: matchData.matchOver ? '0 0 30px rgba(255,215,0,0.5)' : '0 0 30px rgba(0,200,255,0.4)'
                         }}>
@@ -568,10 +616,10 @@ export default function Game({ room, player, onBack, onToRoom }) {
                         <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
                             {matchData.matchOver ? (
                                 <>
-                                    <button className="btn" onClick={() => { socket.emit('playAgain', { roomId: room?.id }); (onToRoom || onBack)(); }}>
+                                    <button className="gbtn yellow" onClick={() => { socket.emit('playAgain', { roomId: room?.id }); (onToRoom || onBack)(); }}>
                                         PLAY AGAIN
                                     </button>
-                                    <button className="btn btn-secondary" onClick={() => { socket.emit('leaveRoom', { roomId: room?.id }); onBack(); }}>LOBBY</button>
+                                    <button className="gbtn dark" onClick={() => { socket.emit('leaveRoom', { roomId: room?.id }); onBack(); }}>LOBBY</button>
                                 </>
                             ) : (
                                 <div style={{ color: '#666', fontSize: '0.9rem', padding: '8px' }}>

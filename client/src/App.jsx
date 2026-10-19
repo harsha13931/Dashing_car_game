@@ -4,6 +4,7 @@ import Game from './components/Game';
 import Splash from './components/Splash';
 import { socket } from './net/socket';
 import { getToken, saveRoom, clearRoom, savedRoom } from './net/session';
+import { soundManager } from './utils/SoundManager';
 
 export default function App() {
     const [gameState, setGameState] = useState('splash');
@@ -12,6 +13,7 @@ export default function App() {
     const [connected, setConnected] = useState(socket.connected);
     const [connError, setConnError] = useState('');
     const [notice, setNotice] = useState('');
+    const [startInfo, setStartInfo] = useState(null);   // matchStart that arrived before Game mounted
     const noticeTimer = useRef(null);
 
     const showNotice = (text) => {
@@ -52,7 +54,10 @@ export default function App() {
             setRoom(r);
             if (r.running && gameState === 'lobby') setGameState('playing');
         };
-        const onMatchStart = () => { if (gameState !== 'splash') setGameState('playing'); };
+        const onMatchStart = (info) => {
+            setStartInfo({ ...info, at: Date.now() });
+            if (gameState !== 'splash') setGameState('playing');
+        };
         const onNotice = ({ text }) => showNotice(text);
 
         socket.on('connect', onConnect);
@@ -76,6 +81,11 @@ export default function App() {
     }, [gameState]);
 
     // Leaving for good (LEAVE / LOBBY buttons) forgets the room
+    // Menu music in the lobby; Game starts the race track itself
+    useEffect(() => {
+        if (gameState === 'lobby') soundManager.playMusic('menu');
+    }, [gameState]);
+
     const handleBackToLobby = () => {
         clearRoom();
         setGameState('lobby');
@@ -107,6 +117,7 @@ export default function App() {
                     player={player}
                     onBack={handleBackToLobby}
                     onToRoom={() => setGameState('lobby')}
+                    startInfo={startInfo}
                 />
             )}
 
