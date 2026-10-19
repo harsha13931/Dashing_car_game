@@ -1,27 +1,11 @@
+# Single free web service: builds the client and serves both the game
+# website and the multiplayer (Socket.IO) server from one origin.
 services:
-  # Server Service
   - type: web
-    name: car-dash-server
+    name: dash-arena
     env: node
     plan: free
-    region: singapore # Change if needed
-    buildCommand: cd server && npm install
-    startCommand: cd server && node index.js
-    envVars:
-      - key: PORT
-        value: 10000
-
-  # Client Service
-  - type: static
-    name: car-dash-client
-    env: static
-    plan: free
-    region: singapore # Change if needed
-    buildCommand: cd client && npm install && npm run build
-    staticPublishPath: client/dist
-    envVars:
-      - key: VITE_SERVER_URL
-        fromService:
-          type: web
-          name: car-dash-server
-          property: url
+    region: singapore          # change to a nearer region if you like
+    buildCommand: npm install   # runs postinstall → installs client/server + builds client
+    startCommand: npm start     # node server/index.js (serves client/dist + Socket.IO)
+    autoDeploy: true
