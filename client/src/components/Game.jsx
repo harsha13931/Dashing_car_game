@@ -96,7 +96,7 @@ export default function Game({ room, player, onBack }) {
 
     // ─── Input resolution ───────────────────────────────────────────────
     function resolveInput() {
-        let forward = 0, steer = 0, dash = false, shoot = false;
+        let forward = 0, steer = 0, dash = false, shoot = false, drop = false;
 
         // Keyboard
         if (activeKeys.current.has('ArrowUp') || activeKeys.current.has('KeyW')) forward += 1;
@@ -105,6 +105,7 @@ export default function Game({ room, player, onBack }) {
         if (activeKeys.current.has('ArrowRight') || activeKeys.current.has('KeyD')) steer += 1;
         if (activeKeys.current.has('Space')) dash = true;
         if (activeKeys.current.has('ShiftLeft') || activeKeys.current.has('ShiftRight') || activeKeys.current.has('KeyF')) shoot = true;
+        if (activeKeys.current.has('KeyQ') || activeKeys.current.has('KeyE')) drop = true;
 
         // Joystick
         forward += joystickInput.current.forward;
@@ -113,6 +114,7 @@ export default function Game({ room, player, onBack }) {
         // Buttons
         if (activeButtons.current.has('nitro')) dash = true;
         if (activeButtons.current.has('shoot')) shoot = true;
+        if (activeButtons.current.has('drop')) drop = true;
         if (activeButtons.current.has('up')) forward += 1;
         if (activeButtons.current.has('down')) forward -= 0.5;
         if (activeButtons.current.has('left')) steer -= 1;
@@ -122,10 +124,11 @@ export default function Game({ room, player, onBack }) {
         steer = Math.max(-1, Math.min(1, steer));
 
         if (inputRef.current.forward !== forward || inputRef.current.steer !== steer ||
-            inputRef.current.dash !== dash || inputRef.current.shoot !== shoot) {
+            inputRef.current.dash !== dash || inputRef.current.shoot !== shoot ||
+            inputRef.current.drop !== drop) {
             if (shoot && !inputRef.current.shoot) soundManager.playShoot();
             if (dash && !inputRef.current.dash) soundManager.playDash();
-            inputRef.current = { forward, steer, dash, shoot };
+            inputRef.current = { forward, steer, dash, shoot, drop };
             seqRef.current++;
             socket.emit('input', { roomId: room?.id, input: { ...inputRef.current }, seq: seqRef.current });
         }
@@ -482,6 +485,10 @@ export default function Game({ room, player, onBack }) {
                         right: 'max(18px, env(safe-area-inset-right))',
                         pointerEvents: 'auto', display: 'flex', gap: '14px', alignItems: 'flex-end', zIndex: 6,
                     }}>
+                        {me?.weapon && (
+                            <ActionButton label={me.weapon === 'oil' ? 'OIL' : 'FLIP'} color="#b24aff"
+                                action="drop" onAction={handleBtn} size="clamp(52px,14vw,72px)" />
+                        )}
                         <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
                             cooldown={me?.shootCooldown} maxCooldown={0.8} size="clamp(56px,15vw,78px)" />
                         <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
@@ -511,7 +518,20 @@ export default function Game({ room, player, onBack }) {
                     background: 'rgba(0,0,0,0.45)', borderRadius: 10, padding: '6px 14px',
                     color: '#9fb0c3', fontSize: '0.72rem', letterSpacing: '0.3px',
                 }}>
-                    WASD / Arrows to drive · Space: Nitro · Shift / F: Shoot
+                    WASD / Arrows to drive · Space: Nitro · Shift / F: Shoot · Q: Drop trap
+                </div>
+            )}
+
+            {/* Held trap indicator (desktop) */}
+            {!touchUI && me?.weapon && (
+                <div style={{
+                    position: 'absolute', bottom: 44, left: '50%', transform: 'translateX(-50%)',
+                    zIndex: 6, pointerEvents: 'none',
+                    background: 'rgba(178,74,255,0.18)', border: '1px solid #b24aff',
+                    color: '#d9b3ff', borderRadius: 10, padding: '5px 12px',
+                    fontSize: '0.78rem', fontWeight: 700, letterSpacing: '0.3px',
+                }}>
+                    Trap ready: {me.weapon === 'oil' ? 'OIL SLICK' : 'REVERSE'} — press Q to drop
                 </div>
             )}
         </div>

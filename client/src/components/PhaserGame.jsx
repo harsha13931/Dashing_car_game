@@ -255,6 +255,7 @@ class ArenaScene extends Phaser.Scene {
         this.tireMarks = [];
 
         // Dynamic layers
+        this.hazardGfx = this.add.graphics().setDepth(-3);
         this.powerupGfx = this.add.graphics().setDepth(1);
         this.projectileGfx = this.add.graphics().setDepth(2);
 
@@ -482,6 +483,21 @@ class ArenaScene extends Phaser.Scene {
         // Camera follows the local player
         const me = this.carSprites.get(this.store.localId);
         if (me) this.cameras.main.centerOn(me.x, me.y);
+
+        // Dropped trap hazards (oil slick / reverse pad)
+        const hg = this.hazardGfx;
+        hg.clear();
+        for (const hz of (snap.hazards || [])) {
+            if (hz.type === 'oil') {
+                hg.fillStyle(0x0a0a0a, 0.55); hg.fillEllipse(hz.x, hz.y, 96, 66);
+                hg.fillStyle(0x3b2f22, 0.5); hg.fillEllipse(hz.x, hz.y, 62, 42);
+                hg.fillStyle(0x6b5a3a, 0.4); hg.fillEllipse(hz.x - 8, hz.y - 6, 22, 14);
+            } else {
+                hg.fillStyle(0xa24aff, 0.18); hg.fillCircle(hz.x, hz.y, 36);
+                hg.lineStyle(3, 0xa24aff, 0.85); hg.strokeCircle(hz.x, hz.y, 30);
+                hg.lineStyle(2, 0xd9b3ff, 0.6); hg.strokeCircle(hz.x, hz.y, 18);
+            }
+        }
 
         // Powerups (distinct icon sprites with a gentle pulse)
         const puSeen = new Set();
