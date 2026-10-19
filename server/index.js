@@ -100,8 +100,10 @@ function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 's
         shieldTimer: 0,
         megaTimer: 0,
         speedTimer: 0,
-        inputs: { forward: 0, steer: 0, dash: false, shoot: false },
+        inputs: { forward: 0, steer: 0, dash: false, shoot: false, drop: false },
         lastProcessedInput: 0,
+        weapon: null,
+        dropCooldown: 0,
         slip: 0,
         scale: 1,
         isDashing: false,
@@ -138,6 +140,7 @@ function createRoom(hostId) {
         players: {},
         powerups: [],
         projectiles: [],
+        hazards: [],
         running: false,
         countdown: 0,
         lastTick: Date.now(),
@@ -220,7 +223,9 @@ function resetPlayers(room) {
         p.isDashing = false;
         p.dashCooldown = 0;
         p.shootCooldown = 0;
-        p.inputs = { forward: 0, steer: 0, dash: false, shoot: false };
+        p.weapon = null;
+        p.dropCooldown = 0;
+        p.inputs = { forward: 0, steer: 0, dash: false, shoot: false, drop: false };
         if (p.botState) {
             p.botState.targetId = null;
             p.botState.thinkTimer = 0;
@@ -453,7 +458,7 @@ function updateBotAI(bot, room, now) {
     // Flip dodge direction periodically
     if (Math.random() < 0.02) bs.dodgeDir = -bs.dodgeDir || 1;
 
-    bot.inputs = { forward, steer, dash, shoot };
+    bot.inputs = { forward, steer, dash, shoot, drop: !!bot.weapon && Math.random() < 0.03 };
 }
 
 // ─── Physics helpers ───────────────────────────────────────────────────────
@@ -474,12 +479,10 @@ function applyPowerup(type, player, room) {
             player.megaTimer = 7;
             break;
         case 'Oil':
-            player.slip = 3.0;
+            player.weapon = 'oil';      // held trap; deploy with Drop
             break;
         case 'Reverse':
-            player.angle += Math.PI;
-            player.vx *= -0.5;
-            player.vy *= -0.5;
+            player.weapon = 'reverse';  // held trap; deploy with Drop
             break;
         case 'Magnet':
             // Pull nearby powerups toward player for 3 seconds (handled in tick)
@@ -578,6 +581,7 @@ io.on('connection', socket => {
         room.countdown = 3;
         room.powerups = [];
         room.projectiles = [];
+        room.hazards = [];
         room.matchStartTime = Date.now() + 3000;
         room.eliminationOrder = [];
         room._cdlast = 0;
@@ -608,7 +612,8 @@ io.on('connection', socket => {
             forward: Math.max(-1, Math.min(1, Number(input?.forward) || 0)),
             steer: Math.max(-1, Math.min(1, Number(input?.steer) || 0)),
             dash: !!input?.dash,
-            shoot: !!input?.shoot
+            shoot: !!input?.shoot,
+            drop: !!input?.drop
         };
         p.lastProcessedInput = seq || (p.lastProcessedInput + 1);
     });
@@ -699,6 +704,25 @@ setInterval(() => {
                 p.dashesUsed++;
             }
 
+            // Drop a held trap weapon (Oil / Reverse) behind the car
+            if (inp.drop && p.weapon && p.dropCooldown <= 0) {
+                const bx = p.x - Math.cos(p.angle) * 42;
+                const by = p.y - Math.sin(p.angle) * 42;
+                const isOil = p.weapon === 'oil';
+                room.hazards.push({
+                    id: uuidv4().slice(0, 6),
+                    type: p.weapon,
+                    x: bx, y: by,
+                    ownerId: p.id,
+                    arm: now + 400,
+                    expires: now + (isOil ? 8000 : 10000),
+                    radius: isOil ? 46 : 34,
+                });
+                if (room.hazards.length > 40) room.hazards.shift();
+                p.weapon = null;
+                p.dropCooldown = 0.4;
+            }
+
             // Shoot
             if (inp.shoot && p.shootCooldown <= 0 && room.projectiles.length < MAX_PROJECTILES) {
                 const speed = 1500;
@@ -755,6 +779,7 @@ setInterval(() => {
 
             p.dashCooldown = Math.max(0, p.dashCooldown - DT);
             p.shootCooldown = Math.max(0, p.shootCooldown - DT);
+            p.dropCooldown = Math.max(0, p.dropCooldown - DT);
 
             // Arena boundary
             const distFromCenter = Math.hypot(p.x, p.y);
@@ -872,6 +897,32 @@ setInterval(() => {
             }
         }
 
+        // ─── Trap hazards (dropped Oil / Reverse) ──────────────────────
+        if (room.hazards && room.hazards.length) {
+            const live = [];
+            for (const hz of room.hazards) {
+                if (now > hz.expires) continue;
+                let consumed = false;
+                for (const p of alive) {
+                    if (now < hz.arm && p.id === hz.ownerId) continue;
+                    const rr = hz.radius + 25 * p.scale * p.carStats.size;
+                    if (Math.hypot(p.x - hz.x, p.y - hz.y) < rr) {
+                        if (hz.type === 'oil') {
+                            p.slip = Math.max(p.slip, 2.5);
+                        } else { // reverse
+                            p.angle += Math.PI;
+                            p.vx *= -0.5; p.vy *= -0.5;
+                            io.to(room.id).emit('collision', { impact: 60, x: hz.x, y: hz.y, type: 'reverse' });
+                            consumed = true;
+                            break;
+                        }
+                    }
+                }
+                if (!consumed) live.push(hz);
+            }
+            room.hazards = live;
+        }
+
         // ─── Broadcast snapshot ────────────────────────────────────────
         io.to(room.id).emit('snapshot', {
             players: Object.values(room.players).map(p => ({
@@ -883,10 +934,12 @@ setInterval(() => {
                 dashCooldown: p.dashCooldown, shootCooldown: p.shootCooldown,
                 speedMult: p.speedMult, slip: p.slip,
                 magnetTimer: p.magnetTimer || 0,
+                weapon: p.weapon || null,
                 kills: p.kills
             })),
             powerups: room.powerups,
             projectiles: room.projectiles,
+            hazards: room.hazards.map(h => ({ id: h.id, type: h.type, x: h.x, y: h.y })),
             timestamp: Date.now(),
             elapsed: Math.max(0, Date.now() - room.matchStartTime),
             dangerZone: DANGER_ZONE,
@@ -941,6 +994,7 @@ setInterval(() => {
                     rooms[roomId].countdown = 3;
                     rooms[roomId].powerups = [];
                     rooms[roomId].projectiles = [];
+                    rooms[roomId].hazards = [];
                     rooms[roomId].round++;
                     rooms[roomId].matchStartTime = Date.now() + 3000;
                     rooms[roomId].eliminationOrder = [];
