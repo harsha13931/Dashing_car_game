@@ -26,7 +26,7 @@ function StatBar({ value, max = 5, color }) {
             {Array.from({ length: max }, (_, i) => (
                 <div key={i} style={{
                     width: '14px', height: '6px', borderRadius: '2px',
-                    background: i < value ? color : 'rgba(255,255,255,0.1)',
+                    background: i < value ? color : 'rgba(255,255,255,0.08)',
                     transition: 'background 0.2s',
                 }} />
             ))}
@@ -42,23 +42,22 @@ function CarCard({ car, selected, onSelect }) {
             style={{
                 display: 'flex', flexDirection: 'column', alignItems: 'center',
                 padding: '10px 8px', gap: '4px',
-                background: active ? `${car.color}18` : 'rgba(255,255,255,0.03)',
-                border: `2px solid ${active ? car.color : 'rgba(255,255,255,0.08)'}`,
+                background: active ? 'rgba(232, 160, 48, 0.08)' : 'rgba(255,255,255,0.02)',
+                border: `2px solid ${active ? '#e8a030' : 'rgba(255,255,255,0.06)'}`,
                 borderRadius: '10px', cursor: 'pointer',
                 transition: 'all 0.2s', fontFamily: 'inherit',
                 minWidth: '90px', position: 'relative',
-                boxShadow: active ? `0 0 20px ${car.color}33` : 'none',
             }}
         >
             <span style={{ fontSize: '1.8rem' }}>{car.emoji}</span>
             <span style={{
-                color: active ? car.color : '#ccc', fontWeight: 700,
+                color: active ? car.color : '#999', fontWeight: 700,
                 fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.5px',
             }}>{car.name}</span>
             {active && (
                 <div style={{
                     position: 'absolute', top: '-6px', right: '-6px',
-                    background: car.color, borderRadius: '50%',
+                    background: '#e8a030', borderRadius: '50%',
                     width: '16px', height: '16px', display: 'flex',
                     alignItems: 'center', justifyContent: 'center',
                     fontSize: '10px', color: '#000', fontWeight: 900,
@@ -73,17 +72,17 @@ function CarStats({ carKey }) {
     if (!car) return null;
     return (
         <div style={{
-            background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '10px 12px',
+            background: 'rgba(0,0,0,0.25)', borderRadius: '8px', padding: '10px 12px',
             display: 'grid', gridTemplateColumns: '70px 1fr', gap: '4px 8px', alignItems: 'center',
         }}>
             <span className="text-dim" style={{ fontSize: '0.7rem' }}>SPEED</span>
-            <StatBar value={car.speed} color="#00ff88" />
+            <StatBar value={car.speed} color="#33cc77" />
             <span className="text-dim" style={{ fontSize: '0.7rem' }}>HANDLING</span>
-            <StatBar value={car.handling} color="#00ddff" />
+            <StatBar value={car.handling} color="#3399dd" />
             <span className="text-dim" style={{ fontSize: '0.7rem' }}>POWER</span>
-            <StatBar value={car.power} color="#ff4444" />
+            <StatBar value={car.power} color="#dd3344" />
             <span className="text-dim" style={{ fontSize: '0.7rem' }}>WEIGHT</span>
-            <StatBar value={car.weight} color="#ffaa00" />
+            <StatBar value={car.weight} color="#dd8822" />
             <div style={{ gridColumn: '1 / -1', textAlign: 'center', color: car.color, fontSize: '0.75rem', fontStyle: 'italic', marginTop: '2px' }}>
                 {car.desc}
             </div>
@@ -151,28 +150,29 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
         <div className="center full-screen" style={{ overflow: 'auto', padding: '1rem' }}>
             <div className="lobby-panel panel flex-col" style={{
                 width: '100%', maxWidth: room ? '440px' : '520px', padding: '1.5rem 1.5rem 2rem',
-                border: '1px solid rgba(0,240,255,0.1)',
-                boxShadow: '0 0 60px rgba(0,0,0,0.5)',
+                border: '1px solid rgba(255,255,255,0.06)',
+                boxShadow: '0 8px 60px rgba(0,0,0,0.6)',
             }}>
-                <h1 className="text-accent" style={{
+                <h1 style={{
                     textAlign: 'center', fontSize: 'clamp(1.6rem,5vw,2.5rem)',
                     marginBottom: '0.15rem', letterSpacing: '3px',
+                    color: '#e8a030', fontWeight: 800,
                 }}>DASH ARENA</h1>
-                <p className="text-dim" style={{ textAlign: 'center', fontSize: '0.8rem', margin: 0 }}>
+                <p style={{ textAlign: 'center', fontSize: '0.8rem', margin: 0, color: '#8899aa' }}>
                     Knock opponents off the arena to win
                 </p>
 
                 {!connected && (
                     <div style={{
                         color: '#facc15', textAlign: 'center',
-                        background: 'rgba(250,204,21,0.1)', padding: '0.5rem', borderRadius: '4px',
+                        background: 'rgba(250,204,21,0.08)', padding: '0.5rem', borderRadius: '6px',
                     }}>Connecting to server...</div>
                 )}
 
                 {error && (
                     <div style={{
-                        color: '#ff0055', textAlign: 'center',
-                        background: 'rgba(255,0,85,0.1)', padding: '0.5rem', borderRadius: '4px',
+                        color: '#ff4466', textAlign: 'center',
+                        background: 'rgba(255,68,102,0.08)', padding: '0.5rem', borderRadius: '6px',
                     }}>{error}</div>
                 )}
 
@@ -199,12 +199,12 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
                                             onClick={() => { setTab(t); soundManager.playClick(); }}
                                             style={{
                                                 flex: 1, padding: '10px',
-                                                background: tab === t ? 'rgba(0,240,255,0.15)' : 'transparent',
-                                                border: `1px solid ${tab === t ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}`,
-                                                color: tab === t ? 'var(--accent)' : 'var(--text-dim)',
+                                                background: tab === t ? 'rgba(232, 160, 48, 0.12)' : 'transparent',
+                                                border: `1px solid ${tab === t ? '#e8a030' : 'rgba(255,255,255,0.08)'}`,
+                                                color: tab === t ? '#e8a030' : '#8899aa',
                                                 cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600,
                                                 fontSize: '0.85rem', textTransform: 'uppercase',
-                                                borderRadius: t === 'solo' ? '4px 0 0 4px' : '0 4px 4px 0',
+                                                borderRadius: t === 'solo' ? '6px 0 0 6px' : '0 6px 6px 0',
                                                 transition: 'all 0.2s',
                                             }}
                                         >
@@ -236,12 +236,12 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
                                     <button
                                         onClick={() => { setStep('name'); soundManager.playClick(); }}
                                         style={{
-                                            background: 'none', border: 'none', color: 'var(--text-dim)',
+                                            background: 'none', border: 'none', color: '#8899aa',
                                             cursor: 'pointer', fontSize: '1.2rem', padding: '4px',
                                             fontFamily: 'inherit',
                                         }}
                                     >←</button>
-                                    <span className="text-dim" style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                                    <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8899aa' }}>
                                         Select Your Vehicle
                                     </span>
                                 </div>
@@ -263,12 +263,12 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
                                     <div className="flex-col" style={{ gap: '0.5rem', background: 'rgba(0,0,0,0.2)', padding: '10px 12px', borderRadius: '8px' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                             <label className="text-dim" style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                                                Bots: <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{botCount}</span>
+                                                Bots: <span style={{ color: '#e8a030', fontWeight: 700 }}>{botCount}</span>
                                             </label>
                                             <input
                                                 type="range" min="1" max="7" value={botCount}
                                                 onChange={e => setBotCount(Number(e.target.value))}
-                                                style={{ width: '120px', accentColor: 'var(--accent)' }}
+                                                style={{ width: '120px', accentColor: '#e8a030' }}
                                             />
                                         </div>
                                         <div className="flex-row" style={{ gap: '4px', flexWrap: 'wrap' }}>
@@ -278,9 +278,9 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
                                                     onClick={() => { setBotDifficulty(d.key); soundManager.playClick(); }}
                                                     style={{
                                                         flex: '1 1 0', minWidth: '55px', padding: '5px 2px',
-                                                        background: botDifficulty === d.key ? `${d.color}22` : 'transparent',
-                                                        border: `1px solid ${botDifficulty === d.key ? d.color : 'rgba(255,255,255,0.1)'}`,
-                                                        color: botDifficulty === d.key ? d.color : 'var(--text-dim)',
+                                                        background: botDifficulty === d.key ? 'rgba(255,255,255,0.06)' : 'transparent',
+                                                        border: `1px solid ${botDifficulty === d.key ? '#ddd' : 'rgba(255,255,255,0.08)'}`,
+                                                        color: botDifficulty === d.key ? d.color : '#8899aa',
                                                         borderRadius: '4px', cursor: 'pointer',
                                                         fontFamily: 'inherit', fontSize: '0.7rem', fontWeight: 600,
                                                         transition: 'all 0.2s',
@@ -302,19 +302,19 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
                 ) : (
                     <div className="flex-col">
                         <div className="center flex-col" style={{ gap: '4px' }}>
-                            <div className="text-dim" style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '2px' }}>Room ID</div>
-                            <div className="text-accent" style={{
+                            <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '2px', color: '#8899aa' }}>Room ID</div>
+                            <div style={{
                                 fontSize: 'clamp(1.2rem,4vw,2rem)', letterSpacing: '3px',
-                                fontWeight: 'bold', fontFamily: 'monospace',
+                                fontWeight: 'bold', fontFamily: 'monospace', color: '#fff',
                             }}>{room.id}</div>
-                            <div className="text-dim" style={{ fontSize: '0.65rem' }}>Share this code with friends</div>
+                            <div style={{ fontSize: '0.65rem', color: '#8899aa' }}>Share this code with friends</div>
                         </div>
 
                         <div style={{
-                            background: 'rgba(0,0,0,0.3)', padding: '0.75rem',
+                            background: 'rgba(0,0,0,0.25)', padding: '0.75rem',
                             borderRadius: '8px', minHeight: '100px',
                         }}>
-                            <h4 className="text-dim" style={{ marginBottom: '0.5rem', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                            <h4 style={{ marginBottom: '0.5rem', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8899aa' }}>
                                 Players ({room.players?.length || 0})
                             </h4>
                             <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
@@ -323,15 +323,14 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
                                     return (
                                         <li key={p.id} className="flex-row" style={{
                                             padding: '5px 0',
-                                            borderBottom: '1px solid rgba(255,255,255,0.05)',
+                                            borderBottom: '1px solid rgba(255,255,255,0.04)',
                                             gap: '8px',
                                         }}>
                                             <div style={{
                                                 width: '8px', height: '8px', borderRadius: '50%',
-                                                background: p.isBot ? '#facc15' : (p.alive ? '#00f0ff' : '#555'),
-                                                boxShadow: p.alive ? '0 0 6px currentColor' : 'none',
+                                                background: p.isBot ? '#dd8822' : (p.alive ? '#33cc77' : '#555'),
                                             }} />
-                                            <span style={{ color: p.id === player?.id ? 'white' : '#aaa', fontSize: '0.85rem', flex: 1 }}>
+                                            <span style={{ color: p.id === player?.id ? '#fff' : '#bbb', fontSize: '0.85rem', flex: 1 }}>
                                                 {p.name}
                                                 {p.id === player?.id ? ' (You)' : ''}
                                                 {p.isBot ? ' [BOT]' : ''}
