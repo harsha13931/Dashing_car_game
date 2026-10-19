@@ -67,6 +67,25 @@ export function saveCosmetics(c) {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(c)); } catch (e) { /* ignore */ }
 }
 
+// ─── Garage: every car keeps its own paint / hat / trail ───────────────────
+const GARAGE_KEY = 'dasharena.garage';
+
+export function loadGarage() {
+    try {
+        const g = JSON.parse(localStorage.getItem(GARAGE_KEY) || '{}');
+        if (g && typeof g === 'object') return g;
+    } catch (e) { /* ignore */ }
+    return {};
+}
+
+export function saveGarage(g) {
+    try { localStorage.setItem(GARAGE_KEY, JSON.stringify(g)); } catch (e) { /* ignore */ }
+}
+
+export function cosmeticsFor(garage, carKey) {
+    return { ...DEFAULT_COSMETICS, ...((garage && garage[carKey]) || {}) };
+}
+
 export function paintColor(key) {
     return (PAINTS.find(p => p.key === key) || PAINTS[0]).color;
 }

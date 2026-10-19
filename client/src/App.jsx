@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import Lobby from './components/Lobby';
 import Game from './components/Game';
+import Splash from './components/Splash';
 import { socket } from './net/socket';
 
 export default function App() {
-    const [gameState, setGameState] = useState('lobby');
+    const [gameState, setGameState] = useState('splash');
     const [room, setRoom] = useState(null);
     const [player, setPlayer] = useState(null);
     const [connected, setConnected] = useState(socket.connected);
@@ -17,7 +18,7 @@ export default function App() {
 
         socket.on('roomUpdate', r => {
             setRoom(r);
-            if (r.running && gameState === 'lobby') {
+            if (r.running && gameState !== 'playing') {
                 setGameState('playing');
             }
         });
@@ -39,6 +40,10 @@ export default function App() {
 
     return (
         <div className="app">
+            {gameState === 'splash' && (
+                <Splash connected={connected} onDone={() => setGameState('lobby')} />
+            )}
+
             {gameState === 'lobby' && (
                 <Lobby
                     room={room}

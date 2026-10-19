@@ -1,0 +1,13 @@
+{
+  "name": "Dash Arena",
+  "short_name": "Dash Arena",
+  "description": "Multiplayer car battle — knock opponents out of the arena.",
+  "start_url": "/",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#0a0d13",
+  "theme_color": "#0a0d13",
+  "icons": [
+    { "src": "/favicon.ico", "sizes": "48x48", "type": "image/x-icon" }
+  ]
+}
