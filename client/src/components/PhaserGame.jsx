@@ -48,6 +48,36 @@ function makeAsphaltCanvas() {
     return c;
 }
 
+// Soft radial puff (white → transparent), tinted per emitter.
+function makePuffCanvas() {
+    const s = 64;
+    const c = document.createElement('canvas');
+    c.width = c.height = s;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.4, 'rgba(255,255,255,0.6)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, s, s);
+    return c;
+}
+
+// Small hard spark dot.
+function makeSparkCanvas() {
+    const s = 16;
+    const c = document.createElement('canvas');
+    c.width = c.height = s;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.6, 'rgba(255,255,255,0.9)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, s, s);
+    return c;
+}
+
 class ArenaScene extends Phaser.Scene {
     constructor(store) {
         super('arena');
@@ -74,20 +104,60 @@ class ArenaScene extends Phaser.Scene {
         this.arenaGfx = this.add.graphics().setDepth(-5);
         this.lastArenaR = 0;
 
+        // Tire marks layer (persistent-ish, drawn under cars)
+        this.tireGfx = this.add.graphics().setDepth(-4);
+        this.tireMarks = [];
+
         // Dynamic layers
         this.powerupGfx = this.add.graphics().setDepth(1);
         this.projectileGfx = this.add.graphics().setDepth(2);
+
+        // ─── Particle textures + emitters ───────────────────────────────
+        this.textures.addCanvas('puff', makePuffCanvas());
+        this.textures.addCanvas('spark', makeSparkCanvas());
+
+        this.smoke = this.add.particles(0, 0, 'puff', {
+            speed: { min: 8, max: 45 }, angle: { min: 0, max: 360 },
+            scale: { start: 0.45, end: 1.3 }, alpha: { start: 0.45, end: 0 },
+            lifespan: 650, tint: 0x9a9a9a, blendMode: 'NORMAL', emitting: false,
+        }).setDepth(3);
+
+        this.flame = this.add.particles(0, 0, 'puff', {
+            speed: { min: 20, max: 90 }, angle: { min: 0, max: 360 },
+            scale: { start: 0.6, end: 0 }, alpha: { start: 0.9, end: 0 },
+            lifespan: 340, tint: [0xffe18a, 0xff9d2a, 0xff5a1a], blendMode: 'ADD', emitting: false,
+        }).setDepth(3);
+
+        this.spark = this.add.particles(0, 0, 'spark', {
+            speed: { min: 90, max: 300 }, angle: { min: 0, max: 360 },
+            scale: { start: 0.7, end: 0 }, alpha: { start: 1, end: 0 },
+            lifespan: 420, gravityY: 320, tint: [0xfff1a0, 0xffbb33, 0xff8822],
+            blendMode: 'ADD', emitting: false,
+        }).setDepth(8);
 
         // Camera
         this.cameras.main.setBackgroundColor('#0a0d13');
         this.cameras.main.setZoom(0.85);
 
-        // Screen shake on collisions
-        this._shake = (p) => {
-            const intensity = Math.min(0.02, (p?.impact || 10) / 1500);
+        // ─── Event FX ────────────────────────────────────────────────────
+        this._onCollision = (p) => {
+            const intensity = Math.min(0.022, (p?.impact || 10) / 1400);
             this.cameras.main.shake(180, intensity);
+            if (p && typeof p.x === 'number') {
+                const n = Math.min(24, 6 + Math.round((p.impact || 10) / 6));
+                this.spark.emitParticleAt(p.x, p.y, n);
+                this.smoke.emitParticleAt(p.x, p.y, 4);
+            }
         };
-        socket.on('collision', this._shake);
+        this._onEliminated = ({ id }) => {
+            const e = this.carSprites.get(id);
+            if (!e) return;
+            this.spark.emitParticleAt(e.x, e.y, 28);
+            this.smoke.emitParticleAt(e.x, e.y, 22);
+            this.cameras.main.shake(220, 0.012);
+        };
+        socket.on('collision', this._onCollision);
+        socket.on('playerEliminated', this._onEliminated);
     }
 
     drawArena(radius, danger) {
@@ -165,7 +235,45 @@ class ArenaScene extends Phaser.Scene {
             e.label.setText(p.id === this.store.localId ? `★ ${p.name || ''}` : (p.name || ''));
             e.label.setColor(p.id === this.store.localId ? '#8fe3ff' : '#ffffff');
             e.label.setVisible(p.alive);
+
+            // ─── Exhaust / smoke / tire marks ───────────────────────────
+            if (p.alive) {
+                const rearLen = 24 * sizeMult;
+                const rx = e.x - Math.cos(e.a) * rearLen;
+                const ry = e.y - Math.sin(e.a) * rearLen;
+
+                if (p.isDashing) {
+                    this.flame.emitParticleAt(rx, ry, 3);
+                    if (this._tick % 2 === 0) this.smoke.emitParticleAt(rx, ry, 1);
+                } else if (p.speedMult > 1 && this._tick % 2 === 0) {
+                    this.flame.emitParticleAt(rx, ry, 1);
+                }
+
+                // Tire marks while dashing or slipping
+                if (p.isDashing || p.slip > 0) {
+                    const perp = e.a + Math.PI / 2;
+                    const w = 5 * sizeMult;
+                    this.tireMarks.push({
+                        x1: rx + Math.cos(perp) * w, y1: ry + Math.sin(perp) * w,
+                        x2: rx - Math.cos(perp) * w, y2: ry - Math.sin(perp) * w,
+                        life: 1,
+                    });
+                }
+            }
         }
+
+        // Fade + draw tire marks
+        this._tick = (this._tick || 0) + 1;
+        const tg = this.tireGfx;
+        tg.clear();
+        for (let i = this.tireMarks.length - 1; i >= 0; i--) {
+            const m = this.tireMarks[i];
+            m.life -= 0.004;
+            if (m.life <= 0) { this.tireMarks.splice(i, 1); continue; }
+            tg.lineStyle(3, 0x000000, 0.18 * m.life);
+            tg.beginPath(); tg.moveTo(m.x1, m.y1); tg.lineTo(m.x2, m.y2); tg.strokePath();
+        }
+        if (this.tireMarks.length > 600) this.tireMarks.splice(0, this.tireMarks.length - 600);
 
         // Remove sprites for players no longer present
         for (const [id, e] of this.carSprites) {
@@ -199,7 +307,8 @@ class ArenaScene extends Phaser.Scene {
     }
 
     shutdownScene() {
-        socket.off('collision', this._shake);
+        socket.off('collision', this._onCollision);
+        socket.off('playerEliminated', this._onEliminated);
     }
 }
 
