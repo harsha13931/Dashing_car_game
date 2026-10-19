@@ -8,6 +8,7 @@ import {
     paintColor, drawTopper,
 } from '../cosmetics';
 import { CAR_VARIANT, tintedCar, preloadCarArt } from '../carArt';
+import { getToken, saveRoom, clearRoom } from '../net/session';
 
 const DIFFICULTIES = [
     { key: 'easy', label: 'Easy', color: '#4ade80', desc: 'Relaxed bots' },
@@ -373,6 +374,16 @@ function CustomizeScreen({ car, cos, onChange, onDone }) {
     );
 }
 
+function StepBtn({ label, onClick, disabled }) {
+    return (
+        <button onClick={onClick} disabled={disabled} style={{
+            width: 34, height: 34, borderRadius: 8, fontFamily: 'inherit', fontWeight: 800, fontSize: '1.1rem',
+            background: 'rgba(232,160,48,0.1)', border: '1px solid rgba(232,160,48,0.6)', color: '#e8a030',
+            cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.35 : 1,
+        }}>{label}</button>
+    );
+}
+
 function CarStats({ carKey }) {
     const car = CAR_TYPES.find(c => c.key === carKey);
     if (!car) return null;
@@ -442,8 +453,10 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
             botDifficulty,
             carType,
             cosmetics,
+            token: getToken(),
         }, (res) => {
             if (res.error) return setError(res.error);
+            if (res.roomId) saveRoom(res.roomId);
             setRoom(res && res.roomId ? { id: res.roomId } : null);
             setPlayer(res.player);
             setError('');
@@ -455,8 +468,9 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
         soundManager.playClick();
         socket.connect();
         const code = rid.trim().toUpperCase();
-        socket.emit('joinRoom', { roomId: code, name, carType, cosmetics }, (res) => {
+        socket.emit('joinRoom', { roomId: code, name, carType, cosmetics, token: getToken() }, (res) => {
             if (res && res.error) { setError(res.error); return; }
+            saveRoom(res.roomId || code);
             setRoom({ id: res.roomId || code });
             if (res.player) setPlayer(res.player);
             setError('');
@@ -484,6 +498,7 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
 
     function leaveRoom() {
         socket.emit('leaveRoom', { roomId: room.id });
+        clearRoom();
         setRoom(null);
         setStep('name');
     }
@@ -503,6 +518,15 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
     }
 
     const selectedCar = CAR_TYPES.find(c => c.key === carType) || CAR_TYPES[0];
+
+    // Room seats: humans + bots must make at least two cars
+    const humansInRoom = room?.players?.filter(p => !p.isBot).length || 0;
+    const botsInRoom = room?.settings?.botCount || 0;
+    const canStart = humansInRoom + botsInRoom >= 2;
+    const setBots = (n) => {
+        socket.emit('updateSettings', { roomId: room.id, settings: { botCount: Math.max(0, Math.min(8 - humansInRoom, n)) } });
+        soundManager.playClick();
+    };
 
     return (
         <div className="center full-screen" style={{ overflow: 'auto', padding: '1rem' }}>
@@ -715,10 +739,10 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
                             borderRadius: '8px', minHeight: '100px',
                         }}>
                             <h4 style={{ marginBottom: '0.5rem', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8899aa' }}>
-                                Players ({room.players?.length || 0})
+                                Players ({humansInRoom})
                             </h4>
                             <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                                {room.players?.map(p => {
+                                {room.players?.filter(p => !p.isBot).map(p => {
                                     const carInfo = CAR_TYPES.find(c => c.key === p.carType);
                                     return (
                                         <li key={p.id} className="flex-row" style={{
@@ -730,10 +754,12 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
                                                 width: '8px', height: '8px', borderRadius: '50%',
                                                 background: p.isBot ? '#dd8822' : (p.alive ? '#33cc77' : '#555'),
                                             }} />
-                                            <span style={{ color: p.id === player?.id ? '#fff' : '#bbb', fontSize: '0.85rem', flex: 1 }}>
+                                            <span style={{ color: p.id === socket.id ? '#fff' : '#bbb', fontSize: '0.85rem', flex: 1 }}>
                                                 {p.name}
-                                                {p.id === player?.id ? ' (You)' : ''}
+                                                {p.id === socket.id ? ' (You)' : ''}
+                                                {p.id === room.hostId ? ' 👑' : ''}
                                                 {p.isBot ? ' [BOT]' : ''}
+                                                {p.connected === false && <span style={{ color: '#facc15', fontSize: '0.72rem' }}> · reconnecting…</span>}
                                             </span>
                                             {carInfo && (
                                                 <span style={{ fontSize: '0.75rem', color: carInfo.color }}>
@@ -772,10 +798,31 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
                             after {room.maxRounds || 3} round{(room.maxRounds || 3) > 1 ? 's' : ''}, the most points wins the match.
                         </div>
 
+                        {/* Fill empty seats with bots (host only) */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                            <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8899aa' }}>Bots</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                {room.hostId === socket.id && (
+                                    <StepBtn label="−" onClick={() => setBots(botsInRoom - 1)} disabled={botsInRoom <= 0} />
+                                )}
+                                <span style={{ minWidth: 22, textAlign: 'center', fontWeight: 800, color: '#e8a030' }}>{botsInRoom}</span>
+                                {room.hostId === socket.id && (
+                                    <StepBtn label="+" onClick={() => setBots(botsInRoom + 1)} disabled={humansInRoom + botsInRoom >= 8} />
+                                )}
+                            </div>
+                        </div>
+
                         {room.hostId === socket.id ? (
-                            <button className="btn" onClick={startMatch} style={{ marginTop: '0.25rem' }}>
-                                START MATCH
-                            </button>
+                            <>
+                                <button className="btn" onClick={startMatch} disabled={!canStart} style={{ marginTop: '0.25rem' }}>
+                                    START MATCH
+                                </button>
+                                {!canStart && (
+                                    <div style={{ textAlign: 'center', color: '#facc15', fontSize: '0.78rem', marginTop: -6 }}>
+                                        Need at least 2 players — invite a friend or add a bot
+                                    </div>
+                                )}
+                            </>
                         ) : (
                             <div style={{ textAlign: 'center', color: '#e8a030', fontSize: '0.85rem', padding: '10px' }}>
                                 Waiting for the host to start…
