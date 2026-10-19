@@ -2,12 +2,16 @@ class SoundManager {
     constructor() {
         this.ctx = new (window.AudioContext || window.webkitAudioContext)();
         this.masterGain = this.ctx.createGain();
-        this.masterGain.gain.value = 0.3; // Low volume to prevent ear damage
+        this.masterGain.gain.value = 0.3;
         this.masterGain.connect(this.ctx.destination);
     }
 
-    playTone(freq, type, duration, startTime = 0) {
+    resume() {
         if (this.ctx.state === 'suspended') this.ctx.resume();
+    }
+
+    playTone(freq, type, duration, startTime = 0) {
+        this.resume();
         const osc = this.ctx.createOscillator();
         const gain = this.ctx.createGain();
         osc.type = type;
@@ -21,9 +25,8 @@ class SoundManager {
     }
 
     playCrash(intensity = 1) {
-        // Noise burst for crash
-        if (this.ctx.state === 'suspended') this.ctx.resume();
-        const bufferSize = this.ctx.sampleRate * 0.2; // 200ms
+        this.resume();
+        const bufferSize = this.ctx.sampleRate * 0.2;
         const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
         const data = buffer.getChannelData(0);
         for (let i = 0; i < bufferSize; i++) {
@@ -32,7 +35,7 @@ class SoundManager {
         const noise = this.ctx.createBufferSource();
         noise.buffer = buffer;
         const gain = this.ctx.createGain();
-        gain.gain.value = Math.min(1, intensity / 200); // Scale volume by intensity
+        gain.gain.value = Math.min(1, intensity / 200);
         gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.2);
         noise.connect(gain);
         gain.connect(this.masterGain);
@@ -40,24 +43,50 @@ class SoundManager {
     }
 
     playPowerup() {
-        // Ascending chime
         this.playTone(440, 'sine', 0.1, 0);
         this.playTone(554, 'sine', 0.1, 0.1);
         this.playTone(659, 'sine', 0.2, 0.2);
     }
 
     playElimination() {
-        // Descending low tone
         this.playTone(150, 'sawtooth', 0.5);
         this.playTone(100, 'sawtooth', 0.5, 0.1);
     }
 
+    playClick() {
+        this.playTone(800, 'sine', 0.05);
+    }
+
+    playShoot() {
+        this.playTone(200, 'sawtooth', 0.08);
+        this.playTone(400, 'square', 0.06, 0.02);
+    }
+
+    playDash() {
+        this.playTone(120, 'sawtooth', 0.15);
+        this.playTone(180, 'square', 0.1, 0.05);
+    }
+
+    playCountdown() {
+        this.playTone(600, 'square', 0.1);
+    }
+
+    playGo() {
+        this.playTone(800, 'square', 0.12);
+        this.playTone(1000, 'square', 0.15, 0.12);
+    }
+
     playWin() {
-        // Victory fanfare
         this.playTone(523.25, 'square', 0.2, 0);
         this.playTone(523.25, 'square', 0.2, 0.2);
         this.playTone(523.25, 'square', 0.2, 0.4);
         this.playTone(659.25, 'square', 0.6, 0.6);
+    }
+
+    playLose() {
+        this.playTone(300, 'sawtooth', 0.3, 0);
+        this.playTone(220, 'sawtooth', 0.3, 0.2);
+        this.playTone(150, 'sawtooth', 0.5, 0.4);
     }
 }
 
