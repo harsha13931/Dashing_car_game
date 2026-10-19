@@ -4,10 +4,48 @@ const ARENA_RADIUS = 1000;
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 
+// Simple particle system
+class ParticlePool {
+    constructor(max = 200) {
+        this.particles = [];
+        this.max = max;
+    }
+    emit(x, y, count, color, speed = 3, life = 30) {
+        for (let i = 0; i < count && this.particles.length < this.max; i++) {
+            const a = Math.random() * Math.PI * 2;
+            const v = Math.random() * speed + 1;
+            this.particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life, maxLife: life, color });
+        }
+    }
+    update() {
+        for (let i = this.particles.length - 1; i >= 0; i--) {
+            const p = this.particles[i];
+            p.x += p.vx; p.y += p.vy;
+            p.vx *= 0.96; p.vy *= 0.96;
+            p.life--;
+            if (p.life <= 0) this.particles.splice(i, 1);
+        }
+    }
+    draw(ctx) {
+        for (const p of this.particles) {
+            const alpha = p.life / p.maxLife;
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 2 + alpha * 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+}
+
 export default function CanvasRenderer({ snapshot, localId }) {
     const cvsRef = useRef();
     const prevRef = useRef({ players: [], powerups: [], time: Date.now() });
-    const cameraRef = useRef({ x: 0, y: 0 }); // Store camera position for smoothing
+    const cameraRef = useRef({ x: 0, y: 0 });
+    const particlesRef = useRef(new ParticlePool());
+    const prevAliveRef = useRef(new Set()); // track who was alive for death particles
 
     useEffect(() => {
         const cvs = cvsRef.current;
@@ -169,21 +207,23 @@ export default function CanvasRenderer({ snapshot, localId }) {
                 ctx.save();
                 ctx.translate(proj.x, proj.y);
 
+                // Glow must be set BEFORE fill to take effect
+                ctx.shadowBlur = 12;
+                ctx.shadowColor = '#ff5500';
+
                 // Cannonball look
                 ctx.beginPath();
                 ctx.arc(0, 0, 8, 0, Math.PI * 2);
-                ctx.fillStyle = '#111';
+                ctx.fillStyle = '#222';
                 ctx.fill();
 
-                // Shine
+                // Shine highlight
+                ctx.shadowBlur = 0;
                 ctx.beginPath();
                 ctx.arc(-2, -2, 3, 0, Math.PI * 2);
-                ctx.fillStyle = '#555';
+                ctx.fillStyle = 'rgba(255,200,100,0.6)';
                 ctx.fill();
 
-                // Glow/Trail
-                ctx.shadowBlur = 10;
-                ctx.shadowColor = '#ff5500';
                 ctx.restore();
             });
 
@@ -253,12 +293,24 @@ export default function CanvasRenderer({ snapshot, localId }) {
                 ctx.closePath();
                 ctx.fill();
 
-                ctx.shadowBlur = 5;
+                // Wheels
+                ctx.shadowBlur = 0;
                 ctx.fillStyle = '#222';
                 ctx.fillRect(-8, -11, 6, 3);
                 ctx.fillRect(-8, 8, 6, 3);
                 ctx.fillRect(6, -11, 6, 3);
                 ctx.fillRect(6, 8, 6, 3);
+
+                // Headlights
+                if (p.alive) {
+                    ctx.save();
+                    ctx.shadowBlur = 8;
+                    ctx.shadowColor = '#ffffaa';
+                    ctx.fillStyle = '#ffffcc';
+                    ctx.beginPath(); ctx.arc(11, -4, 2, 0, Math.PI * 2); ctx.fill();
+                    ctx.beginPath(); ctx.arc(11, 4, 2, 0, Math.PI * 2); ctx.fill();
+                    ctx.restore();
+                }
 
                 ctx.save();
                 ctx.scale(1 / scale, 1 / scale);
@@ -272,7 +324,75 @@ export default function CanvasRenderer({ snapshot, localId }) {
                 ctx.restore();
             });
 
+            // --- Particle effects ---
+            const particles = particlesRef.current;
+
+            // Spawn dash particles for dashing players
+            players.forEach(p => {
+                if (p.alive && p.isDashing) {
+                    particles.emit(p.ix - Math.cos(p.ia) * 15, p.iy - Math.sin(p.ia) * 15, 2, '#ffaa00', 4, 20);
+                }
+            });
+
+            // Death explosion: compare previous alive set
+            const currentAlive = new Set(players.filter(p => p.alive).map(p => p.id));
+            for (const id of prevAliveRef.current) {
+                if (!currentAlive.has(id)) {
+                    const dead = players.find(p => p.id === id);
+                    if (dead) particles.emit(dead.ix, dead.iy, 40, '#ff0055', 6, 40);
+                }
+            }
+            prevAliveRef.current = currentAlive;
+
+            particles.update();
+            particles.draw(ctx);
+
             ctx.restore(); // End camera transform
+
+            // --- Minimap ---
+            const mmSize = 140;
+            const mmPad = 15;
+            const mmX = mmPad;
+            const mmY = window.innerHeight - mmSize - mmPad;
+            const mmScale = mmSize / (ARENA_RADIUS * 2.2);
+
+            ctx.save();
+            ctx.globalAlpha = 0.7;
+            ctx.fillStyle = 'rgba(5,5,16,0.8)';
+            ctx.strokeStyle = 'rgba(0,240,255,0.3)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(mmX + mmSize / 2, mmY + mmSize / 2, mmSize / 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            // Arena ring on minimap
+            ctx.beginPath();
+            ctx.arc(mmX + mmSize / 2, mmY + mmSize / 2, ARENA_RADIUS * mmScale, 0, Math.PI * 2);
+            ctx.strokeStyle = 'rgba(0,240,255,0.15)';
+            ctx.stroke();
+
+            // Draw players on minimap
+            players.forEach(p => {
+                if (!p.alive) return;
+                const mx = mmX + mmSize / 2 + p.ix * mmScale;
+                const my = mmY + mmSize / 2 + p.iy * mmScale;
+                ctx.fillStyle = p.id === localId ? '#00f0ff' : '#ff0055';
+                ctx.beginPath();
+                ctx.arc(mx, my, 3, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Powerups on minimap
+            (snapshot.powerups || []).forEach(pu => {
+                const mx = mmX + mmSize / 2 + pu.x * mmScale;
+                const my = mmY + mmSize / 2 + pu.y * mmScale;
+                ctx.fillStyle = 'rgba(255,215,0,0.6)';
+                ctx.beginPath();
+                ctx.arc(mx, my, 2, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            ctx.restore();
 
             // Spectator Overlay
             if (spectating && target) {

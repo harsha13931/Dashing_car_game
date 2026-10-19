@@ -52,6 +52,16 @@ class SoundManager {
         this.playTone(100, 'sawtooth', 0.5, 0.1);
     }
 
+    playClick() {
+        this.playTone(800, 'sine', 0.05);
+    }
+
+    playShoot() {
+        // Short sharp noise for projectile fire
+        this.playTone(200, 'sawtooth', 0.08);
+        this.playTone(400, 'square', 0.06, 0.02);
+    }
+
     playWin() {
         // Victory fanfare
         this.playTone(523.25, 'square', 0.2, 0);

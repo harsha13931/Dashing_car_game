@@ -97,7 +97,8 @@ io.on('connection', socket => {
         if (!room) return;
         delete room.players[socket.id];
         socket.leave(room.id);
-        io.to(room.id).emit('roomUpdate', roomSummary(room));
+        if (Object.keys(room.players).length === 0) delete rooms[roomId];
+        else io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
 
     socket.on('startMatch', ({ roomId }) => {
@@ -145,7 +146,8 @@ io.on('connection', socket => {
             const room = rooms[roomId];
             if (room.players[socket.id]) {
                 delete room.players[socket.id];
-                io.to(roomId).emit('roomUpdate', roomSummary(room));
+                if (Object.keys(room.players).length === 0) delete rooms[roomId];
+                else io.to(roomId).emit('roomUpdate', roomSummary(room));
             }
         }
     });
@@ -393,6 +395,7 @@ setInterval(() => {
         const snapshot = {
             players: Object.values(room.players).map(p => ({
                 id: p.id,
+                name: p.name,
                 x: p.x,
                 y: p.y,
                 angle: p.angle,
@@ -406,7 +409,7 @@ setInterval(() => {
             powerups: room.powerups,
             projectiles: room.projectiles, // Send projectiles
             timestamp: Date.now(),
-            elapsed: room.running ? Date.now() - room.matchStartTime : 0
+            elapsed: room.running ? Math.max(0, Date.now() - room.matchStartTime) : 0
         };
         io.to(room.id).emit('snapshot', snapshot);
 

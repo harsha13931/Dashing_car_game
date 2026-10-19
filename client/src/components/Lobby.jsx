@@ -33,6 +33,12 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
         socket.emit('startMatch', { roomId: room.id });
     }
 
+    function leaveRoom() {
+        // Tell the server so this player stops counting toward the match
+        socket.emit('leaveRoom', { roomId: room.id });
+        setRoom(null);
+    }
+
     return (
         <div className="center full-screen">
             <div className="panel flex-col" style={{ width: '400px', padding: '2rem', background: 'rgba(15, 23, 36, 0.95)', border: '1px solid rgba(0, 240, 255, 0.1)', boxShadow: '0 0 40px rgba(0,0,0,0.5)' }}>
@@ -82,7 +88,7 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
                         </div>
 
                         <button className="btn" onClick={startMatch} style={{ marginTop: '1rem' }}>START MATCH</button>
-                        <button className="btn btn-secondary" onClick={() => setRoom(null)} style={{ fontSize: '0.8rem', padding: '8px' }}>LEAVE ROOM</button>
+                        <button className="btn btn-secondary" onClick={leaveRoom} style={{ fontSize: '0.8rem', padding: '8px' }}>LEAVE ROOM</button>
                     </div>
                 )}
             </div>

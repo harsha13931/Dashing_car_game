@@ -8,6 +8,7 @@ import { soundManager } from '../utils/SoundManager';
 export default function Game({ room, player, onBack }) {
     const [snapshot, setSnapshot] = useState({ players: [], powerups: [], elapsed: 0 });
     const [rankings, setRankings] = useState([]);
+    const [countdown, setCountdown] = useState(0);
 
     // Input state
     const inputRef = useRef({ forward: 0, steer: 0, dash: false, shoot: false });
@@ -29,8 +30,10 @@ export default function Game({ room, player, onBack }) {
             if (playerId === socket.id) soundManager.playPowerup();
         });
         socket.on('playerEliminated', () => soundManager.playElimination());
+        socket.on('countdown', ({ count }) => setCountdown(count));
         socket.on('matchEnd', ({ rankings }) => {
             setRankings(rankings || []);
+            setCountdown(0);
             soundManager.playWin();
         });
         return () => {
@@ -38,6 +41,7 @@ export default function Game({ room, player, onBack }) {
             socket.off('collision');
             socket.off('powerupCollected');
             socket.off('playerEliminated');
+            socket.off('countdown');
             socket.off('matchEnd');
         };
     }, []);
@@ -81,6 +85,8 @@ export default function Game({ room, player, onBack }) {
 
         // Update ref and send if changed
         if (inputRef.current.forward !== forward || inputRef.current.steer !== steer || inputRef.current.dash !== dash || inputRef.current.shoot !== shoot) {
+            // Play sound on new shoot/dash press
+            if (shoot && !inputRef.current.shoot) soundManager.playShoot();
             inputRef.current = { forward, steer, dash, shoot };
             sendInput();
         }
@@ -257,13 +263,27 @@ export default function Game({ room, player, onBack }) {
                                     display: 'flex', justifyContent: 'space-between', marginBottom: '5px',
                                     opacity: p.alive ? 1 : 0.5, color: p.id === socket.id ? '#00f0ff' : 'white'
                                 }}>
-                                    <span>{p.id === socket.id ? 'YOU' : p.id.slice(0, 4)}</span>
+                                    <span>{p.id === socket.id ? '★ YOU' : (p.name || p.id.slice(0, 4))}</span>
                                     <span style={{ fontSize: '0.8rem' }}>{p.alive ? 'ALIVE' : 'DEAD'}</span>
                                 </li>
                             ))}
                     </ul>
                 </div>
             </div>
+
+            {/* Countdown Overlay */}
+            {countdown > 0 && (
+                <div className="full-screen center" style={{ zIndex: 9, pointerEvents: 'none' }}>
+                    <div style={{
+                        fontSize: '10rem', fontWeight: 'bold', color: '#00f0ff',
+                        textShadow: '0 0 60px rgba(0,240,255,0.8), 0 0 120px rgba(0,240,255,0.4)',
+                        animation: 'pulse 0.5s ease-in-out',
+                        fontFamily: 'var(--font-main)'
+                    }}>
+                        {countdown}
+                    </div>
+                </div>
+            )}
 
             {/* Game Over Screen */}
             {rankings.length > 0 && (
