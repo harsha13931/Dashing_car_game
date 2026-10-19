@@ -11,7 +11,7 @@ const path = require('path');
 // ─── Config ────────────────────────────────────────────────────────────────
 const TICK_RATE = 60;
 const DT = 1 / TICK_RATE;
-const ARENA_RADIUS = 1000;
+const ARENA_RADIUS = 850;          // smaller ring = the fence is in reach from the start
 const POWERUP_INTERVAL = 4000;
 const MAX_POWERUPS = 12;
 const DASH_COOLDOWN = 2.0;
@@ -718,8 +718,8 @@ const CAR_HALF_LEN = 44;            // px at size 1 (sprite 131px × 0.7 scale)
 const CAR_HALF_WID = 23;            // px at size 1 (sprite 71px × 0.7 scale)
 const INERTIA_FACTOR = 4;           // >1 = cars resist spinning (heavier than a uniform box)
 const MAX_SPIN = 5;                 // rad/s cap on collision-induced spin
-const FENCE_BREAK_SPEED = 380;      // wall impact (px/s) that smashes through — only after a hit
-const HIT_WINDOW_MS = 1500;         // how long a hit counts as "being pushed"
+const FENCE_BREAK_SPEED = 200;      // fence gives way at this speed — only when someone is pushing you
+const HIT_WINDOW_MS = 2000;         // how long after a shove you still count as "being pushed"
 const SHRINK_START = 25;            // s — arena starts closing in
 const SHRINK_END = 75;              // s — fully shrunk; fence turns electric (sudden death)
 const FINAL_END = 120;             // s — slow final squeeze
@@ -843,6 +843,12 @@ function resolveCars(A, B, room, now, fx) {
     const vbx = b.vx - b.av * rby, vby = b.vy + b.av * rbx;
     const rvx = vbx - vax, rvy = vby - vay;
     const vn = rvx * nx + rvy * ny;
+
+    // Who is shoving whom: a car driving into the other marks it as "pushed"
+    // (this also covers a steady shove that pins someone against the fence)
+    if (vax * nx + vay * ny > 60) markHit(b, a, now);
+    if (-(vbx * nx + vby * ny) > 60) markHit(a, b, now);
+
     if (vn >= 0) return; // already separating
 
     let e = 0.3;
@@ -872,8 +878,6 @@ function resolveCars(A, B, room, now, fx) {
 
     const impact = -vn;
     if (impact > 60) {
-        markHit(a, b, now);
-        markHit(b, a, now);
         a.damageDealt += impact * 0.5;
         b.damageDealt += impact * 0.5;
     }

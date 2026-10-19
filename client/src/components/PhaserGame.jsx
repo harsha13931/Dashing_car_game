@@ -81,7 +81,7 @@ function makeAsphaltCanvas() {
     const c = document.createElement('canvas');
     c.width = c.height = size;
     const ctx = c.getContext('2d');
-    ctx.fillStyle = '#20242c';
+    ctx.fillStyle = '#2b3039';   // lighter asphalt so dark cars still stand out
     ctx.fillRect(0, 0, size, size);
     const img = ctx.getImageData(0, 0, size, size);
     const d = img.data;
@@ -253,6 +253,8 @@ class ArenaScene extends Phaser.Scene {
 
         // Tire marks layer (persistent-ish, drawn under cars)
         this.tireGfx = this.add.graphics().setDepth(-4);
+        this.ringGfx = this.add.graphics().setDepth(3);      // glow ring under each car
+        this.arrowGfx = this.add.graphics().setDepth(40);    // edge arrows to off-screen rivals
         this.tireMarks = [];
 
         // Dynamic layers
@@ -285,7 +287,8 @@ class ArenaScene extends Phaser.Scene {
 
         // Camera
         this.cameras.main.setBackgroundColor('#0a0d13');
-        this.cameras.main.setZoom(0.85);
+        this.zoom = this.baseZoom();
+        this.cameras.main.setZoom(this.zoom);
 
         // ─── Event FX ────────────────────────────────────────────────────
         this._onCollision = (p) => {
@@ -324,6 +327,12 @@ class ArenaScene extends Phaser.Scene {
         socket.on('collision', this._onCollision);
         socket.on('playerEliminated', this._onEliminated);
         socket.on('powerupCollected', this._onPickup);
+    }
+
+    // Zoom so a phone sees a useful slice of the arena (not just its own car)
+    baseZoom() {
+        const m = Math.min(this.scale.width, this.scale.height);
+        return Math.max(0.55, Math.min(0.95, m / 640));
     }
 
     drawArena(radius, base, electric, time) {
@@ -446,7 +455,11 @@ class ArenaScene extends Phaser.Scene {
             // Custom paint → that; a player's factory paint → the car's showroom color;
             // bots (no cosmetics) → a slot color so they're easy to tell apart
             const paintHex = (cos && (paintColor(cos.paint) || CAR_COLOR[p.carType])) || SLOT_HEX[colorForId(p.id)];
-            e.sprite.setTint(p.alive ? hexToInt(paintHex) : 0x777777);
+            e.tintInt = hexToInt(paintHex);
+            e.sprite.setTint(p.alive ? e.tintInt : 0x777777);
+            e.alive = p.alive;
+            e.isMe = p.id === this.store.localId;
+            e.sizeMult = sizeMult;
 
             // Topper (hat) overlay
             const topKey = (cos && cos.topper && cos.topper !== 'none') ? cos.topper : null;
@@ -462,7 +475,9 @@ class ArenaScene extends Phaser.Scene {
                 e.topper.setVisible(p.alive);
             }
 
-            e.label.setPosition(e.x, e.y - 50 * sizeMult);
+            // Labels stay a readable size on screen whatever the zoom
+            e.label.setScale(0.9 / this.zoom);
+            e.label.setPosition(e.x, e.y - 50 * sizeMult - 6 / this.zoom);
             const watched = p.id !== this.store.localId && p.id === this.store.followId;
             e.label.setText(p.id === this.store.localId ? `★ ${p.name || ''}` : watched ? `👁 ${p.name || ''}` : (p.name || ''));
             e.label.setColor(p.id === this.store.localId ? '#8fe3ff' : watched ? '#ffd27a' : '#ffffff');
@@ -520,19 +535,79 @@ class ArenaScene extends Phaser.Scene {
             }
         }
 
-        // Camera follows the local player
-        // Camera follows your car — or, once you're out, the player you're spectating
-        const me = this.carSprites.get(this.store.followId || this.store.localId);
+        // ─── Camera: follows your car (or the one you spectate), looks ahead
+        // in the direction of travel and pulls back a little at speed ──────
+        const cam = this.cameras.main;
+        const focusId = this.store.followId || this.store.localId;
+        const me = this.carSprites.get(focusId);
+        const dt = Math.max(0.001, delta / 1000);
         if (me) {
-            // Glide when switching to a spectated player; lock on to your own car
-            const spectating = this.store.followId && this.store.followId !== this.store.localId;
-            if (this.camX === undefined || !spectating) { this.camX = me.x; this.camY = me.y; }
-            else {
-                const ck = 1 - Math.pow(0.002, delta / 1000);
-                this.camX += (me.x - this.camX) * ck;
-                this.camY += (me.y - this.camY) * ck;
+            if (this.camX === undefined || this.focusId !== focusId) {
+                if (this.camX === undefined) { this.camX = me.x; this.camY = me.y; }
+                this.focusId = focusId;
+                this.lastFx = me.x; this.lastFy = me.y; this.velX = 0; this.velY = 0;
             }
-            this.cameras.main.centerOn(this.camX, this.camY);
+            const vx = (me.x - this.lastFx) / dt, vy = (me.y - this.lastFy) / dt;
+            this.lastFx = me.x; this.lastFy = me.y;
+            if (Math.abs(vx) < 3000 && Math.abs(vy) < 3000) {
+                const vk = 1 - Math.pow(0.02, dt);
+                this.velX += (vx - this.velX) * vk;
+                this.velY += (vy - this.velY) * vk;
+            }
+            const speed = Math.hypot(this.velX, this.velY);
+            const lead = Math.min(170, speed * 0.3) / Math.max(1, speed);
+            const tx = me.x + this.velX * lead, ty = me.y + this.velY * lead;
+            const ck = 1 - Math.pow(0.004, dt);
+            this.camX += (tx - this.camX) * ck;
+            this.camY += (ty - this.camY) * ck;
+
+            const targetZoom = this.baseZoom() * (1 - 0.12 * Math.min(1, speed / 550));
+            this.zoom += (targetZoom - this.zoom) * Math.min(1, dt * 2.5);
+            cam.setZoom(this.zoom);
+            cam.centerOn(this.camX, this.camY);
+        }
+
+        // Glow ring under each car: cyan = you, red = rivals
+        const rg = this.ringGfx;
+        rg.clear();
+        for (const [, e] of this.carSprites) {
+            if (!e.alive) continue;
+            const r = 50 * (e.sizeMult || 1);
+            const col = e.isMe ? 0x4fd8ff : 0xff4d3d;
+            rg.fillStyle(col, e.isMe ? 0.16 : 0.12);
+            rg.fillCircle(e.x, e.y, r);
+            rg.lineStyle(3 / this.zoom, col, e.isMe ? 0.75 : 0.55);
+            rg.strokeCircle(e.x, e.y, r);
+        }
+
+        // Arrows on the screen edge pointing at rivals you can't see
+        const ag = this.arrowGfx;
+        ag.clear();
+        if (me) {
+            const halfW = cam.width / 2 / this.zoom, halfH = cam.height / 2 / this.zoom;
+            // Keep arrows clear of the HUD: more room at the top (timer, minimap)
+            const z = this.zoom, size = 13 / z;
+            const limL = halfW - 34 / z, limR = halfW - 34 / z, limT = halfH - 112 / z, limB = halfH - 40 / z;
+            for (const [id, e] of this.carSprites) {
+                if (!e.alive || id === focusId) continue;
+                const dx = e.x - this.camX, dy = e.y - this.camY;
+                if (Math.abs(dx) < halfW - 10 && Math.abs(dy) < halfH - 10) continue;   // on screen
+                const dist = Math.hypot(dx, dy);
+                if (dist > 2200) continue;
+                const t = Math.min((dx < 0 ? limL : limR) / Math.max(1, Math.abs(dx)), (dy < 0 ? limT : limB) / Math.max(1, Math.abs(dy)));
+                const ax = this.camX + dx * t, ay = this.camY + dy * t;
+                const ang = Math.atan2(dy, dx);
+                const alpha = Math.max(0.35, 1 - dist / 2200);
+                const p1 = [ax + Math.cos(ang) * size * 1.3, ay + Math.sin(ang) * size * 1.3];
+                const p2 = [ax + Math.cos(ang + 2.4) * size, ay + Math.sin(ang + 2.4) * size];
+                const p3 = [ax + Math.cos(ang - 2.4) * size, ay + Math.sin(ang - 2.4) * size];
+                ag.fillStyle(0x000000, 0.5 * alpha);
+                ag.fillCircle(ax, ay, size * 1.15);
+                ag.fillStyle(e.tintInt || 0xff4d3d, alpha);
+                ag.fillTriangle(p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]);
+                ag.lineStyle(2 / this.zoom, 0xffffff, alpha * 0.9);
+                ag.strokeTriangle(p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]);
+            }
         }
 
         // Dropped trap hazards (oil slick / reverse pad)

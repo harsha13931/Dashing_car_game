@@ -721,7 +721,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         /* Steering buttons (left thumb) */
                         <div style={{
                             position: 'absolute', left: EDGE_LEFT, bottom: EDGE_BOTTOM,
-                            zIndex: 6, pointerEvents: 'auto', display: 'flex', gap: 10,
+                            zIndex: 6, pointerEvents: 'auto', display: 'flex', gap: 'clamp(18px, 6vmin, 30px)',
                         }}>
                             <DirButton label="◀" action="left" onAction={handleBtn} />
                             <DirButton label="▶" action="right" onAction={handleBtn} />
@@ -735,26 +735,27 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         '--pw': 'clamp(58px, 17vmin, 78px)',
                         '--ph': 'calc(var(--pw) * 1.5)',
                         '--s': 'clamp(50px, 14vmin, 64px)',
+                        '--g': 'clamp(18px, 6vmin, 30px)',          /* breathing room between buttons */
                     }}>
                         <Pedal label="GAS" color="#37d67a" action="gas" onAction={handleBtn}
                             style={{ right: EDGE_RIGHT, bottom: EDGE_BOTTOM, height: 'var(--ph)' }} />
                         <Pedal label="BRAKE" color="#ff4d5e" action="brake" onAction={handleBtn}
-                            style={{ right: `calc(${EDGE_RIGHT} + var(--pw) + 10px)`, bottom: EDGE_BOTTOM, height: 'calc(var(--pw) * 1.1)' }} />
+                            style={{ right: `calc(${EDGE_RIGHT} + var(--pw) + var(--g))`, bottom: EDGE_BOTTOM, height: 'calc(var(--pw) * 1.1)' }} />
                         <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
                             cooldown={me?.dashCooldown} maxCooldown={2} size="var(--pw)" fontSize="0.8rem"
-                            style={{ right: EDGE_RIGHT, bottom: `calc(${EDGE_BOTTOM} + var(--ph) + 12px)` }} />
+                            style={{ right: EDGE_RIGHT, bottom: `calc(${EDGE_BOTTOM} + var(--ph) + var(--g))` }} />
                         <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
                             cooldown={me?.shootCooldown} maxCooldown={0.8} size="var(--s)" fontSize="0.72rem"
                             style={{
-                                right: `calc(${EDGE_RIGHT} + var(--pw) + 12px)`,
-                                bottom: `calc(${EDGE_BOTTOM} + var(--pw) * 1.1 + 12px)`,
+                                right: `calc(${EDGE_RIGHT} + var(--pw) + var(--g) * 1.5)`,
+                                bottom: `calc(${EDGE_BOTTOM} + var(--pw) * 1.1 + var(--g) * 1.5)`,
                             }} />
                         {me?.weapon && (
                             <ActionButton label={me.weapon === 'oil' ? 'OIL' : 'FLIP'} color="#b24aff"
                                 action="drop" onAction={handleBtn} size="var(--s)" fontSize="0.7rem"
                                 style={{
-                                    right: `calc(${EDGE_RIGHT} + var(--pw) * 2 + 20px)`,
-                                    bottom: `calc(${EDGE_BOTTOM} + var(--pw) * 0.25)`,
+                                    right: `calc(${EDGE_RIGHT} + (var(--pw) - var(--s)) / 2)`,
+                                    bottom: `calc(${EDGE_BOTTOM} + var(--ph) + var(--pw) + var(--g) * 2)`,
                                 }} />
                         )}
                     </div>
@@ -764,6 +765,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         '--n': 'clamp(68px, 21vmin, 96px)',
                         '--s': 'clamp(54px, 16vmin, 74px)',
                         '--d': 'clamp(46px, 13vmin, 62px)',
+                        '--g': 'clamp(18px, 6vmin, 30px)',
                     }}>
                         <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
                             cooldown={me?.dashCooldown} maxCooldown={2} size="var(--n)" fontSize="0.9rem"
@@ -771,7 +773,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
                             cooldown={me?.shootCooldown} maxCooldown={0.8} size="var(--s)"
                             style={{
-                                right: `calc(${EDGE_RIGHT} + var(--n) + 10px)`,
+                                right: `calc(${EDGE_RIGHT} + var(--n) + var(--g))`,
                                 bottom: `calc(${EDGE_BOTTOM} + var(--n) * 0.32)`,
                             }} />
                         {me?.weapon && (
@@ -779,7 +781,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                                 action="drop" onAction={handleBtn} size="var(--d)" fontSize="0.72rem"
                                 style={{
                                     right: `calc(${EDGE_RIGHT} + var(--n) * 0.35)`,
-                                    bottom: `calc(${EDGE_BOTTOM} + var(--n) + 12px)`,
+                                    bottom: `calc(${EDGE_BOTTOM} + var(--n) + var(--g))`,
                                 }} />
                         )}
                     </div>
