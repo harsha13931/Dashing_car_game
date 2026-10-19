@@ -7,7 +7,7 @@ export default function App() {
     const [gameState, setGameState] = useState('lobby');
     const [room, setRoom] = useState(null);
     const [player, setPlayer] = useState(null);
-    const [connected, setConnected] = useState(false);
+    const [connected, setConnected] = useState(socket.connected);
 
     useEffect(() => {
         socket.on('connect', () => setConnected(true));
