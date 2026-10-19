@@ -141,7 +141,7 @@ const POWERUP_META = {
         c.fillRect(s * 0.21, s * 0.46, s * 0.14, s * 0.22);
         c.fillRect(s * 0.65, s * 0.46, s * 0.14, s * 0.22);
     } },
-    Oil: { color: '#6b5a3a', label: 'OIL!', icon: (c, s) => { // droplet
+    Oil: { color: '#b08a52', label: 'OIL!', icon: (c, s) => { // droplet
         c.beginPath(); c.moveTo(s * 0.5, s * 0.22);
         c.quadraticCurveTo(s * 0.74, s * 0.56, s * 0.5, s * 0.8);
         c.quadraticCurveTo(s * 0.26, s * 0.56, s * 0.5, s * 0.22); c.closePath(); c.fill();
