@@ -5,6 +5,380 @@ const ARENA_RADIUS = 1000;
 function lerp(a, b, t) { return a + (b - a) * t; }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
+// ─── Car shape definitions ─────────────────────────────────────────────
+function drawCarBody(ctx, type, bodyColor, accentColor, dead) {
+    const t = type || 'sports';
+    ctx.fillStyle = bodyColor;
+
+    switch (t) {
+        case 'sports':
+            // Low sleek body — pointed nose, curved rear
+            ctx.beginPath();
+            ctx.moveTo(18, 0);
+            ctx.lineTo(14, -6); ctx.lineTo(5, -8); ctx.lineTo(-10, -8);
+            ctx.lineTo(-15, -5); ctx.lineTo(-15, 5); ctx.lineTo(-10, 8);
+            ctx.lineTo(5, 8); ctx.lineTo(14, 6);
+            ctx.closePath(); ctx.fill();
+            // Cabin
+            ctx.fillStyle = accentColor;
+            ctx.beginPath();
+            ctx.moveTo(6, -5); ctx.lineTo(-3, -5); ctx.lineTo(-5, -3);
+            ctx.lineTo(-5, 3); ctx.lineTo(-3, 5); ctx.lineTo(6, 5);
+            ctx.lineTo(8, 3); ctx.lineTo(8, -3);
+            ctx.closePath(); ctx.fill();
+            // Windshield
+            if (!dead) {
+                ctx.fillStyle = 'rgba(150, 220, 255, 0.35)';
+                ctx.beginPath();
+                ctx.moveTo(8, -3); ctx.lineTo(6, -5); ctx.lineTo(6, 5); ctx.lineTo(8, 3);
+                ctx.closePath(); ctx.fill();
+            }
+            // Spoiler hint
+            ctx.fillStyle = accentColor;
+            ctx.fillRect(-14, -7, 2, 14);
+            break;
+
+        case 'muscle':
+            // Wide boxy muscle car — big hood, square rear
+            ctx.beginPath();
+            ctx.moveTo(16, -1); ctx.lineTo(16, 1);
+            ctx.lineTo(12, -8); ctx.lineTo(-12, -9); ctx.lineTo(-16, -7);
+            ctx.lineTo(-16, 7); ctx.lineTo(-12, 9); ctx.lineTo(12, 8);
+            ctx.lineTo(16, 1); ctx.lineTo(16, -1);
+            ctx.closePath(); ctx.fill();
+            // Hood scoop
+            ctx.fillStyle = accentColor;
+            ctx.fillRect(6, -3, 6, 6);
+            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            ctx.fillRect(7, -2, 4, 4);
+            // Cabin
+            ctx.fillStyle = accentColor;
+            ctx.beginPath();
+            ctx.moveTo(4, -6); ctx.lineTo(-5, -6); ctx.lineTo(-7, -4);
+            ctx.lineTo(-7, 4); ctx.lineTo(-5, 6); ctx.lineTo(4, 6);
+            ctx.lineTo(6, 4); ctx.lineTo(6, -4);
+            ctx.closePath(); ctx.fill();
+            if (!dead) {
+                ctx.fillStyle = 'rgba(150, 220, 255, 0.3)';
+                ctx.beginPath();
+                ctx.moveTo(6, -4); ctx.lineTo(4, -6); ctx.lineTo(4, 6); ctx.lineTo(6, 4);
+                ctx.closePath(); ctx.fill();
+            }
+            break;
+
+        case 'truck':
+            // Big boxy truck — flat front, wide body
+            ctx.beginPath();
+            ctx.moveTo(14, -10); ctx.lineTo(16, -8); ctx.lineTo(16, 8); ctx.lineTo(14, 10);
+            ctx.lineTo(-16, 10); ctx.lineTo(-18, 8); ctx.lineTo(-18, -8); ctx.lineTo(-16, -10);
+            ctx.closePath(); ctx.fill();
+            // Front bumper
+            ctx.fillStyle = '#222';
+            ctx.fillRect(14, -9, 4, 18);
+            // Cabin (elevated)
+            ctx.fillStyle = accentColor;
+            ctx.beginPath();
+            ctx.moveTo(10, -7); ctx.lineTo(2, -7); ctx.lineTo(0, -5);
+            ctx.lineTo(0, 5); ctx.lineTo(2, 7); ctx.lineTo(10, 7);
+            ctx.lineTo(12, 5); ctx.lineTo(12, -5);
+            ctx.closePath(); ctx.fill();
+            // Bed / cargo area
+            ctx.fillStyle = 'rgba(0,0,0,0.2)';
+            ctx.fillRect(-16, -8, 14, 16);
+            // Bed rails
+            ctx.strokeStyle = bodyColor;
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(-15, -8, 13, 16);
+            if (!dead) {
+                ctx.fillStyle = 'rgba(150, 220, 255, 0.25)';
+                ctx.fillRect(11, -5, 2, 10);
+            }
+            break;
+
+        case 'rally':
+            // Compact hatchback — rounded, rally stripes
+            ctx.beginPath();
+            ctx.moveTo(14, 0);
+            ctx.quadraticCurveTo(14, -7, 8, -8);
+            ctx.lineTo(-8, -8);
+            ctx.quadraticCurveTo(-14, -8, -14, -4);
+            ctx.lineTo(-14, 4);
+            ctx.quadraticCurveTo(-14, 8, -8, 8);
+            ctx.lineTo(8, 8);
+            ctx.quadraticCurveTo(14, 7, 14, 0);
+            ctx.closePath(); ctx.fill();
+            // Rally stripe
+            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            ctx.fillRect(-12, -2, 24, 4);
+            // Cabin
+            ctx.fillStyle = accentColor;
+            ctx.beginPath();
+            ctx.moveTo(4, -5); ctx.lineTo(-4, -5.5); ctx.lineTo(-6, -4);
+            ctx.lineTo(-6, 4); ctx.lineTo(-4, 5.5); ctx.lineTo(4, 5);
+            ctx.lineTo(6, 3); ctx.lineTo(6, -3);
+            ctx.closePath(); ctx.fill();
+            if (!dead) {
+                ctx.fillStyle = 'rgba(150, 220, 255, 0.3)';
+                ctx.beginPath();
+                ctx.moveTo(6, -3); ctx.lineTo(4, -5); ctx.lineTo(4, 5); ctx.lineTo(6, 3);
+                ctx.closePath(); ctx.fill();
+            }
+            // Rally light pods
+            if (!dead) {
+                ctx.fillStyle = '#ffffcc';
+                ctx.beginPath(); ctx.arc(13, -3, 1.5, 0, Math.PI * 2); ctx.fill();
+                ctx.beginPath(); ctx.arc(13, 3, 1.5, 0, Math.PI * 2); ctx.fill();
+                ctx.beginPath(); ctx.arc(13, 0, 1.5, 0, Math.PI * 2); ctx.fill();
+            }
+            break;
+
+        case 'kart':
+            // Tiny open-wheel kart — small, exposed wheels
+            ctx.beginPath();
+            ctx.moveTo(12, 0);
+            ctx.lineTo(10, -4); ctx.lineTo(3, -5); ctx.lineTo(-8, -5);
+            ctx.lineTo(-10, -3); ctx.lineTo(-10, 3); ctx.lineTo(-8, 5);
+            ctx.lineTo(3, 5); ctx.lineTo(10, 4);
+            ctx.closePath(); ctx.fill();
+            // Seat
+            ctx.fillStyle = accentColor;
+            ctx.beginPath();
+            ctx.arc(-2, 0, 4, 0, Math.PI * 2); ctx.fill();
+            // Steering column
+            ctx.strokeStyle = '#555';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(3, 0); ctx.lineTo(7, 0); ctx.stroke();
+            // Helmet
+            if (!dead) {
+                ctx.fillStyle = bodyColor;
+                ctx.beginPath(); ctx.arc(-2, 0, 3, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = 'rgba(150, 220, 255, 0.5)';
+                ctx.beginPath(); ctx.arc(-1, 0, 2, -0.5, 0.5); ctx.fill();
+            }
+            // Roll bar
+            ctx.strokeStyle = '#666';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(-5, -4); ctx.lineTo(-5, 4);
+            ctx.stroke();
+            break;
+
+        case 'suv':
+            // Tall boxy SUV
+            ctx.beginPath();
+            ctx.moveTo(14, -9); ctx.lineTo(15, -7); ctx.lineTo(15, 7); ctx.lineTo(14, 9);
+            ctx.lineTo(-14, 9); ctx.lineTo(-15, 7); ctx.lineTo(-15, -7); ctx.lineTo(-14, -9);
+            ctx.closePath(); ctx.fill();
+            // Roof rack
+            ctx.strokeStyle = '#555';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(-10, -8, 16, 16);
+            ctx.beginPath(); ctx.moveTo(-6, -8); ctx.lineTo(-6, 8); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(2, -8); ctx.lineTo(2, 8); ctx.stroke();
+            // Cabin
+            ctx.fillStyle = accentColor;
+            ctx.beginPath();
+            ctx.moveTo(8, -6); ctx.lineTo(-2, -6.5); ctx.lineTo(-4, -5);
+            ctx.lineTo(-4, 5); ctx.lineTo(-2, 6.5); ctx.lineTo(8, 6);
+            ctx.lineTo(10, 4); ctx.lineTo(10, -4);
+            ctx.closePath(); ctx.fill();
+            if (!dead) {
+                ctx.fillStyle = 'rgba(150, 220, 255, 0.3)';
+                ctx.fillRect(9, -4, 2, 8);
+            }
+            // Bull bar
+            ctx.strokeStyle = '#888';
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(15, -6); ctx.lineTo(17, -5); ctx.lineTo(17, 5); ctx.lineTo(15, 6); ctx.stroke();
+            break;
+
+        case 'drift':
+            // Low drift car — wide fenders, wing
+            ctx.beginPath();
+            ctx.moveTo(16, 0);
+            ctx.lineTo(13, -7); ctx.lineTo(6, -9); ctx.lineTo(-6, -9);
+            ctx.lineTo(-12, -8); ctx.lineTo(-14, -5); ctx.lineTo(-14, 5);
+            ctx.lineTo(-12, 8); ctx.lineTo(-6, 9); ctx.lineTo(6, 9);
+            ctx.lineTo(13, 7);
+            ctx.closePath(); ctx.fill();
+            // Wide fender flares
+            ctx.fillStyle = bodyColor;
+            ctx.beginPath(); ctx.ellipse(4, -9, 4, 2, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.ellipse(4, 9, 4, 2, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.ellipse(-8, -9, 3, 2, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.ellipse(-8, 9, 3, 2, 0, 0, Math.PI * 2); ctx.fill();
+            // Cabin
+            ctx.fillStyle = accentColor;
+            ctx.beginPath();
+            ctx.moveTo(5, -5); ctx.lineTo(-3, -5); ctx.lineTo(-5, -3);
+            ctx.lineTo(-5, 3); ctx.lineTo(-3, 5); ctx.lineTo(5, 5);
+            ctx.lineTo(7, 3); ctx.lineTo(7, -3);
+            ctx.closePath(); ctx.fill();
+            if (!dead) {
+                ctx.fillStyle = 'rgba(150, 220, 255, 0.3)';
+                ctx.beginPath();
+                ctx.moveTo(7, -3); ctx.lineTo(5, -5); ctx.lineTo(5, 5); ctx.lineTo(7, 3);
+                ctx.closePath(); ctx.fill();
+            }
+            // Big rear wing
+            ctx.fillStyle = accentColor;
+            ctx.fillRect(-16, -10, 2, 20);
+            ctx.fillRect(-17, -10, 4, 2);
+            ctx.fillRect(-17, 8, 4, 2);
+            break;
+
+        case 'supercar':
+            // Ultra-sleek supercar — very pointed, thin
+            ctx.beginPath();
+            ctx.moveTo(20, 0);
+            ctx.lineTo(15, -5); ctx.lineTo(6, -7); ctx.lineTo(-6, -7);
+            ctx.lineTo(-14, -5); ctx.lineTo(-16, -3); ctx.lineTo(-16, 3);
+            ctx.lineTo(-14, 5); ctx.lineTo(-6, 7); ctx.lineTo(6, 7);
+            ctx.lineTo(15, 5);
+            ctx.closePath(); ctx.fill();
+            // Aero line
+            ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+            ctx.lineWidth = 0.5;
+            ctx.beginPath(); ctx.moveTo(18, 0); ctx.lineTo(-14, 0); ctx.stroke();
+            // Cabin (teardrop)
+            ctx.fillStyle = accentColor;
+            ctx.beginPath();
+            ctx.moveTo(7, -3.5); ctx.lineTo(-1, -4); ctx.lineTo(-4, -3);
+            ctx.lineTo(-4, 3); ctx.lineTo(-1, 4); ctx.lineTo(7, 3.5);
+            ctx.lineTo(9, 2); ctx.lineTo(9, -2);
+            ctx.closePath(); ctx.fill();
+            if (!dead) {
+                ctx.fillStyle = 'rgba(150, 220, 255, 0.35)';
+                ctx.beginPath();
+                ctx.moveTo(9, -2); ctx.lineTo(7, -3.5); ctx.lineTo(7, 3.5); ctx.lineTo(9, 2);
+                ctx.closePath(); ctx.fill();
+            }
+            // Rear diffuser vents
+            ctx.fillStyle = '#111';
+            for (let i = -4; i <= 4; i += 2) {
+                ctx.fillRect(-16, i - 0.5, 3, 1);
+            }
+            break;
+
+        default:
+            // Fallback generic car
+            ctx.beginPath();
+            ctx.moveTo(15, 0); ctx.lineTo(12, -6); ctx.lineTo(4, -9);
+            ctx.lineTo(-8, -9); ctx.lineTo(-14, -6); ctx.lineTo(-14, 6);
+            ctx.lineTo(-8, 9); ctx.lineTo(4, 9); ctx.lineTo(12, 6);
+            ctx.closePath(); ctx.fill();
+            ctx.fillStyle = accentColor;
+            ctx.beginPath();
+            ctx.moveTo(5, -5); ctx.lineTo(-4, -5); ctx.lineTo(-6, -4);
+            ctx.lineTo(-6, 4); ctx.lineTo(-4, 5); ctx.lineTo(5, 5);
+            ctx.lineTo(7, 4); ctx.lineTo(7, -4);
+            ctx.closePath(); ctx.fill();
+            break;
+    }
+}
+
+function drawWheels(ctx, type) {
+    const t = type || 'sports';
+    ctx.shadowBlur = 0;
+
+    // Wheel positions vary per car type
+    let wheels;
+    switch (t) {
+        case 'truck':
+            wheels = [
+                { x: 10, y: -11, w: 5, h: 4 }, { x: 10, y: 7, w: 5, h: 4 },
+                { x: -12, y: -11, w: 5, h: 4 }, { x: -12, y: 7, w: 5, h: 4 },
+            ];
+            break;
+        case 'muscle':
+            wheels = [
+                { x: 8, y: -10, w: 5, h: 3 }, { x: 8, y: 7, w: 5, h: 3 },
+                { x: -10, y: -10, w: 6, h: 3.5 }, { x: -10, y: 6.5, w: 6, h: 3.5 },
+            ];
+            break;
+        case 'kart':
+            wheels = [
+                { x: 7, y: -7, w: 4, h: 2.5 }, { x: 7, y: 4.5, w: 4, h: 2.5 },
+                { x: -7, y: -7, w: 4, h: 2.5 }, { x: -7, y: 4.5, w: 4, h: 2.5 },
+            ];
+            break;
+        case 'suv':
+            wheels = [
+                { x: 8, y: -10, w: 5, h: 4 }, { x: 8, y: 6, w: 5, h: 4 },
+                { x: -10, y: -10, w: 5, h: 4 }, { x: -10, y: 6, w: 5, h: 4 },
+            ];
+            break;
+        case 'drift':
+            wheels = [
+                { x: 7, y: -11, w: 5, h: 3 }, { x: 7, y: 8, w: 5, h: 3 },
+                { x: -9, y: -11, w: 5, h: 3 }, { x: -9, y: 8, w: 5, h: 3 },
+            ];
+            break;
+        case 'supercar':
+            wheels = [
+                { x: 9, y: -8, w: 4, h: 2.5 }, { x: 9, y: 5.5, w: 4, h: 2.5 },
+                { x: -10, y: -8, w: 5, h: 3 }, { x: -10, y: 5, w: 5, h: 3 },
+            ];
+            break;
+        default: // sports, rally
+            wheels = [
+                { x: 7, y: -10, w: 5, h: 3 }, { x: 7, y: 7, w: 5, h: 3 },
+                { x: -10, y: -10, w: 5, h: 3 }, { x: -10, y: 7, w: 5, h: 3 },
+            ];
+    }
+
+    for (const w of wheels) {
+        ctx.fillStyle = '#111';
+        ctx.fillRect(w.x, w.y, w.w, w.h);
+        ctx.fillStyle = '#333';
+        ctx.fillRect(w.x + 1, w.y + 0.5, w.w - 2, w.h - 1);
+    }
+}
+
+function drawHeadlights(ctx, type) {
+    const t = type || 'sports';
+    ctx.save();
+
+    // Beam shape varies
+    let noseX = 14, spread = 5;
+    switch (t) {
+        case 'truck':  noseX = 16; spread = 7; break;
+        case 'muscle': noseX = 15; spread = 6; break;
+        case 'suv':    noseX = 15; spread = 6; break;
+        case 'kart':   noseX = 11; spread = 3; break;
+        case 'supercar': noseX = 18; spread = 4; break;
+        case 'drift':  noseX = 15; spread = 5; break;
+    }
+
+    // Beams
+    ctx.globalAlpha = 0.07;
+    ctx.fillStyle = '#ffffcc';
+    ctx.beginPath();
+    ctx.moveTo(noseX, -spread); ctx.lineTo(55, -18); ctx.lineTo(55, 0); ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(noseX, spread); ctx.lineTo(55, 0); ctx.lineTo(55, 18); ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Dots
+    ctx.shadowBlur = 5;
+    ctx.shadowColor = '#ffffaa';
+    ctx.fillStyle = '#ffffdd';
+    ctx.beginPath(); ctx.arc(noseX - 1, -(spread - 1), 2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(noseX - 1, spread - 1, 2, 0, Math.PI * 2); ctx.fill();
+
+    // Tail lights
+    const tailX = t === 'truck' ? -17 : (t === 'supercar' ? -15 : -13);
+    const tailSpread = t === 'truck' ? 7 : (t === 'suv' ? 6 : 5);
+    ctx.shadowColor = '#ff0000';
+    ctx.fillStyle = '#ff2222';
+    ctx.beginPath(); ctx.arc(tailX, -tailSpread, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(tailX, tailSpread, 1.5, 0, Math.PI * 2); ctx.fill();
+
+    ctx.restore();
+}
+
 // ─── Particle system ────────────────────────────────────────────────────
 class ParticlePool {
     constructor(max = 400) { this.particles = []; this.max = max; }
@@ -457,93 +831,22 @@ export default function CanvasRenderer({ snapshot, localId }) {
 
                 // ─── Car body ───────────────────────────────────────────
                 const bodyColor = dead ? '#333' : col.body;
+                const accentColor = dead ? '#222' : col.accent;
                 const glowCol = dead ? 'transparent' : col.glow;
+                const carType = p.carType || 'sports';
 
-                ctx.shadowBlur = dead ? 0 : 12;
+                // Body gradient for depth
+                ctx.shadowBlur = dead ? 0 : 6;
                 ctx.shadowColor = glowCol;
-                ctx.fillStyle = bodyColor;
 
-                // Main body shape (more realistic car)
-                ctx.beginPath();
-                ctx.moveTo(15, 0);      // nose tip
-                ctx.lineTo(12, -6);     // front corner
-                ctx.lineTo(4, -9);      // front fender
-                ctx.lineTo(-8, -9);     // rear fender
-                ctx.lineTo(-14, -6);    // rear corner
-                ctx.lineTo(-14, 6);     // rear corner
-                ctx.lineTo(-8, 9);      // rear fender
-                ctx.lineTo(4, 9);       // front fender
-                ctx.lineTo(12, 6);      // front corner
-                ctx.closePath();
-                ctx.fill();
+                // Wheels go behind the body
+                drawWheels(ctx, carType);
 
-                // Roof / cabin
-                ctx.fillStyle = dead ? '#222' : col.accent;
-                ctx.beginPath();
-                ctx.moveTo(5, -5);
-                ctx.lineTo(-4, -5);
-                ctx.lineTo(-6, -4);
-                ctx.lineTo(-6, 4);
-                ctx.lineTo(-4, 5);
-                ctx.lineTo(5, 5);
-                ctx.lineTo(7, 4);
-                ctx.lineTo(7, -4);
-                ctx.closePath();
-                ctx.fill();
+                // Draw the unique car body shape
+                drawCarBody(ctx, carType, bodyColor, accentColor, dead);
 
-                // Windshield
-                if (!dead) {
-                    ctx.fillStyle = 'rgba(150, 220, 255, 0.3)';
-                    ctx.beginPath();
-                    ctx.moveTo(7, -4); ctx.lineTo(5, -5); ctx.lineTo(5, 5); ctx.lineTo(7, 4);
-                    ctx.closePath();
-                    ctx.fill();
-                }
-
-                // ─── Wheels ─────────────────────────────────────────────
-                ctx.shadowBlur = 0;
-                ctx.fillStyle = '#111';
-                // Front wheels
-                ctx.fillRect(7, -12, 5, 3);
-                ctx.fillRect(7, 9, 5, 3);
-                // Rear wheels
-                ctx.fillRect(-10, -12, 5, 3);
-                ctx.fillRect(-10, 9, 5, 3);
-                // Wheel highlight
-                ctx.fillStyle = '#333';
-                ctx.fillRect(8, -11.5, 3, 2);
-                ctx.fillRect(8, 9.5, 3, 2);
-                ctx.fillRect(-9, -11.5, 3, 2);
-                ctx.fillRect(-9, 9.5, 3, 2);
-
-                // ─── Headlights ─────────────────────────────────────────
-                if (!dead) {
-                    ctx.save();
-                    // Headlight beams
-                    ctx.globalAlpha = 0.08;
-                    ctx.fillStyle = '#ffffcc';
-                    ctx.beginPath();
-                    ctx.moveTo(14, -5); ctx.lineTo(60, -20); ctx.lineTo(60, 0); ctx.closePath();
-                    ctx.fill();
-                    ctx.beginPath();
-                    ctx.moveTo(14, 5); ctx.lineTo(60, 0); ctx.lineTo(60, 20); ctx.closePath();
-                    ctx.fill();
-                    ctx.globalAlpha = 1;
-
-                    // Headlight dots
-                    ctx.shadowBlur = 6;
-                    ctx.shadowColor = '#ffffaa';
-                    ctx.fillStyle = '#ffffdd';
-                    ctx.beginPath(); ctx.arc(13, -4, 2.5, 0, Math.PI * 2); ctx.fill();
-                    ctx.beginPath(); ctx.arc(13, 4, 2.5, 0, Math.PI * 2); ctx.fill();
-
-                    // Tail lights
-                    ctx.shadowColor = '#ff0000';
-                    ctx.fillStyle = '#ff2222';
-                    ctx.beginPath(); ctx.arc(-13, -5, 1.5, 0, Math.PI * 2); ctx.fill();
-                    ctx.beginPath(); ctx.arc(-13, 5, 1.5, 0, Math.PI * 2); ctx.fill();
-                    ctx.restore();
-                }
+                // Headlights + tail lights
+                if (!dead) drawHeadlights(ctx, carType);
 
                 // ─── Speed lines when fast ──────────────────────────────
                 if (p.alive && p.speedMult > 1) {

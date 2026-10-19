@@ -35,6 +35,18 @@ const BOT_DIFFICULTY = {
     insane: { reactionTime: 0.06, accuracy: 0.97, aggression: 0.9, dashSkill: 0.95, shootSkill: 0.95 }
 };
 
+// ─── Car types ────────────────────────────────────────────────────────────
+const CAR_TYPES = {
+    sports:   { name: 'Venom GT',      maxSpeed: 1.3,  accel: 1.2,  turn: 1.1,  mass: 0.8,  dashForce: 1.0,  size: 0.9,  desc: 'Fast and agile' },
+    muscle:   { name: 'Thunder V8',    maxSpeed: 1.15, accel: 1.0,  turn: 0.85, mass: 1.3,  dashForce: 1.3,  size: 1.1,  desc: 'Heavy hitter' },
+    truck:    { name: 'War Rig',       maxSpeed: 0.75, accel: 0.7,  turn: 0.65, mass: 2.0,  dashForce: 1.6,  size: 1.4,  desc: 'Unstoppable force' },
+    rally:    { name: 'Dust Devil',    maxSpeed: 1.1,  accel: 1.1,  turn: 1.3,  mass: 0.9,  dashForce: 0.9,  size: 0.95, desc: 'Best handling' },
+    kart:     { name: 'Pocket Rocket', maxSpeed: 1.4,  accel: 1.4,  turn: 1.2,  mass: 0.5,  dashForce: 0.7,  size: 0.7,  desc: 'Tiny but fast' },
+    suv:      { name: 'Iron Shield',   maxSpeed: 0.9,  accel: 0.85, turn: 0.9,  mass: 1.5,  dashForce: 1.2,  size: 1.2,  desc: 'Tank with style' },
+    drift:    { name: 'Sidewinder',    maxSpeed: 1.05, accel: 1.0,  turn: 1.5,  mass: 0.85, dashForce: 0.85, size: 0.95, desc: 'Drift king' },
+    supercar: { name: 'Phantom X',     maxSpeed: 1.5,  accel: 1.3,  turn: 0.95, mass: 0.7,  dashForce: 0.8,  size: 0.85, desc: 'Pure speed' },
+};
+
 // ─── Express + Socket.IO ───────────────────────────────────────────────────
 const app = express();
 app.use(cors());
@@ -57,11 +69,14 @@ const io = new Server(server, {
 let rooms = {};
 
 // ─── Player / Bot factory ──────────────────────────────────────────────────
-function makePlayer(id, name, isBot = false, difficulty = 'medium') {
+function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 'sports') {
     const diff = BOT_DIFFICULTY[difficulty] || BOT_DIFFICULTY.medium;
+    const validCar = CAR_TYPES[carType] ? carType : 'sports';
     return {
         id,
         name: name || `Player_${id.slice(0, 4)}`,
+        carType: validCar,
+        carStats: CAR_TYPES[validCar],
         x: 0, y: 0,
         angle: 0,
         vx: 0, vy: 0,
@@ -160,6 +175,7 @@ function roomSummary(room) {
         hostId: room.hostId,
         players: Object.values(room.players).map(p => ({
             id: p.id, name: p.name, alive: p.alive, isBot: p.isBot,
+            carType: p.carType,
             kills: p.kills, powerupsCollected: p.powerupsCollected
         })),
         running: room.running,
@@ -471,13 +487,13 @@ function tickTimers(p) {
 io.on('connection', socket => {
     console.log(`[connect] ${socket.id}`);
 
-    socket.on('createRoom', ({ name, botCount, botDifficulty }, cb) => {
+    socket.on('createRoom', ({ name, botCount, botDifficulty, carType }, cb) => {
         if (typeof cb !== 'function') return;
         const room = createRoom(socket.id);
         if (!room) return cb({ error: 'Server full, try again later' });
 
         socket.join(room.id);
-        room.players[socket.id] = makePlayer(socket.id, name);
+        room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType);
         room.settings.botCount = Math.min(7, Math.max(0, parseInt(botCount) || 3));
         room.settings.botDifficulty = BOT_DIFFICULTY[botDifficulty] ? botDifficulty : 'medium';
 
@@ -485,7 +501,7 @@ io.on('connection', socket => {
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
 
-    socket.on('joinRoom', ({ roomId, name }, cb) => {
+    socket.on('joinRoom', ({ roomId, name, carType }, cb) => {
         if (typeof cb !== 'function') return;
         const room = rooms[roomId?.toUpperCase?.()];
         if (!room) return cb({ error: 'Room not found' });
@@ -493,7 +509,7 @@ io.on('connection', socket => {
         if (room.running) return cb({ error: 'Match in progress' });
 
         socket.join(room.id);
-        room.players[socket.id] = makePlayer(socket.id, name);
+        room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType);
         cb({ roomId: room.id });
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
@@ -535,12 +551,14 @@ io.on('connection', socket => {
 
         const usedNames = new Set(Object.values(room.players).map(p => p.name));
         const availableNames = BOT_NAMES.filter(n => !usedNames.has(n));
+        const botCarTypes = Object.keys(CAR_TYPES);
         for (let i = 0; i < room.settings.botCount; i++) {
             const botId = `bot_${uuidv4().slice(0, 6)}`;
             const botName = availableNames.length > 0
                 ? availableNames.splice(Math.floor(Math.random() * availableNames.length), 1)[0]
                 : `Bot_${i + 1}`;
-            room.players[botId] = makePlayer(botId, botName, true, room.settings.botDifficulty);
+            const botCar = botCarTypes[Math.floor(Math.random() * botCarTypes.length)];
+            room.players[botId] = makePlayer(botId, botName, true, room.settings.botDifficulty, botCar);
         }
 
         room.round++;
@@ -647,18 +665,18 @@ setInterval(() => {
             // Steering
             let steerEffect = 1;
             if (p.slip > 0) { steerEffect = 0.3; p.slip -= DT; }
-            p.angle += inp.steer * 4.5 * DT * steerEffect;
+            p.angle += inp.steer * 4.5 * p.carStats.turn * DT * steerEffect;
 
             // Acceleration
-            const forwardSpeed = 650 * inp.forward * p.speedMult;
+            const forwardSpeed = 650 * p.carStats.accel * inp.forward * p.speedMult;
             p.vx += Math.cos(p.angle) * forwardSpeed * DT;
             p.vy += Math.sin(p.angle) * forwardSpeed * DT;
 
             // Dash
             p.isDashing = false;
             if (inp.dash && p.dashCooldown <= 0) {
-                p.vx += Math.cos(p.angle) * 1500;
-                p.vy += Math.sin(p.angle) * 1500;
+                p.vx += Math.cos(p.angle) * 1500 * p.carStats.dashForce;
+                p.vy += Math.sin(p.angle) * 1500 * p.carStats.dashForce;
                 p.dashCooldown = 1.5;
                 p.isDashing = true;
                 p.dashesUsed++;
@@ -701,7 +719,7 @@ setInterval(() => {
 
             // Velocity cap
             const vel = Math.hypot(p.vx, p.vy);
-            const maxVel = 2500;
+            const maxVel = 2500 * p.carStats.maxSpeed;
             if (vel > maxVel) { p.vx = (p.vx / vel) * maxVel; p.vy = (p.vy / vel) * maxVel; }
 
             p.x += p.vx * DT;
@@ -731,7 +749,7 @@ setInterval(() => {
             // Powerup pickup
             for (let i = room.powerups.length - 1; i >= 0; i--) {
                 const pu = room.powerups[i];
-                if (Math.hypot(p.x - pu.x, p.y - pu.y) < 30 * p.scale) {
+                if (Math.hypot(p.x - pu.x, p.y - pu.y) < 30 * p.scale * p.carStats.size) {
                     applyPowerup(pu.type, p, room);
                     room.powerups.splice(i, 1);
                     io.to(room.id).emit('powerupCollected', { playerId: p.id, puId: pu.id, type: pu.type });
@@ -753,9 +771,9 @@ setInterval(() => {
             for (const id in room.players) {
                 const p = room.players[id];
                 if (!p.alive || p.id === proj.ownerId) continue;
-                if (Math.hypot(p.x - proj.x, p.y - proj.y) < 30 * p.scale) {
+                if (Math.hypot(p.x - proj.x, p.y - proj.y) < 30 * p.scale * p.carStats.size) {
                     const ang = Math.atan2(proj.vy, proj.vx);
-                    const force = p.shield ? 400 : 1000;
+                    const force = (p.shield ? 400 : 1000) / p.carStats.mass;
                     p.vx += Math.cos(ang) * force;
                     p.vy += Math.sin(ang) * force;
 
@@ -777,7 +795,7 @@ setInterval(() => {
                 const a = alive[i], b = alive[j];
                 const dx = b.x - a.x, dy = b.y - a.y;
                 const dist = Math.hypot(dx, dy);
-                const rA = 25 * a.scale, rB = 25 * b.scale;
+                const rA = 25 * a.scale * a.carStats.size, rB = 25 * b.scale * b.carStats.size;
                 const minDist = rA + rB;
 
                 if (dist < minDist && dist > 0) {
@@ -795,8 +813,8 @@ setInterval(() => {
                     if (vn > 0) continue;
 
                     let bounce = 1.3;
-                    const massA = a.scale * a.scale;
-                    const massB = b.scale * b.scale;
+                    const massA = a.scale * a.scale * a.carStats.mass;
+                    const massB = b.scale * b.scale * b.carStats.mass;
                     if (a.scale > 1.2) bounce *= 1.5;
                     if (b.scale > 1.2) bounce *= 1.5;
                     if (a.isDashing) bounce *= 1.4;
@@ -829,7 +847,7 @@ setInterval(() => {
         // ─── Broadcast snapshot ────────────────────────────────────────
         io.to(room.id).emit('snapshot', {
             players: Object.values(room.players).map(p => ({
-                id: p.id, name: p.name, isBot: p.isBot,
+                id: p.id, name: p.name, isBot: p.isBot, carType: p.carType,
                 x: p.x, y: p.y, angle: p.angle,
                 alive: p.alive, shield: p.shield, scale: p.scale,
                 isDashing: p.isDashing,
