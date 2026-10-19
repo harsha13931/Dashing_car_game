@@ -19,6 +19,8 @@ const ROOM_CLEANUP_MS = 5 * 60 * 1000;   // clean empty rooms after 5 min
 const MAX_ROOMS = 50;
 const MAX_PLAYERS_PER_ROOM = 8;
 const MAX_PROJECTILES = 30;
+const LOBBY_GRACE_MS = 10 * 60 * 1000;   // keep your seat this long if you leave the page
+const MATCH_GRACE_MS = 90 * 1000;        // …or this long if a match is running
 
 // Bot names for flavor
 const BOT_NAMES = [
@@ -80,11 +82,17 @@ function sanitizeCosmetics(c) {
     };
 }
 
-function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 'sports', cosmetics = null) {
+function sanitizeToken(t) {
+    return typeof t === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(t) ? t : null;
+}
+
+function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 'sports', cosmetics = null, token = null) {
     const diff = BOT_DIFFICULTY[difficulty] || BOT_DIFFICULTY.medium;
     const validCar = CAR_TYPES[carType] ? carType : 'sports';
     return {
         id,
+        token,                 // lets the same browser reclaim this seat after a reconnect
+        connected: true,
         name: name || `Player_${id.slice(0, 4)}`,
         carType: validCar,
         carStats: CAR_TYPES[validCar],
@@ -195,7 +203,7 @@ function roomSummary(room) {
         hostId: room.hostId,
         players: Object.values(room.players).map(p => ({
             id: p.id, name: p.name, alive: p.alive, isBot: p.isBot,
-            carType: p.carType,
+            carType: p.carType, connected: p.connected !== false,
             kills: p.kills, powerupsCollected: p.powerupsCollected
         })),
         running: room.running,
@@ -529,17 +537,46 @@ function tickTimers(p) {
     if (p.magnetTimer > 0) p.magnetTimer -= DT;
 }
 
+// ─── Seats: leaving, reclaiming, host hand-off ────────────────────────────
+function connectedHumans(room) {
+    return Object.values(room.players).filter(p => !p.isBot && p.connected !== false);
+}
+
+function removePlayer(room, id) {
+    delete room.players[id];
+    const humans = Object.values(room.players).filter(p => !p.isBot);
+    if (humans.length === 0) { delete rooms[room.id]; return; }
+    if (room.hostId === id || !room.players[room.hostId]) {
+        room.hostId = (connectedHumans(room)[0] || humans[0]).id;
+    }
+    io.to(room.id).emit('roomUpdate', roomSummary(room));
+}
+
+// Move a player to a new socket id (ids are socket ids everywhere)
+function rekeyPlayer(room, oldId, newId) {
+    const p = room.players[oldId];
+    delete room.players[oldId];
+    p.id = newId;
+    room.players[newId] = p;
+    if (room.hostId === oldId) room.hostId = newId;
+    if (room.scores[oldId] !== undefined) { room.scores[newId] = room.scores[oldId]; delete room.scores[oldId]; }
+    for (const e of room.eliminationOrder) if (e.id === oldId) e.id = newId;
+    for (const h of room.hazards) if (h.ownerId === oldId) h.ownerId = newId;
+    for (const pr of room.projectiles) if (pr.ownerId === oldId) pr.ownerId = newId;
+    for (const q of Object.values(room.players)) if (q.lastHitBy === oldId) q.lastHitBy = newId;
+}
+
 // ─── Socket events ─────────────────────────────────────────────────────────
 io.on('connection', socket => {
     console.log(`[connect] ${socket.id}`);
 
-    socket.on('createRoom', ({ name, botCount, botDifficulty, carType, cosmetics }, cb) => {
+    socket.on('createRoom', ({ name, botCount, botDifficulty, carType, cosmetics, token }, cb) => {
         if (typeof cb !== 'function') return;
         const room = createRoom(socket.id);
         if (!room) return cb({ error: 'Server full, try again later' });
 
         socket.join(room.id);
-        room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType, cosmetics);
+        room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType, cosmetics, sanitizeToken(token));
         const requestedBots = parseInt(botCount);
         room.settings.botCount = Math.min(7, Math.max(0, Number.isNaN(requestedBots) ? 3 : requestedBots));
         room.settings.botDifficulty = BOT_DIFFICULTY[botDifficulty] ? botDifficulty : 'medium';
@@ -548,15 +585,15 @@ io.on('connection', socket => {
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
 
-    socket.on('joinRoom', ({ roomId, name, carType, cosmetics }, cb) => {
+    socket.on('joinRoom', ({ roomId, name, carType, cosmetics, token }, cb) => {
         if (typeof cb !== 'function') return;
         const room = rooms[roomId?.toUpperCase?.()];
         if (!room) return cb({ error: 'Room not found' });
         if (Object.keys(room.players).length >= MAX_PLAYERS_PER_ROOM) return cb({ error: 'Room is full' });
-        if (room.running) return cb({ error: 'Match in progress' });
+        if (room.running) return cb({ error: 'Match in progress — try again when this round ends' });
 
         socket.join(room.id);
-        room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType, cosmetics);
+        room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType, cosmetics, sanitizeToken(token));
         cb({ roomId: room.id, player: room.players[socket.id] });
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
@@ -564,7 +601,7 @@ io.on('connection', socket => {
     socket.on('updateSettings', ({ roomId, settings }) => {
         const room = rooms[roomId];
         if (!room || room.hostId !== socket.id || room.running) return;
-        if (settings.botCount !== undefined) room.settings.botCount = Math.min(7, Math.max(0, parseInt(settings.botCount) || 0));
+        if (settings.botCount !== undefined) room.settings.botCount = Math.min(MAX_PLAYERS_PER_ROOM - 1, Math.max(0, parseInt(settings.botCount) || 0));
         if (settings.botDifficulty && BOT_DIFFICULTY[settings.botDifficulty]) room.settings.botDifficulty = settings.botDifficulty;
         if (settings.maxRounds !== undefined) room.maxRounds = Math.min(10, Math.max(1, parseInt(settings.maxRounds) || 3));
         io.to(room.id).emit('roomUpdate', roomSummary(room));
@@ -572,25 +609,41 @@ io.on('connection', socket => {
 
     socket.on('leaveRoom', ({ roomId }) => {
         const room = rooms[roomId];
-        if (!room) return;
-        delete room.players[socket.id];
+        if (!room || !room.players[socket.id]) return;
         socket.leave(room.id);
-        // Remove bots too if this was the only human
-        const humans = Object.values(room.players).filter(p => !p.isBot);
-        if (humans.length === 0) {
-            delete rooms[roomId];
-        } else {
-            // Transfer host
-            if (room.hostId === socket.id) room.hostId = humans[0].id;
-            io.to(room.id).emit('roomUpdate', roomSummary(room));
+        removePlayer(room, socket.id);
+    });
+
+    // Came back after the page was closed / phone slept: reclaim your seat
+    socket.on('resume', ({ roomId, token }, cb) => {
+        if (typeof cb !== 'function') return;
+        const room = rooms[typeof roomId === 'string' ? roomId.toUpperCase() : ''];
+        const tok = sanitizeToken(token);
+        const p = room && tok && Object.values(room.players).find(q => !q.isBot && q.token === tok);
+        if (!p) return cb({ error: 'That room has closed' });
+        if (p.id !== socket.id) {
+            const old = io.sockets.sockets.get(p.id);
+            if (old) old.leave(room.id);        // a stale tab of the same browser
+            rekeyPlayer(room, p.id, socket.id);
         }
+        p.connected = true;
+        p.disconnectedAt = 0;
+        if (!room.players[room.hostId] || room.players[room.hostId].connected === false) room.hostId = socket.id;
+        socket.join(room.id);
+        cb({ roomId: room.id, player: p, room: roomSummary(room) });
+        io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
 
     socket.on('startMatch', ({ roomId }) => {
         const room = rooms[roomId];
         if (!room || room.running) return;
-        // Only host can start
+        // Only host can start, and a match needs at least two cars
         if (room.hostId !== socket.id) return;
+        const humanCount = Object.values(room.players).filter(p => !p.isBot).length;
+        if (humanCount + room.settings.botCount < 2) {
+            socket.emit('notice', { text: 'You need at least 2 players — invite a friend or add bots.' });
+            return;
+        }
 
         // Add bots
         const existingBots = Object.values(room.players).filter(p => p.isBot);
@@ -599,7 +652,8 @@ io.on('connection', socket => {
         const usedNames = new Set(Object.values(room.players).map(p => p.name));
         const availableNames = BOT_NAMES.filter(n => !usedNames.has(n));
         const botCarTypes = Object.keys(CAR_TYPES);
-        for (let i = 0; i < room.settings.botCount; i++) {
+        const botSlots = Math.min(room.settings.botCount, MAX_PLAYERS_PER_ROOM - humanCount);
+        for (let i = 0; i < botSlots; i++) {
             const botId = `bot_${uuidv4().slice(0, 6)}`;
             const botName = availableNames.length > 0
                 ? availableNames.splice(Math.floor(Math.random() * availableNames.length), 1)[0]
@@ -641,17 +695,17 @@ io.on('connection', socket => {
 
     socket.on('disconnect', () => {
         console.log(`[disconnect] ${socket.id}`);
+        // Don't drop the seat straight away — phones disconnect whenever the app
+        // goes to the background. The player can 'resume' within the grace period.
         for (const roomId in rooms) {
             const room = rooms[roomId];
-            if (!room.players[socket.id]) continue;
-            delete room.players[socket.id];
-            const humans = Object.values(room.players).filter(p => !p.isBot);
-            if (humans.length === 0) {
-                delete rooms[roomId];
-            } else {
-                if (room.hostId === socket.id) room.hostId = humans[0].id;
-                io.to(roomId).emit('roomUpdate', roomSummary(room));
-            }
+            const p = room.players[socket.id];
+            if (!p) continue;
+            p.connected = false;
+            p.disconnectedAt = Date.now();
+            p.inputs = { forward: 0, steer: 0, dash: false, shoot: false, drop: false };
+            if (room.hostId === socket.id && connectedHumans(room).length) room.hostId = connectedHumans(room)[0].id;
+            io.to(roomId).emit('roomUpdate', roomSummary(room));
         }
     });
 });
@@ -1237,13 +1291,18 @@ setInterval(() => {
     const now = Date.now();
     for (const roomId in rooms) {
         const room = rooms[roomId];
+        for (const p of Object.values(room.players)) {
+            if (p.isBot || p.connected !== false) continue;
+            if (now - p.disconnectedAt > (room.running ? MATCH_GRACE_MS : LOBBY_GRACE_MS)) removePlayer(room, p.id);
+        }
+        if (!rooms[roomId]) continue;
         const humans = Object.values(room.players).filter(p => !p.isBot);
         if (humans.length === 0 && now - room.createdAt > ROOM_CLEANUP_MS) {
             delete rooms[roomId];
             console.log(`[cleanup] Room ${roomId} removed (empty)`);
         }
     }
-}, 60000);
+}, 15000);
 
 // ─── Serve client ──────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, '../client/dist')));
