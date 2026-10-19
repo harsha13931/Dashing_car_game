@@ -692,8 +692,8 @@ setInterval(() => {
             // Dash
             p.isDashing = false;
             if (inp.dash && p.dashCooldown <= 0) {
-                p.vx += Math.cos(p.angle) * 1500 * p.carStats.dashForce;
-                p.vy += Math.sin(p.angle) * 1500 * p.carStats.dashForce;
+                p.vx += Math.cos(p.angle) * 1200 * p.carStats.dashForce;
+                p.vy += Math.sin(p.angle) * 1200 * p.carStats.dashForce;
                 p.dashCooldown = 1.5;
                 p.isDashing = true;
                 p.dashesUsed++;
@@ -739,8 +739,8 @@ setInterval(() => {
                 if (p.isDashing) latRetain = 0.95;                    // dash slides
                 if (p.slip > 0) latRetain = 0.985;                    // oil = very slidey
                 lat *= latRetain;
-                // Rolling resistance: strong momentum driving, more drag when coasting
-                fwd *= (Math.abs(inp.forward) > 0.05 ? 0.995 : 0.975);
+                // Rolling resistance: momentum when on the gas, firmer drag when coasting
+                fwd *= (Math.abs(inp.forward) > 0.05 ? 0.99 : 0.955);
                 p.vx = fx * fwd - fy * lat;
                 p.vy = fy * fwd + fx * lat;
             }

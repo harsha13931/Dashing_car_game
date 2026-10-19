@@ -1,6 +1,55 @@
 import React, { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
 import { socket } from '../net/socket';
+import { paintColor, trailColor, drawTopper, TOPPERS } from '../cosmetics';
+
+function hexToInt(hex) {
+    if (!hex || hex[0] !== '#') return 0xffffff;
+    return parseInt(hex.slice(1), 16);
+}
+// CSS color (hex or hsl()) → integer for Phaser tint
+function cssToInt(col) {
+    if (!col) return 0xffa000;
+    if (col[0] === '#') return hexToInt(col);
+    const m = col.match(/hsl\(([\d.]+),\s*([\d.]+)%,\s*([\d.]+)%\)/);
+    if (m) {
+        const h = +m[1] / 360, s = +m[2] / 100, l = +m[3] / 100;
+        const hue = (p, q, t) => {
+            if (t < 0) t += 1; if (t > 1) t -= 1;
+            if (t < 1 / 6) return p + (q - p) * 6 * t;
+            if (t < 1 / 2) return q;
+            if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+            return p;
+        };
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+        const r = Math.round(hue(p, q, h + 1 / 3) * 255);
+        const g = Math.round(hue(p, q, h) * 255);
+        const b = Math.round(hue(p, q, h - 1 / 3) * 255);
+        return (r << 16) | (g << 8) | b;
+    }
+    return 0xffa000;
+}
+// Representative tint per player color slot (used when paint = factory)
+const SLOT_HEX = { blue: '#2f9fe6', red: '#e04a4a', green: '#37c06a', yellow: '#e8c233', black: '#5a616c' };
+
+// Desaturate a car image so it can be tinted to any paint color.
+function makeNeutralCanvas(srcImage) {
+    const w = srcImage.width, h = srcImage.height;
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(srcImage, 0, 0);
+    const id = ctx.getImageData(0, 0, w, h);
+    const d = id.data;
+    for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] === 0) continue;
+        const luma = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        const v = Math.max(0, Math.min(255, luma * 1.25 + 60)); // lift to light gray
+        d[i] = d[i + 1] = d[i + 2] = v;
+    }
+    ctx.putImageData(id, 0, 0);
+    return c;
+}
 
 // ─── Art mapping ───────────────────────────────────────────────────────────
 const CAR_COLORS = ['blue', 'red', 'green', 'yellow', 'black'];
@@ -96,6 +145,25 @@ class ArenaScene extends Phaser.Scene {
     }
 
     create() {
+        // Neutral (tintable) car textures, one per body variant
+        for (let v = 1; v <= 5; v++) {
+            const src = this.textures.get(`car_blue_${v}`).getSourceImage();
+            this.textures.addCanvas(`car_neutral_${v}`, makeNeutralCanvas(src));
+        }
+        // Topper textures (hats) drawn from the shared cosmetics art
+        for (const t of TOPPERS) {
+            if (t.key === 'none') continue;
+            const TS = 96;
+            const tc = document.createElement('canvas');
+            tc.width = tc.height = TS;
+            const tctx = tc.getContext('2d');
+            tctx.translate(TS / 2, TS / 2 + 8);
+            tctx.rotate(-Math.PI / 2);   // topper art faces +x; sprite faces up
+            tctx.scale(2.2, 2.2);
+            drawTopper(tctx, t.key);
+            this.textures.addCanvas(`top_${t.key}`, tc);
+        }
+
         // Asphalt ground as a large tiled sprite centered on the world origin
         this.textures.addCanvas('asphalt', makeAsphaltCanvas());
         const W = 6000;
@@ -186,17 +254,32 @@ class ArenaScene extends Phaser.Scene {
         let entry = this.carSprites.get(p.id);
         if (!entry) {
             const variant = CAR_VARIANT[p.carType] || 1;
-            const color = colorForId(p.id);
-            const sprite = this.add.sprite(p.x, p.y, `car_${color}_${variant}`);
+            const sprite = this.add.sprite(p.x, p.y, `car_neutral_${variant}`);
             sprite.setDepth(5);
+            const topper = this.add.sprite(p.x, p.y, 'top_crown').setDepth(6).setVisible(false);
             const label = this.add.text(p.x, p.y, p.name || '', {
                 fontFamily: 'Arial, sans-serif', fontSize: '15px', color: '#fff',
                 stroke: '#000', strokeThickness: 3,
-            }).setOrigin(0.5, 1).setDepth(6);
-            entry = { sprite, label, x: p.x, y: p.y, a: p.angle };
+            }).setOrigin(0.5, 1).setDepth(7);
+            entry = { sprite, topper, label, x: p.x, y: p.y, a: p.angle, topperKey: null };
             this.carSprites.set(p.id, entry);
         }
         return entry;
+    }
+
+    // Lazily-created flame emitter per trail color (so each car's trail is its own color)
+    getFlame(colorInt) {
+        if (!this._flameByColor) this._flameByColor = new Map();
+        let em = this._flameByColor.get(colorInt);
+        if (!em) {
+            em = this.add.particles(0, 0, 'puff', {
+                speed: { min: 20, max: 90 }, angle: { min: 0, max: 360 },
+                scale: { start: 0.6, end: 0 }, alpha: { start: 0.9, end: 0 },
+                lifespan: 340, tint: colorInt, blendMode: 'ADD', emitting: false,
+            }).setDepth(3);
+            this._flameByColor.set(colorInt, em);
+        }
+        return em;
     }
 
     update(time, delta) {
@@ -228,10 +311,30 @@ class ArenaScene extends Phaser.Scene {
 
             const sizeMult = (TYPE_SIZE[p.carType] || 1) * (p.scale || 1);
             const scale = BASE_SPRITE_SCALE * sizeMult;
+            const rot = e.a + Math.PI / 2;   // sprite faces up; angle 0 = +x
             e.sprite.setScale(scale);
             e.sprite.setPosition(e.x, e.y);
-            e.sprite.setRotation(e.a + Math.PI / 2);   // sprite faces up; angle 0 = +x
+            e.sprite.setRotation(rot);
             e.sprite.setAlpha(p.alive ? 1 : 0.35);
+
+            // Paint: custom color, else slot color (tinted neutral car)
+            const cos = p.cosmetics || null;
+            const paintHex = (cos && paintColor(cos.paint)) || SLOT_HEX[colorForId(p.id)];
+            e.sprite.setTint(p.alive ? hexToInt(paintHex) : 0x777777);
+
+            // Topper (hat) overlay
+            const topKey = (cos && cos.topper && cos.topper !== 'none') ? cos.topper : null;
+            if (topKey !== e.topperKey) {
+                if (topKey) { e.topper.setTexture(`top_${topKey}`); e.topper.setVisible(true); }
+                else e.topper.setVisible(false);
+                e.topperKey = topKey;
+            }
+            if (topKey) {
+                e.topper.setPosition(e.x, e.y);
+                e.topper.setRotation(rot);
+                e.topper.setScale(scale);
+                e.topper.setVisible(p.alive);
+            }
 
             e.label.setPosition(e.x, e.y - 34 * sizeMult);
             e.label.setText(p.id === this.store.localId ? `★ ${p.name || ''}` : (p.name || ''));
@@ -244,11 +347,12 @@ class ArenaScene extends Phaser.Scene {
                 const rx = e.x - Math.cos(e.a) * rearLen;
                 const ry = e.y - Math.sin(e.a) * rearLen;
 
+                const trailFlame = this.getFlame(cssToInt(trailColor(cos ? cos.trail : 'classic', time)));
                 if (p.isDashing) {
-                    this.flame.emitParticleAt(rx, ry, 3);
+                    trailFlame.emitParticleAt(rx, ry, 3);
                     if (this._tick % 2 === 0) this.smoke.emitParticleAt(rx, ry, 1);
                 } else if (p.speedMult > 1 && this._tick % 2 === 0) {
-                    this.flame.emitParticleAt(rx, ry, 1);
+                    trailFlame.emitParticleAt(rx, ry, 1);
                 }
 
                 // Tire marks while dashing or slipping
