@@ -9,7 +9,7 @@ const EDGE_RIGHT = 'max(12px, env(safe-area-inset-right))';
 const EDGE_LEFT = 'max(12px, env(safe-area-inset-left))';
 const EDGE_BOTTOM = 'max(16px, env(safe-area-inset-bottom))';
 
-export default function Game({ room, player, onBack }) {
+export default function Game({ room, player, onBack, onToRoom }) {
     const [snapshot, setSnapshot] = useState({ players: [], powerups: [], elapsed: 0 });
     const [rankings, setRankings] = useState([]);
     const [matchData, setMatchData] = useState(null);
@@ -20,6 +20,9 @@ export default function Game({ room, player, onBack }) {
     const [banner, setBanner] = useState(null);    // big arena announcements
     const [myElim, setMyElim] = useState(null);
     const [nextIn, setNextIn] = useState(0);
+    const [spectateId, setSpectateId] = useState(null);
+    const [soloOut, setSoloOut] = useState(null);     // solo run ended → heading back to lobby
+    const followRef = useRef(null);
 
     const inputRef = useRef({ forward: 0, steer: 0, dash: false, shoot: false });
     const seqRef = useRef(0);
@@ -40,7 +43,7 @@ export default function Game({ room, player, onBack }) {
 
     // Control scheme: 'joystick' or 'buttons'
     const [ctrlMode, setCtrlMode] = useState(() => {
-        try { return localStorage.getItem('dasharena.ctrlmode') || 'joystick'; } catch (_) { return 'joystick'; }
+        try { return localStorage.getItem('dasharena.ctrlmode') || 'buttons'; } catch (_) { return 'buttons'; }
     });
     const switchCtrl = () => {
         setCtrlMode(m => {
@@ -49,7 +52,7 @@ export default function Game({ room, player, onBack }) {
             return next;
         });
         joystickInput.current = { forward: 0, steer: 0 };
-        ['up', 'down', 'left', 'right'].forEach(a => activeButtons.current.delete(a));
+        ['gas', 'brake', 'left', 'right'].forEach(a => activeButtons.current.delete(a));
         setJoyView({ active: false, bx: 0, by: 0, kx: 0, ky: 0 });
         resolveInput();
         soundManager.playClick();
@@ -59,10 +62,16 @@ export default function Game({ room, player, onBack }) {
     useEffect(() => {
         socket.on('snapshot', snap => setSnapshot(snap));
 
-        socket.on('collision', ({ impact, x, y }) => {
-            soundManager.playCrash(impact);
-            // Forward to canvas for screen shake
-            if (window.__dashArenaCollision) window.__dashArenaCollision({ impact });
+        socket.on('collision', ({ impact, ids }) => {
+            // Only your own car's hits (or the car you're watching) make noise
+            const focus = followRef.current || socket.id;
+            if (Array.isArray(ids) && ids.includes(focus)) soundManager.playCrash(impact);
+        });
+
+        socket.on('soloOut', (data) => {
+            setSoloOut(data);
+            soundManager.playLose();
+            setTimeout(() => (onToRoom || onBack)(), 2800);
         });
 
         socket.on('powerupCollected', ({ playerId, type }) => {
@@ -101,6 +110,11 @@ export default function Game({ room, player, onBack }) {
             setFeed([]);
             setBanner(null);
             setMyElim(null);
+            setSpectateId(null);
+            // Controls were hidden while out — make sure nothing is stuck "held"
+            activeButtons.current.clear();
+            joystickInput.current = { forward: 0, steer: 0 };
+            resolveInput();
         });
 
         socket.on('matchEnd', (data) => {
@@ -120,6 +134,7 @@ export default function Game({ room, player, onBack }) {
             socket.off('powerupCollected');
             socket.off('playerEliminated');
             socket.off('arenaEvent');
+            socket.off('soloOut');
             socket.off('countdown');
             socket.off('matchStart');
             socket.off('matchEnd');
@@ -154,8 +169,8 @@ export default function Game({ room, player, onBack }) {
         if (activeButtons.current.has('nitro')) dash = true;
         if (activeButtons.current.has('shoot')) shoot = true;
         if (activeButtons.current.has('drop')) drop = true;
-        if (activeButtons.current.has('up')) forward += 1;
-        if (activeButtons.current.has('down')) forward -= 0.5;
+        if (activeButtons.current.has('gas')) forward += 1;
+        if (activeButtons.current.has('brake')) forward -= 1;   // brakes, then reverses
         if (activeButtons.current.has('left')) steer -= 1;
         if (activeButtons.current.has('right')) steer += 1;
 
@@ -240,6 +255,31 @@ export default function Game({ room, player, onBack }) {
     const me = snapshot.players?.find(p => p.id === socket.id);
     const meAlive = me?.alive;
 
+    // ─── Spectating (multiplayer): watch other players once you're out ───
+    const alivePlayers = (snapshot.players || []).filter(p => p.alive && p.id !== socket.id)
+        .sort((a, b) => (a.isBot - b.isBot) || a.name.localeCompare(b.name));   // humans first
+    const spectating = !!me && !meAlive && !soloOut && !matchData;
+    const target = spectating
+        ? (alivePlayers.find(p => p.id === spectateId) || alivePlayers[0] || null)
+        : null;
+    const followId = target ? target.id : socket.id;
+    followRef.current = followId;
+    const cycleSpectate = (dir) => {
+        if (!alivePlayers.length) return;
+        const i = Math.max(0, alivePlayers.findIndex(p => p.id === followId));
+        setSpectateId(alivePlayers[(i + dir + alivePlayers.length) % alivePlayers.length].id);
+        soundManager.playClick();
+    };
+    useEffect(() => {
+        if (!spectating) return;
+        const onKey = (e) => {
+            if (e.code === 'ArrowLeft' || e.code === 'KeyA') cycleSpectate(-1);
+            if (e.code === 'ArrowRight' || e.code === 'KeyD') cycleSpectate(1);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    });
+
     const formatTime = (ms) => {
         const s = Math.max(0, Math.floor(ms / 1000));
         return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
@@ -251,7 +291,7 @@ export default function Game({ room, player, onBack }) {
             background: '#030308', touchAction: 'none',
             userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
         }}>
-            <PhaserGame snapshot={snapshot} localId={socket.id} />
+            <PhaserGame snapshot={snapshot} localId={socket.id} followId={followId} />
 
             {/* ─── HUD Overlay ──────────────────────────────────────────── */}
             <div className="full-screen" style={{ pointerEvents: 'none', zIndex: 4 }}>
@@ -390,9 +430,10 @@ export default function Game({ room, player, onBack }) {
                 )}
 
                 {/* Eliminated overlay */}
-                {me && !meAlive && rankings.length === 0 && (
+                {me && !meAlive && rankings.length === 0 && !soloOut && (
                     <div style={{
-                        position: 'absolute', top: '40%', left: '50%', transform: 'translate(-50%, -50%)',
+                        position: 'absolute', top: '24%', left: '50%', transform: 'translate(-50%, -50%)',
+                        animation: 'fadeOutLate 4s forwards',
                         color: '#ff3344', fontSize: touchUI ? '2rem' : '2.5rem', fontWeight: 'bold',
                         textShadow: '0 0 30px rgba(255,0,0,0.5)', textAlign: 'center',
                         pointerEvents: 'none'
@@ -400,7 +441,7 @@ export default function Game({ room, player, onBack }) {
                         ELIMINATED
                         <div style={{ fontSize: '0.9rem', color: '#ccc', fontWeight: 600, textShadow: '0 2px 4px #000' }}>
                             {myElim?.by ? `Knocked out by ${myElim.by}` : myElim?.reason === 'electric' ? 'Zapped by the electric fence' : 'You left the arena'}
-                            {' · spectating'}
+
                         </div>
                     </div>
                 )}
@@ -527,7 +568,7 @@ export default function Game({ room, player, onBack }) {
                         <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
                             {matchData.matchOver ? (
                                 <>
-                                    <button className="btn" onClick={() => { socket.emit('playAgain', { roomId: room?.id }); onBack(); }}>
+                                    <button className="btn" onClick={() => { socket.emit('playAgain', { roomId: room?.id }); (onToRoom || onBack)(); }}>
                                         PLAY AGAIN
                                     </button>
                                     <button className="btn btn-secondary" onClick={() => { socket.emit('leaveRoom', { roomId: room?.id }); onBack(); }}>LOBBY</button>
@@ -542,8 +583,52 @@ export default function Game({ room, player, onBack }) {
                 </div>
             )}
 
-            {/* ─── Touch Controls (touch devices only) ──────────────────── */}
-            {touchUI && (
+            {/* ─── Solo knock-out: straight back to the lobby ───────────── */}
+            {soloOut && (
+                <div className="full-screen center" style={{ background: 'rgba(0,0,0,0.6)', zIndex: 11, pointerEvents: 'auto' }}>
+                    <div style={{ textAlign: 'center', padding: '0 16px' }}>
+                        <div style={{
+                            fontSize: touchUI ? '2.2rem' : '3rem', fontWeight: 900, color: '#ff3344', letterSpacing: 2,
+                            textShadow: '0 0 30px rgba(255,0,0,0.5)', animation: 'bannerIn 0.4s ease-out',
+                        }}>ELIMINATED</div>
+                        <div style={{ color: '#fff', fontSize: '1.15rem', fontWeight: 700, marginTop: 6 }}>
+                            You finished #{soloOut.rank} of {soloOut.total}
+                        </div>
+                        <div style={{ color: '#aab', fontSize: '0.85rem', marginTop: 4 }}>
+                            {soloOut.by ? `Knocked out by ${soloOut.by}` : soloOut.reason === 'electric' ? 'Zapped by the electric fence' : 'You left the arena'}
+                        </div>
+                        <div style={{ color: '#e8a030', fontSize: '0.8rem', marginTop: 18, letterSpacing: 1 }}>Returning to lobby…</div>
+                    </div>
+                </div>
+            )}
+
+            {/* ─── Spectator bar (multiplayer, after you're knocked out) ── */}
+            {spectating && target && (
+                <div style={{
+                    position: 'absolute', left: '50%', transform: 'translateX(-50%)',
+                    bottom: `calc(${EDGE_BOTTOM} + 6px)`, zIndex: 8, pointerEvents: 'auto',
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    background: 'rgba(0,0,0,0.65)', border: '1px solid rgba(255,210,122,0.4)',
+                    borderRadius: 30, padding: '6px 8px',
+                }}>
+                    <SpecButton label="◀" onClick={() => cycleSpectate(-1)} />
+                    <div style={{ textAlign: 'center', minWidth: 120 }}>
+                        <div style={{ fontSize: '0.62rem', color: '#9ab', letterSpacing: 2, fontWeight: 700 }}>SPECTATING</div>
+                        <div style={{ color: '#ffd27a', fontWeight: 800, fontSize: '1rem', whiteSpace: 'nowrap' }}>
+                            {target.name}{target.isBot ? ' 🤖' : ''}
+                        </div>
+                    </div>
+                    <SpecButton label="▶" onClick={() => cycleSpectate(1)} />
+                    <button onClick={() => { socket.emit('leaveRoom', { roomId: room?.id }); onBack(); }} style={{
+                        marginLeft: 4, padding: '8px 12px', borderRadius: 20, border: '1px solid rgba(255,68,102,0.6)',
+                        background: 'rgba(255,68,102,0.12)', color: '#ff6680', fontWeight: 700, fontSize: '0.72rem',
+                        fontFamily: 'inherit', cursor: 'pointer',
+                    }}>LEAVE</button>
+                </div>
+            )}
+
+            {/* ─── Touch Controls (touch devices only, while you're driving) ─ */}
+            {touchUI && (!me || meAlive) && !matchData && !soloOut && (
                 <>
                     {ctrlMode === 'joystick' ? (
                         <>
@@ -585,21 +670,47 @@ export default function Game({ room, player, onBack }) {
                             )}
                         </>
                     ) : (
-                        /* Directional button pad (left side) */
+                        /* Steering buttons (left thumb) */
                         <div style={{
                             position: 'absolute', left: EDGE_LEFT, bottom: EDGE_BOTTOM,
-                            zIndex: 6, pointerEvents: 'auto', display: 'grid',
-                            gridTemplateColumns: 'repeat(3, clamp(44px, 13vmin, 58px))',
-                            gridTemplateRows: 'repeat(2, clamp(44px, 13vmin, 58px))', gap: '6px',
+                            zIndex: 6, pointerEvents: 'auto', display: 'flex', gap: 10,
                         }}>
-                            <DirButton label="▲" action="up" grid="1 / 2 / 2 / 3" onAction={handleBtn} />
-                            <DirButton label="◀" action="left" grid="2 / 1 / 3 / 2" onAction={handleBtn} />
-                            <DirButton label="▼" action="down" grid="2 / 2 / 3 / 3" onAction={handleBtn} />
-                            <DirButton label="▶" action="right" grid="2 / 3 / 3 / 4" onAction={handleBtn} />
+                            <DirButton label="◀" action="left" onAction={handleBtn} />
+                            <DirButton label="▶" action="right" onAction={handleBtn} />
                         </div>
                     )}
 
-                    {/* Right-thumb cluster: NITRO in the corner, SHOOT arcs up-left, DROP above */}
+                    {/* Right thumb: GAS + BRAKE pedals, power buttons above them */}
+                    {ctrlMode !== 'joystick' ? (
+                    <div style={{
+                        position: 'absolute', inset: 0, zIndex: 6, pointerEvents: 'none',
+                        '--pw': 'clamp(58px, 17vmin, 78px)',
+                        '--ph': 'calc(var(--pw) * 1.5)',
+                        '--s': 'clamp(50px, 14vmin, 64px)',
+                    }}>
+                        <Pedal label="GAS" color="#37d67a" action="gas" onAction={handleBtn}
+                            style={{ right: EDGE_RIGHT, bottom: EDGE_BOTTOM, height: 'var(--ph)' }} />
+                        <Pedal label="BRAKE" color="#ff4d5e" action="brake" onAction={handleBtn}
+                            style={{ right: `calc(${EDGE_RIGHT} + var(--pw) + 10px)`, bottom: EDGE_BOTTOM, height: 'calc(var(--pw) * 1.1)' }} />
+                        <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
+                            cooldown={me?.dashCooldown} maxCooldown={2} size="var(--pw)" fontSize="0.8rem"
+                            style={{ right: EDGE_RIGHT, bottom: `calc(${EDGE_BOTTOM} + var(--ph) + 12px)` }} />
+                        <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
+                            cooldown={me?.shootCooldown} maxCooldown={0.8} size="var(--s)" fontSize="0.72rem"
+                            style={{
+                                right: `calc(${EDGE_RIGHT} + var(--pw) + 12px)`,
+                                bottom: `calc(${EDGE_BOTTOM} + var(--pw) * 1.1 + 12px)`,
+                            }} />
+                        {me?.weapon && (
+                            <ActionButton label={me.weapon === 'oil' ? 'OIL' : 'FLIP'} color="#b24aff"
+                                action="drop" onAction={handleBtn} size="var(--s)" fontSize="0.7rem"
+                                style={{
+                                    right: `calc(${EDGE_RIGHT} + var(--pw) * 2 + 20px)`,
+                                    bottom: `calc(${EDGE_BOTTOM} + var(--pw) * 0.25)`,
+                                }} />
+                        )}
+                    </div>
+                    ) : (
                     <div style={{
                         position: 'absolute', inset: 0, zIndex: 6, pointerEvents: 'none',
                         '--n': 'clamp(68px, 21vmin, 96px)',
@@ -624,6 +735,7 @@ export default function Game({ room, player, onBack }) {
                                 }} />
                         )}
                     </div>
+                    )}
 
                     {/* Control-scheme toggle (under the minimap) */}
                     <button
@@ -636,7 +748,7 @@ export default function Game({ room, player, onBack }) {
                             fontSize: '0.66rem', fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
                         }}
                     >
-                        {ctrlMode === 'joystick' ? '⇄ Buttons' : '⇄ Joystick'}
+                        {ctrlMode === 'joystick' ? '⇄ Pedals' : '⇄ Joystick'}
                     </button>
                 </>
             )}
@@ -729,21 +841,56 @@ function StatusPill({ label, color }) {
     );
 }
 
-function DirButton({ label, action, onAction, grid }) {
+// Press-and-hold control that lights up while held
+function useHold(action, onAction) {
+    const [down, setDown] = useState(false);
+    const set = (v) => (e) => { e.preventDefault(); setDown(v); onAction(action, v); };
+    return [down, {
+        onPointerDown: set(true), onPointerUp: set(false),
+        onPointerLeave: set(false), onPointerCancel: set(false),
+    }];
+}
+
+function DirButton({ label, action, onAction }) {
+    const [down, handlers] = useHold(action, onAction);
     return (
-        <div
-            onPointerDown={e => { e.preventDefault(); onAction(action, true); }}
-            onPointerUp={e => { e.preventDefault(); onAction(action, false); }}
-            onPointerLeave={e => { e.preventDefault(); onAction(action, false); }}
-            onPointerCancel={e => { e.preventDefault(); onAction(action, false); }}
-            style={{
-                gridArea: grid, borderRadius: 12,
-                background: 'rgba(255,255,255,0.06)', border: '2px solid rgba(232,160,48,0.5)',
-                color: '#e8a030', fontSize: '1.3rem',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                userSelect: 'none', touchAction: 'none',
-            }}
-        >{label}</div>
+        <div {...handlers} style={{
+            width: 'clamp(62px, 18vmin, 84px)', height: 'clamp(62px, 18vmin, 84px)', borderRadius: 16,
+            background: down ? 'rgba(232,160,48,0.3)' : 'rgba(255,255,255,0.07)',
+            border: '2px solid rgba(232,160,48,0.6)', color: '#e8a030', fontSize: '1.6rem',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transform: down ? 'scale(0.94)' : 'none', transition: 'transform 0.05s, background 0.05s',
+            userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none',
+        }}>{label}</div>
+    );
+}
+
+// Tall pedal-style button (GAS / BRAKE)
+function Pedal({ label, color, action, onAction, style }) {
+    const [down, handlers] = useHold(action, onAction);
+    return (
+        <div {...handlers} style={{
+            position: 'absolute', pointerEvents: 'auto', width: 'var(--pw)', borderRadius: 14,
+            background: down
+                ? `linear-gradient(180deg, ${color}66, ${color}33)`
+                : `repeating-linear-gradient(180deg, ${color}22 0 6px, ${color}10 6px 12px)`,
+            border: `2px solid ${color}`, color, fontWeight: 900, fontSize: '0.78rem', letterSpacing: 1,
+            display: 'flex', alignItems: 'flex-end', justifyContent: 'center', paddingBottom: 10, boxSizing: 'border-box',
+            boxShadow: down ? `0 0 18px ${color}88` : `0 0 10px ${color}33`,
+            transform: down ? 'scale(0.96)' : 'none', transition: 'transform 0.05s, box-shadow 0.05s',
+            userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none',
+            ...style,
+        }}>{label}</div>
+    );
+}
+
+function SpecButton({ label, onClick }) {
+    return (
+        <button onClick={onClick} style={{
+            width: 40, height: 40, borderRadius: '50%', border: '1px solid rgba(255,210,122,0.6)',
+            background: 'rgba(255,210,122,0.12)', color: '#ffd27a', fontSize: '1rem',
+            cursor: 'pointer', fontFamily: 'inherit',
+        }}>{label}</button>
     );
 }
 

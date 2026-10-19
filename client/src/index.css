@@ -204,3 +204,8 @@ h4 {
     0%, 100% { opacity: 0.55; transform: scale(0.97); }
     50% { opacity: 1; transform: scale(1.03); }
 }
+
+@keyframes fadeOutLate {
+    0%, 70% { opacity: 1; }
+    100% { opacity: 0; }
+}

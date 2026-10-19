@@ -60,6 +60,7 @@ export default function App() {
                     room={room}
                     player={player}
                     onBack={handleBackToLobby}
+                    onToRoom={() => setGameState('lobby')}
                 />
             )}
         </div>

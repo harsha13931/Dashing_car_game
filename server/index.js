@@ -745,6 +745,26 @@ function eliminate(p, room, now, reason) {
         id: p.id, name: p.name, x: p.x, y: p.y, reason,
         by: killer ? killer.name : null, byId: killer ? killer.id : null,
     });
+
+    // Solo vs bots: once the only human is out there's nothing to watch —
+    // end the match and send them back to the lobby.
+    const all = Object.values(room.players);
+    const humans = all.filter(q => !q.isBot);
+    if (!p.isBot && humans.length === 1 && all.length > 1) {
+        const rank = all.filter(q => q.alive).length + 1;
+        room.running = false;
+        room.round = 0;
+        room.scores = {};
+        io.to(room.id).emit('soloOut', { rank, total: all.length, by: killer ? killer.name : null, reason });
+        io.to(room.id).emit('roomUpdate', roomSummary(room));
+    }
+}
+
+// Keep only the strongest hit per pair of cars (or car + fence) each tick, so
+// clients can shake the camera only for the cars that were actually involved.
+function addFx(fx, key, ev) {
+    const cur = fx.get(key);
+    if (!cur || ev.impact > cur.impact) fx.set(key, ev);
 }
 
 // Car vs car: positional correction + impulse with spin and a bit of scraping friction
@@ -803,9 +823,7 @@ function resolveCars(A, B, room, now, fx) {
         a.damageDealt += impact * 0.5;
         b.damageDealt += impact * 0.5;
     }
-    if (impact > 90 && (!fx.best || impact > fx.best.impact)) {
-        fx.best = { impact, x: cx, y: cy, type: 'car' };
-    }
+    if (impact > 90) addFx(fx, a.id < b.id ? a.id + b.id : b.id + a.id, { impact, x: cx, y: cy, type: 'car', ids: [a.id, b.id] });
 }
 
 // Car vs fence: a solid barrier that bounces you back. It only gives way when you
@@ -841,9 +859,7 @@ function resolveFence(B, R, room, now, fx) {
         p.vx -= nx * j / B.m; p.vy -= ny * j / B.m;
         p.av -= rn * j / B.inertia;
         p.av = Math.max(-MAX_SPIN, Math.min(MAX_SPIN, p.av));
-        if (vn > 140 && (!fx.best || vn > fx.best.impact)) {
-            fx.best = { impact: vn, x: far[0], y: far[1], type: 'wall' };
-        }
+        if (vn > 140) addFx(fx, 'wall' + p.id, { impact: vn, x: far[0], y: far[1], type: 'wall', ids: [p.id] });
     }
     const pen = farD - R;
     p.x -= nx * pen; p.y -= ny * pen;
@@ -1061,7 +1077,7 @@ setInterval(() => {
         }
 
         // ─── Integrate + resolve contacts in sub-steps ─────────────────
-        const fx = { best: null };
+        const fx = new Map();
         const h = DT / SUBSTEPS;
         for (let s = 0; s < SUBSTEPS; s++) {
             const alive = Object.values(room.players).filter(p => p.alive);
@@ -1082,7 +1098,8 @@ setInterval(() => {
             boxes = alive.map(carBox);          // positions moved — rebuild before the fence pass
             for (const B of boxes) resolveFence(B, room.arenaR, room, now, fx);
         }
-        if (fx.best) io.to(room.id).emit('collision', fx.best);
+        for (const ev of fx.values()) io.to(room.id).emit('collision', ev);
+        if (!room.running) continue;   // solo match ended this tick
 
         // Powerup pickup
         for (const id in room.players) {
@@ -1125,7 +1142,7 @@ setInterval(() => {
                     if (shooter) { shooter.damageDealt += force; markHit(p, shooter, now); }
 
                     room.projectiles.splice(i, 1);
-                    io.to(room.id).emit('collision', { impact: 260, x: p.x, y: p.y, type: 'projectile' });
+                    io.to(room.id).emit('collision', { impact: 260, x: p.x, y: p.y, type: 'projectile', ids: [p.id] });
                     break;
                 }
             }
@@ -1148,7 +1165,7 @@ setInterval(() => {
                             p.angle += Math.PI;
                             p.av = 0;
                             p.vx *= -0.5; p.vy *= -0.5;
-                            io.to(room.id).emit('collision', { impact: 60, x: hz.x, y: hz.y, type: 'reverse' });
+                            io.to(room.id).emit('collision', { impact: 60, x: hz.x, y: hz.y, type: 'reverse', ids: [p.id] });
                             consumed = true;
                             break;
                         }

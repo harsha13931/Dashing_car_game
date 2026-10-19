@@ -289,8 +289,12 @@ class ArenaScene extends Phaser.Scene {
 
         // ─── Event FX ────────────────────────────────────────────────────
         this._onCollision = (p) => {
-            const intensity = Math.min(0.022, (p?.impact || 10) / 1400);
-            this.cameras.main.shake(180, intensity);
+            // Shake only for hits on the car the camera is following
+            const focus = this.store.followId || this.store.localId;
+            if (p && Array.isArray(p.ids) && p.ids.includes(focus)) {
+                const intensity = Math.min(0.022, (p.impact || 10) / 1400);
+                this.cameras.main.shake(180, intensity);
+            }
             if (p && typeof p.x === 'number') {
                 const n = Math.min(24, 6 + Math.round((p.impact || 10) / 6));
                 this.spark.emitParticleAt(p.x, p.y, n);
@@ -302,7 +306,7 @@ class ArenaScene extends Phaser.Scene {
             if (!e) return;
             this.spark.emitParticleAt(e.x, e.y, 28);
             this.smoke.emitParticleAt(e.x, e.y, 22);
-            this.cameras.main.shake(220, 0.012);
+            if (id === this.store.localId) this.cameras.main.shake(220, 0.012);
         };
         this._onPickup = ({ playerId, type }) => {
             const e = this.carSprites.get(playerId);
@@ -459,8 +463,9 @@ class ArenaScene extends Phaser.Scene {
             }
 
             e.label.setPosition(e.x, e.y - 50 * sizeMult);
-            e.label.setText(p.id === this.store.localId ? `★ ${p.name || ''}` : (p.name || ''));
-            e.label.setColor(p.id === this.store.localId ? '#8fe3ff' : '#ffffff');
+            const watched = p.id !== this.store.localId && p.id === this.store.followId;
+            e.label.setText(p.id === this.store.localId ? `★ ${p.name || ''}` : watched ? `👁 ${p.name || ''}` : (p.name || ''));
+            e.label.setColor(p.id === this.store.localId ? '#8fe3ff' : watched ? '#ffd27a' : '#ffffff');
             e.label.setVisible(p.alive);
 
             // ─── Exhaust / smoke / tire marks ───────────────────────────
@@ -516,8 +521,19 @@ class ArenaScene extends Phaser.Scene {
         }
 
         // Camera follows the local player
-        const me = this.carSprites.get(this.store.localId);
-        if (me) this.cameras.main.centerOn(me.x, me.y);
+        // Camera follows your car — or, once you're out, the player you're spectating
+        const me = this.carSprites.get(this.store.followId || this.store.localId);
+        if (me) {
+            // Glide when switching to a spectated player; lock on to your own car
+            const spectating = this.store.followId && this.store.followId !== this.store.localId;
+            if (this.camX === undefined || !spectating) { this.camX = me.x; this.camY = me.y; }
+            else {
+                const ck = 1 - Math.pow(0.002, delta / 1000);
+                this.camX += (me.x - this.camX) * ck;
+                this.camY += (me.y - this.camY) * ck;
+            }
+            this.cameras.main.centerOn(this.camX, this.camY);
+        }
 
         // Dropped trap hazards (oil slick / reverse pad)
         const hg = this.hazardGfx;
@@ -567,7 +583,7 @@ class ArenaScene extends Phaser.Scene {
     }
 }
 
-export default function PhaserGame({ snapshot, localId }) {
+export default function PhaserGame({ snapshot, localId, followId }) {
     const containerRef = useRef(null);
     const storeRef = useRef({ snapshot, localId });
     const gameRef = useRef(null);
@@ -575,6 +591,7 @@ export default function PhaserGame({ snapshot, localId }) {
     // Keep the store fresh for the scene's update loop
     storeRef.current.snapshot = snapshot;
     storeRef.current.localId = localId;
+    storeRef.current.followId = followId;
 
     useEffect(() => {
         const scene = new ArenaScene(storeRef.current);
