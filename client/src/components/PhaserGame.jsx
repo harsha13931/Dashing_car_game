@@ -114,6 +114,76 @@ function makePuffCanvas() {
     return c;
 }
 
+// Powerup identity: color, short label, and an icon drawer (white on badge).
+const POWERUP_META = {
+    SpeedBoost: { color: '#3fa9ff', label: 'SPEED!', icon: (c, s) => { // lightning bolt
+        c.beginPath(); c.moveTo(s * 0.56, s * 0.2); c.lineTo(s * 0.34, s * 0.54);
+        c.lineTo(s * 0.48, s * 0.54); c.lineTo(s * 0.42, s * 0.8); c.lineTo(s * 0.68, s * 0.44);
+        c.lineTo(s * 0.52, s * 0.44); c.closePath(); c.fill();
+    } },
+    Shield: { color: '#2fd0d0', label: 'SHIELD!', icon: (c, s) => { // shield
+        c.beginPath(); c.moveTo(s * 0.5, s * 0.2); c.lineTo(s * 0.74, s * 0.3);
+        c.lineTo(s * 0.74, s * 0.52); c.quadraticCurveTo(s * 0.74, s * 0.72, s * 0.5, s * 0.82);
+        c.quadraticCurveTo(s * 0.26, s * 0.72, s * 0.26, s * 0.52); c.lineTo(s * 0.26, s * 0.3);
+        c.closePath(); c.fill();
+    } },
+    MegaPush: { color: '#ff4a5a', label: 'MEGA!', icon: (c, s) => { // double up-chevron
+        for (const off of [0, 0.22]) {
+            c.beginPath(); c.moveTo(s * 0.5, s * (0.24 + off)); c.lineTo(s * 0.72, s * (0.46 + off));
+            c.lineTo(s * 0.62, s * (0.46 + off)); c.lineTo(s * 0.5, s * (0.34 + off));
+            c.lineTo(s * 0.38, s * (0.46 + off)); c.lineTo(s * 0.28, s * (0.46 + off));
+            c.closePath(); c.fill();
+        }
+    } },
+    Magnet: { color: '#e8a030', label: 'MAGNET!', icon: (c, s) => { // horseshoe magnet
+        c.lineWidth = s * 0.14; c.strokeStyle = c.fillStyle;
+        c.beginPath(); c.arc(s * 0.5, s * 0.46, s * 0.22, Math.PI, Math.PI * 2); c.stroke();
+        c.fillRect(s * 0.21, s * 0.46, s * 0.14, s * 0.22);
+        c.fillRect(s * 0.65, s * 0.46, s * 0.14, s * 0.22);
+    } },
+    Oil: { color: '#6b5a3a', label: 'OIL!', icon: (c, s) => { // droplet
+        c.beginPath(); c.moveTo(s * 0.5, s * 0.22);
+        c.quadraticCurveTo(s * 0.74, s * 0.56, s * 0.5, s * 0.8);
+        c.quadraticCurveTo(s * 0.26, s * 0.56, s * 0.5, s * 0.22); c.closePath(); c.fill();
+    } },
+    Reverse: { color: '#a24aff', label: 'REVERSE!', icon: (c, s) => { // circular arrows
+        c.lineWidth = s * 0.1; c.strokeStyle = c.fillStyle;
+        c.beginPath(); c.arc(s * 0.5, s * 0.5, s * 0.2, 0.5, Math.PI * 1.7); c.stroke();
+        c.beginPath(); c.moveTo(s * 0.5 + 0.2 * s * Math.cos(1.7 * Math.PI), s * 0.5 + 0.2 * s * Math.sin(1.7 * Math.PI));
+        c.lineTo(s * 0.72, s * 0.34); c.lineTo(s * 0.64, s * 0.5); c.closePath(); c.fill();
+    } },
+};
+
+function makePowerupCanvas(type) {
+    const s = 64;
+    const meta = POWERUP_META[type] || POWERUP_META.SpeedBoost;
+    const c = document.createElement('canvas');
+    c.width = c.height = s;
+    const ctx = c.getContext('2d');
+    // Round badge with glow ring
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.arc(s / 2, s / 2, s * 0.44, 0, Math.PI * 2); ctx.fill();
+    const g = ctx.createRadialGradient(s / 2, s * 0.4, 2, s / 2, s / 2, s * 0.44);
+    g.addColorStop(0, meta.color);
+    g.addColorStop(1, shadeHex(meta.color, -60));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(s / 2, s / 2, s * 0.4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(s / 2, s / 2, s * 0.4, 0, Math.PI * 2); ctx.stroke();
+    // Icon
+    ctx.fillStyle = '#ffffff';
+    meta.icon(ctx, s);
+    return c;
+}
+
+function shadeHex(hex, amt) {
+    const n = parseInt(hex.slice(1), 16);
+    const r = Math.max(0, Math.min(255, ((n >> 16) & 255) + amt));
+    const g = Math.max(0, Math.min(255, ((n >> 8) & 255) + amt));
+    const b = Math.max(0, Math.min(255, (n & 255) + amt));
+    return `rgb(${r},${g},${b})`;
+}
+
 // Small hard spark dot.
 function makeSparkCanvas() {
     const s = 16;
@@ -163,6 +233,12 @@ class ArenaScene extends Phaser.Scene {
             drawTopper(tctx, t.key);
             this.textures.addCanvas(`top_${t.key}`, tc);
         }
+
+        // Powerup icon textures
+        for (const type of Object.keys(POWERUP_META)) {
+            this.textures.addCanvas(`pu_${type}`, makePowerupCanvas(type));
+        }
+        this.puSprites = new Map();
 
         // Asphalt ground as a large tiled sprite centered on the world origin
         this.textures.addCanvas('asphalt', makeAsphaltCanvas());
@@ -226,8 +302,22 @@ class ArenaScene extends Phaser.Scene {
             this.smoke.emitParticleAt(e.x, e.y, 22);
             this.cameras.main.shake(220, 0.012);
         };
+        this._onPickup = ({ playerId, type }) => {
+            const e = this.carSprites.get(playerId);
+            const meta = POWERUP_META[type];
+            if (!e || !meta) return;
+            const t = this.add.text(e.x, e.y - 40, meta.label, {
+                fontFamily: 'Arial, sans-serif', fontStyle: 'bold', fontSize: '20px',
+                color: meta.color, stroke: '#000', strokeThickness: 4,
+            }).setOrigin(0.5).setDepth(20);
+            this.tweens.add({
+                targets: t, y: e.y - 85, alpha: 0, duration: 850, ease: 'Cubic.Out',
+                onComplete: () => t.destroy(),
+            });
+        };
         socket.on('collision', this._onCollision);
         socket.on('playerEliminated', this._onEliminated);
+        socket.on('powerupCollected', this._onPickup);
     }
 
     drawArena(radius, danger) {
@@ -384,7 +474,7 @@ class ArenaScene extends Phaser.Scene {
         // Remove sprites for players no longer present
         for (const [id, e] of this.carSprites) {
             if (!seen.has(id)) {
-                e.sprite.destroy(); e.label.destroy();
+                e.sprite.destroy(); e.label.destroy(); e.topper && e.topper.destroy();
                 this.carSprites.delete(id);
             }
         }
@@ -393,14 +483,21 @@ class ArenaScene extends Phaser.Scene {
         const me = this.carSprites.get(this.store.localId);
         if (me) this.cameras.main.centerOn(me.x, me.y);
 
-        // Powerups
-        const pg = this.powerupGfx;
-        pg.clear();
+        // Powerups (distinct icon sprites with a gentle pulse)
+        const puSeen = new Set();
         for (const pu of (snap.powerups || [])) {
-            pg.fillStyle(0xe8a030, 0.25);
-            pg.fillCircle(pu.x, pu.y, 20);
-            pg.lineStyle(2, 0xe8a030, 0.8);
-            pg.strokeCircle(pu.x, pu.y, 16);
+            puSeen.add(pu.id);
+            let sp = this.puSprites.get(pu.id);
+            if (!sp) {
+                sp = this.add.image(pu.x, pu.y, `pu_${pu.type}`).setDepth(1);
+                this.puSprites.set(pu.id, sp);
+            }
+            const pulse = 0.5 + 0.045 * Math.sin(time * 0.005 + pu.x);
+            sp.setScale(pulse);
+            sp.setPosition(pu.x, pu.y);
+        }
+        for (const [id, sp] of this.puSprites) {
+            if (!puSeen.has(id)) { sp.destroy(); this.puSprites.delete(id); }
         }
 
         // Projectiles
@@ -415,6 +512,7 @@ class ArenaScene extends Phaser.Scene {
     shutdownScene() {
         socket.off('collision', this._onCollision);
         socket.off('playerEliminated', this._onEliminated);
+        socket.off('powerupCollected', this._onPickup);
     }
 }
 
