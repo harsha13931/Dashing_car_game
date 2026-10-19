@@ -509,7 +509,8 @@ io.on('connection', socket => {
 
         socket.join(room.id);
         room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType, cosmetics);
-        room.settings.botCount = Math.min(7, Math.max(0, parseInt(botCount) || 3));
+        const requestedBots = parseInt(botCount);
+        room.settings.botCount = Math.min(7, Math.max(0, Number.isNaN(requestedBots) ? 3 : requestedBots));
         room.settings.botDifficulty = BOT_DIFFICULTY[botDifficulty] ? botDifficulty : 'medium';
 
         cb({ roomId: room.id, player: room.players[socket.id] });
@@ -525,7 +526,7 @@ io.on('connection', socket => {
 
         socket.join(room.id);
         room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType, cosmetics);
-        cb({ roomId: room.id });
+        cb({ roomId: room.id, player: room.players[socket.id] });
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
 
@@ -1028,3 +1029,13 @@ app.get('*', (_req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`🏎️  Dash Arena server on :${PORT}`));
+
+// Render's free tier sleeps after ~15 min without inbound traffic. Pinging our own
+// public URL counts as inbound traffic, so the server stays awake for players.
+const KEEPALIVE_URL = process.env.RENDER_EXTERNAL_URL;
+if (KEEPALIVE_URL) {
+    const https = require('https');
+    setInterval(() => {
+        https.get(`${KEEPALIVE_URL}/api/health`, res => res.resume()).on('error', () => {});
+    }, 10 * 60 * 1000);
+}
