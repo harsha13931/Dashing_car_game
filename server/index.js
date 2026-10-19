@@ -674,15 +674,20 @@ setInterval(() => {
             // Timers
             tickTimers(p);
 
-            // Steering
-            let steerEffect = 1;
-            if (p.slip > 0) { steerEffect = 0.3; p.slip -= DT; }
-            p.angle += inp.steer * 4.5 * p.carStats.turn * DT * steerEffect;
+            // ─── Driving model: speed-sensitive steering ───────────────
+            const curSpeed = Math.hypot(p.vx, p.vy);
+            const fdot = p.vx * Math.cos(p.angle) + p.vy * Math.sin(p.angle);
+            // You can only steer while moving; steering inverts when reversing
+            const steerAuthority = Math.min(1, curSpeed / 260);
+            const reverseDir = fdot < -8 ? -1 : 1;
+            let steerGrip = 1;
+            if (p.slip > 0) { steerGrip = 0.45; p.slip -= DT; }
+            p.angle += inp.steer * 3.4 * p.carStats.turn * DT * steerAuthority * reverseDir * steerGrip;
 
-            // Acceleration
-            const forwardSpeed = 650 * p.carStats.accel * inp.forward * p.speedMult;
-            p.vx += Math.cos(p.angle) * forwardSpeed * DT;
-            p.vy += Math.sin(p.angle) * forwardSpeed * DT;
+            // Engine thrust along heading (forward / reverse-brake)
+            const engine = 780 * p.carStats.accel * inp.forward * p.speedMult;
+            p.vx += Math.cos(p.angle) * engine * DT;
+            p.vy += Math.sin(p.angle) * engine * DT;
 
             // Dash
             p.isDashing = false;
@@ -724,10 +729,21 @@ setInterval(() => {
                 }
             }
 
-            // Friction
-            const friction = p.slip > 0 ? 0.99 : 0.94;
-            p.vx *= friction;
-            p.vy *= friction;
+            // ─── Traction: keep forward momentum, scrub sideways (grip) ─
+            {
+                const fx = Math.cos(p.angle), fy = Math.sin(p.angle);
+                let fwd = p.vx * fx + p.vy * fy;      // forward component
+                let lat = -p.vx * fy + p.vy * fx;     // lateral (sideways) component
+                // Lower retain = more grip (car tracks its heading)
+                let latRetain = p.carStats.turn > 1.25 ? 0.90 : 0.82; // drifters slide more
+                if (p.isDashing) latRetain = 0.95;                    // dash slides
+                if (p.slip > 0) latRetain = 0.985;                    // oil = very slidey
+                lat *= latRetain;
+                // Rolling resistance: strong momentum driving, more drag when coasting
+                fwd *= (Math.abs(inp.forward) > 0.05 ? 0.995 : 0.975);
+                p.vx = fx * fwd - fy * lat;
+                p.vy = fy * fwd + fx * lat;
+            }
 
             // Velocity cap
             const vel = Math.hypot(p.vx, p.vy);

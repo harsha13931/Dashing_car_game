@@ -1,0 +1,8 @@
+Art assets
+==========
+
+Vehicle sprites: Kenney "Racing Pack" / top-down car sprites.
+Source: Kenney.nl — https://kenney.nl
+License: CC0 1.0 (public domain, free for commercial use, no attribution required).
+
+This credit is included voluntarily as good practice.
