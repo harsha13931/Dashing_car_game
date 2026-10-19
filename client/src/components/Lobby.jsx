@@ -395,7 +395,7 @@ function CarStats({ carKey }) {
     );
 }
 
-export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
+export default function Lobby({ room, setRoom, setPlayer, player, connected, connError }) {
     const [name, setName] = useState('Player');
     const [rid, setRid] = useState('');
     const [error, setError] = useState('');
@@ -489,7 +489,15 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
                     <div style={{
                         color: '#facc15', textAlign: 'center',
                         background: 'rgba(250,204,21,0.08)', padding: '0.5rem', borderRadius: '6px',
-                    }}>Connecting to server...</div>
+                        fontSize: '0.85rem',
+                    }}>
+                        Connecting to server...
+                        {connError && (
+                            <div style={{ color: '#ff8a8a', fontSize: '0.72rem', marginTop: 4 }}>
+                                {connError} — the free server may be waking up; this can take ~50s on first load.
+                            </div>
+                        )}
+                    </div>
                 )}
 
                 {error && (
