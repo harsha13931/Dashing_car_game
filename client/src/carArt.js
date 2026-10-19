@@ -6,6 +6,10 @@ export const CAR_VARIANT = {           // car type → Kenney body style (1-5)
     sports: 3, muscle: 1, truck: 4, rally: 5,
     kart: 2, suv: 4, drift: 3, supercar: 2,
 };
+export const CAR_COLOR = {             // factory paint per car type
+    sports: '#1199dd', muscle: '#cc2244', truck: '#dd8800', rally: '#22aa44',
+    kart: '#ccaa00', suv: '#00aaaa', drift: '#9944cc', supercar: '#cc5522',
+};
 export const TYPE_SIZE = {
     sports: 0.9, muscle: 1.1, truck: 1.4, rally: 0.95,
     kart: 0.7, suv: 1.2, drift: 0.95, supercar: 0.85,

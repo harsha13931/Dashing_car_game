@@ -15,6 +15,11 @@ export default function Game({ room, player, onBack }) {
     const [matchData, setMatchData] = useState(null);
     const [countdown, setCountdown] = useState(0);
     const [round, setRound] = useState(0);
+    const [maxRounds, setMaxRounds] = useState(room?.maxRounds || 3);
+    const [feed, setFeed] = useState([]);          // elimination feed
+    const [banner, setBanner] = useState(null);    // big arena announcements
+    const [myElim, setMyElim] = useState(null);
+    const [nextIn, setNextIn] = useState(0);
 
     const inputRef = useRef({ forward: 0, steer: 0, dash: false, shoot: false });
     const seqRef = useRef(0);
@@ -64,8 +69,21 @@ export default function Game({ room, player, onBack }) {
             if (playerId === socket.id) soundManager.playPowerup();
         });
 
-        socket.on('playerEliminated', ({ id, name }) => {
+        socket.on('playerEliminated', ({ id, name, by, byId, reason }) => {
             soundManager.playElimination();
+            const key = `${id}-${Date.now()}`;
+            setFeed(f => [...f.slice(-3), { key, id, name, by, byId, reason }]);
+            setTimeout(() => setFeed(f => f.filter(e => e.key !== key)), 4500);
+            if (id === socket.id) setMyElim({ by, reason });
+        });
+
+        socket.on('arenaEvent', ({ type }) => {
+            const b = type === 'suddenDeath'
+                ? { title: 'SUDDEN DEATH', sub: 'The fence is electric — touch it and you\'re out!', color: '#4fd8ff' }
+                : { title: 'ARENA SHRINKING', sub: 'Stay inside the fence', color: '#ffb347' };
+            setBanner(b);
+            soundManager.playCountdown();
+            setTimeout(() => setBanner(cur => (cur === b ? null : cur)), 2800);
         });
 
         socket.on('countdown', ({ count }) => {
@@ -74,17 +92,23 @@ export default function Game({ room, player, onBack }) {
             if (count === 0) soundManager.playGo();
         });
 
-        socket.on('matchStart', ({ count, round: r }) => {
+        socket.on('matchStart', ({ count, round: r, maxRounds: mr }) => {
             setRankings([]);
             setMatchData(null);
             setCountdown(count);
             setRound(r);
+            if (mr) setMaxRounds(mr);
+            setFeed([]);
+            setBanner(null);
+            setMyElim(null);
         });
 
         socket.on('matchEnd', (data) => {
             setRankings(data.rankings || []);
             setMatchData(data);
             setCountdown(0);
+            if (data.maxRounds) setMaxRounds(data.maxRounds);
+            if (!data.matchOver) setNextIn(6);
             const myRank = (data.rankings || []).findIndex(r => r.id === socket.id);
             if (myRank === 0) soundManager.playWin();
             else soundManager.playLose();
@@ -95,11 +119,19 @@ export default function Game({ room, player, onBack }) {
             socket.off('collision');
             socket.off('powerupCollected');
             socket.off('playerEliminated');
+            socket.off('arenaEvent');
             socket.off('countdown');
             socket.off('matchStart');
             socket.off('matchEnd');
         };
     }, []);
+
+    // "Next round in N" ticker on the results screen
+    useEffect(() => {
+        if (nextIn <= 0) return;
+        const t = setTimeout(() => setNextIn(n => n - 1), 1000);
+        return () => clearTimeout(t);
+    }, [nextIn]);
 
     // ─── Input resolution ───────────────────────────────────────────────
     function resolveInput() {
@@ -215,7 +247,10 @@ export default function Game({ room, player, onBack }) {
 
     // ─── Render ─────────────────────────────────────────────────────────
     return (
-        <div className="full-screen" style={{ background: '#030308' }}>
+        <div className="full-screen" style={{
+            background: '#030308', touchAction: 'none',
+            userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
+        }}>
             <PhaserGame snapshot={snapshot} localId={socket.id} />
 
             {/* ─── HUD Overlay ──────────────────────────────────────────── */}
@@ -234,7 +269,7 @@ export default function Game({ room, player, onBack }) {
                             border: '1px solid rgba(232,160,48,0.25)', color: '#aaa',
                             fontSize: touchUI ? '0.72rem' : '0.85rem', fontWeight: '600'
                         }}>
-                            R{round}/{matchData?.maxRounds || room?.maxRounds || 3}
+                            ROUND {round}/{maxRounds}
                         </div>
                     )}
                     <div style={{
@@ -246,6 +281,54 @@ export default function Game({ room, player, onBack }) {
                         {formatTime(snapshot.elapsed || 0)}
                     </div>
                 </div>
+
+                {/* Arena phase: shrink warning / sudden death */}
+                {countdown <= 0 && !matchData && (snapshot.suddenDeath || (snapshot.shrinkIn > 0 && snapshot.shrinkIn <= 10)) && (
+                    <div style={{
+                        position: 'absolute', top: `calc(${EDGE_TOP} + ${touchUI ? 70 : 88}px)`,
+                        left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap',
+                        padding: '4px 12px', borderRadius: 14, fontWeight: 800, letterSpacing: 1,
+                        fontSize: touchUI ? '0.7rem' : '0.8rem',
+                        color: snapshot.suddenDeath ? '#4fd8ff' : '#ffb347',
+                        background: 'rgba(0,0,0,0.6)',
+                        border: `1px solid ${snapshot.suddenDeath ? '#4fd8ff88' : '#ffb34788'}`,
+                    }}>
+                        {snapshot.suddenDeath ? '⚡ SUDDEN DEATH — ELECTRIC FENCE' : `ARENA SHRINKS IN ${Math.ceil(snapshot.shrinkIn)}`}
+                    </div>
+                )}
+
+                {/* Elimination feed */}
+                <div style={{
+                    position: 'absolute', left: EDGE_LEFT, top: `calc(${EDGE_TOP} + ${touchUI ? 136 : 130}px)`,
+                    display: 'flex', flexDirection: 'column', gap: 4, maxWidth: '46vw',
+                }}>
+                    {feed.map(e => (
+                        <div key={e.key} style={{
+                            background: 'rgba(0,0,0,0.55)', borderRadius: 8, padding: '3px 8px',
+                            fontSize: touchUI ? '0.68rem' : '0.78rem', color: '#ddd',
+                            borderLeft: `3px solid ${e.id === socket.id ? '#ff3344' : e.byId === socket.id ? '#4f4' : '#e8a030'}`,
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                            {e.by ? <><b style={{ color: e.byId === socket.id ? '#4f4' : '#fff' }}>{e.byId === socket.id ? 'You' : e.by}</b> knocked out </> : ''}
+                            <b style={{ color: e.id === socket.id ? '#ff5566' : '#fff' }}>{e.id === socket.id ? 'you' : e.name}</b>
+                            {!e.by && (e.reason === 'electric' ? ' got zapped ⚡' : ' crashed out')}
+                        </div>
+                    ))}
+                </div>
+
+                {/* Big arena announcements */}
+                {banner && (
+                    <div style={{
+                        position: 'absolute', top: '30%', left: '50%', transform: 'translate(-50%, -50%)',
+                        textAlign: 'center', pointerEvents: 'none', animation: 'bannerIn 0.4s ease-out',
+                    }}>
+                        <div style={{
+                            fontSize: touchUI ? '1.9rem' : '2.8rem', fontWeight: 900, letterSpacing: 2,
+                            color: banner.color, textShadow: `0 0 30px ${banner.color}aa, 0 3px 0 #000`, whiteSpace: 'nowrap',
+                        }}>{banner.title}</div>
+                        <div style={{ color: '#ddd', fontSize: touchUI ? '0.85rem' : '1rem', textShadow: '0 2px 4px #000' }}>{banner.sub}</div>
+                    </div>
+                )}
 
                 {/* Top Right: Alive count + leaderboard (folds into a chip on touch) */}
                 <div style={{
@@ -310,11 +393,15 @@ export default function Game({ room, player, onBack }) {
                 {me && !meAlive && rankings.length === 0 && (
                     <div style={{
                         position: 'absolute', top: '40%', left: '50%', transform: 'translate(-50%, -50%)',
-                        color: '#ff3344', fontSize: '2.5rem', fontWeight: 'bold',
-                        textShadow: '0 0 30px rgba(255,0,0,0.5)',
+                        color: '#ff3344', fontSize: touchUI ? '2rem' : '2.5rem', fontWeight: 'bold',
+                        textShadow: '0 0 30px rgba(255,0,0,0.5)', textAlign: 'center',
                         pointerEvents: 'none'
                     }}>
                         ELIMINATED
+                        <div style={{ fontSize: '0.9rem', color: '#ccc', fontWeight: 600, textShadow: '0 2px 4px #000' }}>
+                            {myElim?.by ? `Knocked out by ${myElim.by}` : myElim?.reason === 'electric' ? 'Zapped by the electric fence' : 'You left the arena'}
+                            {' · spectating'}
+                        </div>
                     </div>
                 )}
             </div>
@@ -331,10 +418,13 @@ export default function Game({ room, player, onBack }) {
                             {countdown}
                         </div>
                         {round > 0 && (
-                            <div style={{ fontSize: '1.2rem', color: '#888', marginTop: '-10px' }}>
-                                Round {round}
+                            <div style={{ fontSize: '1.4rem', color: '#fff', fontWeight: 800, letterSpacing: 3, marginTop: '-10px', textShadow: '0 2px 6px #000' }}>
+                                {round >= maxRounds && maxRounds > 1 ? 'FINAL ROUND' : `ROUND ${round} OF ${maxRounds}`}
                             </div>
                         )}
+                        <div style={{ fontSize: '0.85rem', color: '#9ab', marginTop: 6, textShadow: '0 2px 4px #000' }}>
+                            Push rivals through the fence · last car standing wins
+                        </div>
                     </div>
                 </div>
             )}
@@ -353,8 +443,13 @@ export default function Game({ room, player, onBack }) {
                             color: matchData.matchOver ? 'gold' : '#00ddff',
                             textShadow: matchData.matchOver ? '0 0 30px rgba(255,215,0,0.5)' : '0 0 30px rgba(0,200,255,0.4)'
                         }}>
-                            {matchData.matchOver ? '🏆 MATCH OVER' : `ROUND ${matchData.round} COMPLETE`}
+                            {matchData.matchOver ? '🏆 MATCH OVER' : `ROUND ${matchData.round} OF ${matchData.maxRounds} DONE`}
                         </h1>
+                        {matchData.matchOver && (
+                            <p style={{ textAlign: 'center', color: '#9ab', fontSize: '0.85rem', margin: '0 0 0.5rem 0' }}>
+                                {matchData.maxRounds} rounds played — final standings below
+                            </p>
+                        )}
 
                         {matchData.winnerName && (
                             <p style={{ textAlign: 'center', color: 'gold', fontSize: '1.1rem', margin: '0 0 1rem 0' }}>
@@ -435,11 +530,11 @@ export default function Game({ room, player, onBack }) {
                                     <button className="btn" onClick={() => { socket.emit('playAgain', { roomId: room?.id }); onBack(); }}>
                                         PLAY AGAIN
                                     </button>
-                                    <button className="btn btn-secondary" onClick={onBack}>LOBBY</button>
+                                    <button className="btn btn-secondary" onClick={() => { socket.emit('leaveRoom', { roomId: room?.id }); onBack(); }}>LOBBY</button>
                                 </>
                             ) : (
                                 <div style={{ color: '#666', fontSize: '0.9rem', padding: '8px' }}>
-                                    Next round starting...
+                                    {matchData.round + 1 >= matchData.maxRounds ? 'Final round' : `Round ${matchData.round + 1} of ${matchData.maxRounds}`} starts in {Math.max(1, nextIn)}…
                                 </div>
                             )}
                         </div>
@@ -512,7 +607,7 @@ export default function Game({ room, player, onBack }) {
                         '--d': 'clamp(46px, 13vmin, 62px)',
                     }}>
                         <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
-                            cooldown={me?.dashCooldown} maxCooldown={1.5} size="var(--n)" fontSize="0.9rem"
+                            cooldown={me?.dashCooldown} maxCooldown={2} size="var(--n)" fontSize="0.9rem"
                             style={{ right: EDGE_RIGHT, bottom: EDGE_BOTTOM }} />
                         <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
                             cooldown={me?.shootCooldown} maxCooldown={0.8} size="var(--s)"
@@ -585,14 +680,17 @@ function Minimap({ snapshot, localId, size = 116 }) {
         if (cv.width !== S * dpr) { cv.width = S * dpr; cv.height = S * dpr; }
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, S, S);
-        const R = (snapshot.arenaRadius || 1000);
+        const R = (snapshot.arenaBase || snapshot.arenaRadius || 1000);
+        const cur = (snapshot.arenaRadius || R) / R;
         const cx = S / 2, cy = S / 2, rad = S / 2 - 6;
 
-        // Arena disc
-        ctx.fillStyle = 'rgba(255,255,255,0.04)';
+        // Original arena (faint) and the live fence
+        ctx.fillStyle = 'rgba(255,255,255,0.03)';
         ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = 'rgba(232,160,48,0.5)'; ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        ctx.beginPath(); ctx.arc(cx, cy, rad * cur, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = snapshot.suddenDeath ? 'rgba(79,216,255,0.9)' : 'rgba(232,160,48,0.6)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(cx, cy, rad * cur, 0, Math.PI * 2); ctx.stroke();
 
         for (const p of (snapshot.players || [])) {
             if (!p.alive) continue;

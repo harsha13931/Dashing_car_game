@@ -18,6 +18,8 @@ body,
     margin: 0;
     font-family: var(--font-main);
     overflow: hidden;
+    overscroll-behavior: none;          /* no pull-to-refresh mid-game */
+    -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -28,12 +30,16 @@ body {
         radial-gradient(ellipse at 80% 80%, rgba(20, 25, 40, 0.6) 0%, transparent 50%);
 }
 
+/* Pin the app to the *visible* viewport. 100vh on mobile browsers includes the
+   area behind the toolbar, which pushed the controls off-screen. */
 .app {
     display: flex;
-    height: 100vh;
+    position: fixed;
+    inset: 0;
+    height: 100%;
+    height: 100dvh;
     align-items: center;
     justify-content: center;
-    position: relative;
 }
 
 /* Button Styles */
@@ -187,4 +193,14 @@ h4 {
 ::selection {
     background: rgba(232, 160, 48, 0.3);
     color: white;
+}
+
+@keyframes bannerIn {
+    0% { transform: translate(-50%, -50%) scale(1.6); opacity: 0; }
+    100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+
+@keyframes tapPulse {
+    0%, 100% { opacity: 0.55; transform: scale(0.97); }
+    50% { opacity: 1; transform: scale(1.03); }
 }

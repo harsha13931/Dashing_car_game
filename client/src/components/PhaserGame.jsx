@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
 import { socket } from '../net/socket';
 import { paintColor, trailColor, drawTopper, TOPPERS } from '../cosmetics';
+import { CAR_COLOR } from '../carArt';
 
 function hexToInt(hex) {
     if (!hex || hex[0] !== '#') return 0xffffff;
@@ -61,8 +62,8 @@ const TYPE_SIZE = {             // matches server carStats.size for hitbox accur
     sports: 0.9, muscle: 1.1, truck: 1.4, rally: 0.95,
     kart: 0.7, suv: 1.2, drift: 0.95, supercar: 0.85,
 };
-// Server collision radius = 25 * size → diameter 50*size. Kenney car is 71px wide,
-// so width ≈ collision diameter when scale = 50*size/71 ≈ 0.7*size.
+// Server hitbox is a 88×46 box × size; the Kenney car (131×71px) at 0.7 scale
+// is 92×50 — so what you see is what you hit.
 const BASE_SPRITE_SCALE = 0.7;
 
 function hashId(id) {
@@ -321,30 +322,54 @@ class ArenaScene extends Phaser.Scene {
         socket.on('powerupCollected', this._onPickup);
     }
 
-    drawArena(radius, danger) {
+    drawArena(radius, base, electric, time) {
         const g = this.arenaGfx;
         g.clear();
-        // Outer void ring
-        g.lineStyle(44, 0x2a2f38, 1);
-        g.strokeCircle(0, 0, radius + 22);
-        // Hazard inner line
-        g.lineStyle(4, 0xe8a030, 0.5);
-        g.strokeCircle(0, 0, radius);
-        // Danger zone ring
-        if (danger && danger < radius) {
-            g.lineStyle(3, 0xff3344, 0.35);
-            g.strokeCircle(0, 0, danger);
+        // Closed-off ground outside the fence
+        g.lineStyle(3000, 0x05070b, 0.62);
+        g.strokeCircle(0, 0, radius + 1530);
+        // Where the fence started (fades as the arena closes in)
+        if (base && radius < base - 4) {
+            g.lineStyle(3, 0xffb347, 0.22);
+            g.strokeCircle(0, 0, base);
         }
-        // Center marker
-        g.lineStyle(2, 0xffffff, 0.05);
-        g.strokeCircle(0, 0, radius * 0.5);
-        g.strokeCircle(0, 0, 60);
+        // Painted markings
+        g.lineStyle(2, 0xffffff, 0.06);
+        g.strokeCircle(0, 0, Math.min(radius, base || radius) * 0.5);
+        g.strokeCircle(0, 0, 70);
+
+        // Red / white kerb just inside the fence
+        const kerbR = radius - 8;
+        const segs = Math.max(24, Math.round((2 * Math.PI * kerbR) / 46));
+        const step = (Math.PI * 2) / segs;
+        for (let i = 0; i < segs; i++) {
+            g.lineStyle(14, electric ? (i % 2 ? 0x0c3550 : 0x1a6c94) : (i % 2 ? 0xf1f1f1 : 0xd6312f), 1);
+            g.beginPath();
+            g.arc(0, 0, kerbR, i * step, (i + 1) * step);
+            g.strokePath();
+        }
+        // Barrier wall (shadow, body, highlight)
+        g.lineStyle(18, 0x000000, 0.35);
+        g.strokeCircle(0, 0, radius + 14);
+        g.lineStyle(12, electric ? 0x173246 : 0x59606b, 1);
+        g.strokeCircle(0, 0, radius + 9);
+        g.lineStyle(3, electric ? 0x9fe9ff : 0xa9b0bb, 1);
+        g.strokeCircle(0, 0, radius + 4);
+        if (electric) {
+            const pulse = 0.45 + 0.35 * Math.sin(time * 0.012);
+            g.lineStyle(22, 0x4fd8ff, 0.18 * pulse);
+            g.strokeCircle(0, 0, radius + 6);
+            g.lineStyle(4, 0xe8fbff, pulse);
+            g.strokeCircle(0, 0, radius + 4);
+        }
     }
 
     ensureSprite(p) {
         let entry = this.carSprites.get(p.id);
         if (!entry) {
             const variant = CAR_VARIANT[p.carType] || 1;
+            const shadow = this.add.sprite(p.x, p.y, `car_neutral_${variant}`)
+                .setDepth(4).setTint(0x000000).setAlpha(0.38);
             const sprite = this.add.sprite(p.x, p.y, `car_neutral_${variant}`);
             sprite.setDepth(5);
             const topper = this.add.sprite(p.x, p.y, 'top_crown').setDepth(6).setVisible(false);
@@ -352,7 +377,7 @@ class ArenaScene extends Phaser.Scene {
                 fontFamily: 'Arial, sans-serif', fontSize: '15px', color: '#fff',
                 stroke: '#000', strokeThickness: 3,
             }).setOrigin(0.5, 1).setDepth(7);
-            entry = { sprite, topper, label, x: p.x, y: p.y, a: p.angle, topperKey: null };
+            entry = { sprite, shadow, topper, label, x: p.x, y: p.y, a: p.angle, topperKey: null, skidL: null, skidR: null };
             this.carSprites.set(p.id, entry);
         }
         return entry;
@@ -378,12 +403,12 @@ class ArenaScene extends Phaser.Scene {
         if (!snap || !snap.players) return;
 
         const arenaR = snap.arenaRadius || 1000;
-        if (arenaR !== this.lastArenaR) {
-            this.drawArena(arenaR, snap.dangerZone);
+        if (Math.abs(arenaR - this.lastArenaR) > 0.5 || snap.suddenDeath) {
+            this.drawArena(arenaR, snap.arenaBase || arenaR, !!snap.suddenDeath, time);
             this.lastArenaR = arenaR;
         }
 
-        const k = 1 - Math.pow(0.0001, delta / 1000); // smoothing factor
+        const k = 1 - Math.pow(0.000001, delta / 1000); // smoothing factor (snappy, still filters jitter)
         const seen = new Set();
 
         for (const p of snap.players) {
@@ -407,10 +432,16 @@ class ArenaScene extends Phaser.Scene {
             e.sprite.setPosition(e.x, e.y);
             e.sprite.setRotation(rot);
             e.sprite.setAlpha(p.alive ? 1 : 0.35);
+            e.shadow.setScale(scale);
+            e.shadow.setPosition(e.x + 5, e.y + 8);
+            e.shadow.setRotation(rot);
+            e.shadow.setVisible(p.alive);
 
             // Paint: custom color, else slot color (tinted neutral car)
             const cos = p.cosmetics || null;
-            const paintHex = (cos && paintColor(cos.paint)) || SLOT_HEX[colorForId(p.id)];
+            // Custom paint → that; a player's factory paint → the car's showroom color;
+            // bots (no cosmetics) → a slot color so they're easy to tell apart
+            const paintHex = (cos && (paintColor(cos.paint) || CAR_COLOR[p.carType])) || SLOT_HEX[colorForId(p.id)];
             e.sprite.setTint(p.alive ? hexToInt(paintHex) : 0x777777);
 
             // Topper (hat) overlay
@@ -427,7 +458,7 @@ class ArenaScene extends Phaser.Scene {
                 e.topper.setVisible(p.alive);
             }
 
-            e.label.setPosition(e.x, e.y - 34 * sizeMult);
+            e.label.setPosition(e.x, e.y - 50 * sizeMult);
             e.label.setText(p.id === this.store.localId ? `★ ${p.name || ''}` : (p.name || ''));
             e.label.setColor(p.id === this.store.localId ? '#8fe3ff' : '#ffffff');
             e.label.setVisible(p.alive);
@@ -446,15 +477,19 @@ class ArenaScene extends Phaser.Scene {
                     trailFlame.emitParticleAt(rx, ry, 1);
                 }
 
-                // Tire marks while dashing or slipping
-                if (p.isDashing || p.slip > 0) {
-                    const perp = e.a + Math.PI / 2;
-                    const w = 5 * sizeMult;
-                    this.tireMarks.push({
-                        x1: rx + Math.cos(perp) * w, y1: ry + Math.sin(perp) * w,
-                        x2: rx - Math.cos(perp) * w, y2: ry - Math.sin(perp) * w,
-                        life: 1,
-                    });
+                // Skid marks: continuous streaks from both rear tyres
+                if (p.skid || p.isDashing || p.slip > 0) {
+                    const ax = e.x - Math.cos(e.a) * 28 * sizeMult, ay = e.y - Math.sin(e.a) * 28 * sizeMult;
+                    const px = -Math.sin(e.a) * 17 * sizeMult, py = Math.cos(e.a) * 17 * sizeMult;
+                    const L = [ax + px, ay + py], R = [ax - px, ay - py];
+                    if (e.skidL) {
+                        this.tireMarks.push({ x1: e.skidL[0], y1: e.skidL[1], x2: L[0], y2: L[1], life: 1 });
+                        this.tireMarks.push({ x1: e.skidR[0], y1: e.skidR[1], x2: R[0], y2: R[1], life: 1 });
+                    }
+                    e.skidL = L; e.skidR = R;
+                    if (p.skid && this._tick % 4 === 0) this.smoke.emitParticleAt(ax, ay, 1);
+                } else {
+                    e.skidL = e.skidR = null;
                 }
             }
         }
@@ -467,15 +502,15 @@ class ArenaScene extends Phaser.Scene {
             const m = this.tireMarks[i];
             m.life -= 0.004;
             if (m.life <= 0) { this.tireMarks.splice(i, 1); continue; }
-            tg.lineStyle(3, 0x000000, 0.18 * m.life);
+            tg.lineStyle(5, 0x000000, 0.22 * m.life);
             tg.beginPath(); tg.moveTo(m.x1, m.y1); tg.lineTo(m.x2, m.y2); tg.strokePath();
         }
-        if (this.tireMarks.length > 600) this.tireMarks.splice(0, this.tireMarks.length - 600);
+        if (this.tireMarks.length > 900) this.tireMarks.splice(0, this.tireMarks.length - 900);
 
         // Remove sprites for players no longer present
         for (const [id, e] of this.carSprites) {
             if (!seen.has(id)) {
-                e.sprite.destroy(); e.label.destroy(); e.topper && e.topper.destroy();
+                e.sprite.destroy(); e.shadow.destroy(); e.label.destroy(); e.topper && e.topper.destroy();
                 this.carSprites.delete(id);
             }
         }

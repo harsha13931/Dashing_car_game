@@ -14,7 +14,7 @@ const DT = 1 / TICK_RATE;
 const ARENA_RADIUS = 1000;
 const POWERUP_INTERVAL = 4000;
 const MAX_POWERUPS = 12;
-const DANGER_ZONE = ARENA_RADIUS * 0.85; // visual warning ring
+const DASH_COOLDOWN = 2.0;
 const ROOM_CLEANUP_MS = 5 * 60 * 1000;   // clean empty rooms after 5 min
 const MAX_ROOMS = 50;
 const MAX_PLAYERS_PER_ROOM = 8;
@@ -92,9 +92,14 @@ function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 's
         x: 0, y: 0,
         angle: 0,
         vx: 0, vy: 0,
+        av: 0,               // angular velocity (rad/s)
         alive: true,
         dashCooldown: 0,
+        dashTimer: 0,
         shootCooldown: 0,
+        lastHitAt: 0,
+        lastHitBy: null,
+        skid: false,
         speedMult: 1,
         shield: false,
         shieldTimer: 0,
@@ -173,7 +178,7 @@ function spawnPowerup(room) {
         r -= weights[i];
         if (r <= 0) { type = types[i]; break; }
     }
-    const dist = Math.random() * (room.settings.arenaRadius * 0.8);
+    const dist = Math.sqrt(Math.random()) * ((room.arenaR || room.settings.arenaRadius) * 0.75);
     const ang = Math.random() * Math.PI * 2;
     room.powerups.push({
         id: uuidv4().slice(0, 6),
@@ -207,10 +212,11 @@ function resetPlayers(room) {
     ids.forEach((id, i) => {
         const p = room.players[id];
         const a = (i / Math.max(1, n)) * Math.PI * 2;
-        const spawnR = room.settings.arenaRadius * 0.3;
+        const spawnR = room.settings.arenaRadius * 0.42;
         p.x = Math.cos(a) * spawnR;
         p.y = Math.sin(a) * spawnR;
         p.vx = p.vy = 0;
+        p.av = 0;
         p.angle = a + Math.PI;
         p.alive = true;
         p.speedMult = 1;
@@ -222,6 +228,10 @@ function resetPlayers(room) {
         p.scale = 1;
         p.isDashing = false;
         p.dashCooldown = 0;
+        p.dashTimer = 0;
+        p.lastHitAt = 0;
+        p.lastHitBy = null;
+        p.skid = false;
         p.shootCooldown = 0;
         p.weapon = null;
         p.dropCooldown = 0;
@@ -252,9 +262,10 @@ function updateBotAI(bot, room, now) {
 
     // State calculations
     const distFromCenter = Math.hypot(bot.x, bot.y);
-    const arenaR = room.settings.arenaRadius;
-    const dangerZone = arenaR * 0.8;
-    const criticalZone = arenaR * 0.92;
+    const arenaR = room.arenaR || room.settings.arenaRadius;
+    const margin = room.suddenDeath ? 230 : 170;     // electric fence = keep well clear
+    const dangerZone = arenaR - margin;
+    const criticalZone = arenaR - margin * 0.45;
     const speed = Math.hypot(bot.vx, bot.vy);
 
     let forward = 0, steer = 0, dash = false, shoot = false;
@@ -268,6 +279,8 @@ function updateBotAI(bot, room, now) {
 
         steer = Math.max(-1, Math.min(1, angleDiff * 3));
         forward = 1;
+        // Nose against the fence: back away first (reverse steering is mirrored)
+        if (Math.abs(angleDiff) > 1.9) { forward = -1; steer = -Math.sign(angleDiff); }
 
         // Emergency dash toward center if critical
         if (distFromCenter > criticalZone && bot.dashCooldown <= 0 && Math.abs(angleDiff) < 0.5) {
@@ -491,6 +504,24 @@ function applyPowerup(type, player, room) {
     }
 }
 
+function beginRound(room) {
+    room.running = true;
+    room.countdown = 3;
+    room.powerups = [];
+    room.projectiles = [];
+    room.hazards = [];
+    room.matchStartTime = Date.now() + 3000;
+    room.eliminationOrder = [];
+    room.arenaR = room.settings.arenaRadius;
+    room.suddenDeath = false;
+    room._shrinkAnnounced = false;
+    room._cdlast = 0;
+    room._cdSnap = 0;
+    room._lastPU = 0;
+    resetPlayers(room);
+    io.to(room.id).emit('matchStart', { count: room.countdown, round: room.round, maxRounds: room.maxRounds });
+}
+
 function tickTimers(p) {
     if (p.shieldTimer > 0) { p.shieldTimer -= DT; if (p.shieldTimer <= 0) p.shield = false; }
     if (p.megaTimer > 0) { p.megaTimer -= DT; if (p.megaTimer <= 0) { p.scale = 1; if (p.speedTimer <= 0) p.speedMult = 1; } }
@@ -577,20 +608,9 @@ io.on('connection', socket => {
             room.players[botId] = makePlayer(botId, botName, true, room.settings.botDifficulty, botCar);
         }
 
+        if (room.round >= room.maxRounds) { room.round = 0; room.scores = {}; }
         room.round++;
-        room.running = true;
-        room.countdown = 3;
-        room.powerups = [];
-        room.projectiles = [];
-        room.hazards = [];
-        room.matchStartTime = Date.now() + 3000;
-        room.eliminationOrder = [];
-        room._cdlast = 0;
-        room._lastPU = 0;
-
-        resetPlayers(room);
-
-        io.to(room.id).emit('matchStart', { count: room.countdown, round: room.round });
+        beginRound(room);
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
 
@@ -636,6 +656,300 @@ io.on('connection', socket => {
     });
 });
 
+// ─── Car physics ───────────────────────────────────────────────────────────
+// Cars are oriented boxes (matched to the sprite) with mass, rotational inertia
+// and tyre grip. Movement + contacts run in sub-steps so fast cars can't tunnel.
+const SUBSTEPS = 4;
+const CAR_HALF_LEN = 44;            // px at size 1 (sprite 131px × 0.7 scale)
+const CAR_HALF_WID = 23;            // px at size 1 (sprite 71px × 0.7 scale)
+const INERTIA_FACTOR = 4;           // >1 = cars resist spinning (heavier than a uniform box)
+const MAX_SPIN = 5;                 // rad/s cap on collision-induced spin
+const FENCE_BREAK_SPEED = 380;      // wall impact (px/s) that smashes through — only after a hit
+const HIT_WINDOW_MS = 1500;         // how long a hit counts as "being pushed"
+const SHRINK_START = 25;            // s — arena starts closing in
+const SHRINK_END = 75;              // s — fully shrunk; fence turns electric (sudden death)
+const FINAL_END = 120;             // s — slow final squeeze
+const SHRINK_FRAC = 0.5;
+const FINAL_FRAC = 0.3;
+
+function carSpec(p) {
+    const s = p.carStats;
+    return {
+        top: 330 + 230 * (s.maxSpeed - 0.75) / 0.75,   // 330 (truck) … 560 (supercar) px/s
+        accel: 560 * s.accel,
+        turn: 2.5 * s.turn,
+        grip: s.turn > 1.25 ? 950 : 1500,              // drifters let go of the rear sooner
+    };
+}
+
+function carMass(p) { return p.carStats.mass * p.scale * p.scale; }
+
+function carBox(p) {
+    const size = p.carStats.size * p.scale;
+    const hl = CAR_HALF_LEN * size, hw = CAR_HALF_WID * size;
+    const fx = Math.cos(p.angle), fy = Math.sin(p.angle);
+    const sx = -fy, sy = fx;
+    const m = carMass(p);
+    return {
+        p, hl, hw, fx, fy, sx, sy, m,
+        inertia: m * ((2 * hl) ** 2 + (2 * hw) ** 2) / 12 * INERTIA_FACTOR,
+        corners: [
+            [p.x + fx * hl + sx * hw, p.y + fy * hl + sy * hw],
+            [p.x + fx * hl - sx * hw, p.y + fy * hl - sy * hw],
+            [p.x - fx * hl - sx * hw, p.y - fy * hl - sy * hw],
+            [p.x - fx * hl + sx * hw, p.y - fy * hl + sy * hw],
+        ],
+    };
+}
+
+function projRadius(b, ax, ay) {
+    return b.hl * Math.abs(b.fx * ax + b.fy * ay) + b.hw * Math.abs(b.sx * ax + b.sy * ay);
+}
+
+// Average of the box corners furthest along (nx, ny) — a face midpoint for flat contacts
+function supportPoint(b, nx, ny) {
+    let best = -Infinity;
+    for (const c of b.corners) best = Math.max(best, c[0] * nx + c[1] * ny);
+    let x = 0, y = 0, n = 0;
+    for (const c of b.corners) {
+        if (c[0] * nx + c[1] * ny > best - 1.5) { x += c[0]; y += c[1]; n++; }
+    }
+    return [x / n, y / n];
+}
+
+// Separating-axis test between two car boxes → { nx, ny, depth } (normal A→B) or null
+function boxContact(A, B) {
+    const dx = B.p.x - A.p.x, dy = B.p.y - A.p.y;
+    let depth = Infinity, nx = 0, ny = 0;
+    for (const [ax, ay] of [[A.fx, A.fy], [A.sx, A.sy], [B.fx, B.fy], [B.sx, B.sy]]) {
+        const d = dx * ax + dy * ay;
+        const o = projRadius(A, ax, ay) + projRadius(B, ax, ay) - Math.abs(d);
+        if (o <= 0) return null;
+        if (o < depth) { depth = o; const sg = d < 0 ? -1 : 1; nx = ax * sg; ny = ay * sg; }
+    }
+    return { nx, ny, depth };
+}
+
+function markHit(victim, attacker, now) {
+    victim.lastHitAt = now;
+    victim.lastHitBy = attacker.id;
+}
+
+function eliminate(p, room, now, reason) {
+    p.alive = false;
+    p.av = 0;
+    room.eliminationOrder.push({ id: p.id, name: p.name });
+    const killer = now - (p.lastHitAt || 0) < HIT_WINDOW_MS ? room.players[p.lastHitBy] : null;
+    if (killer && killer.id !== p.id) { killer.kills++; }
+    io.to(room.id).emit('playerEliminated', {
+        id: p.id, name: p.name, x: p.x, y: p.y, reason,
+        by: killer ? killer.name : null, byId: killer ? killer.id : null,
+    });
+}
+
+// Car vs car: positional correction + impulse with spin and a bit of scraping friction
+function resolveCars(A, B, room, now, fx) {
+    const c = boxContact(A, B);
+    if (!c) return;
+    const a = A.p, b = B.p;
+    const { nx, ny, depth } = c;
+    const invA = 1 / A.m, invB = 1 / B.m;
+
+    // Push apart (mass-weighted) so cars never sit inside each other
+    const corr = Math.max(0, depth - 0.3) / (invA + invB);
+    a.x -= nx * corr * invA; a.y -= ny * corr * invA;
+    b.x += nx * corr * invB; b.y += ny * corr * invB;
+
+    // Contact point: between A's leading face and B's leading face
+    const pa = supportPoint(A, nx, ny), pb = supportPoint(B, -nx, -ny);
+    const cx = (pa[0] + pb[0]) / 2, cy = (pa[1] + pb[1]) / 2;
+    const rax = cx - a.x, ray = cy - a.y, rbx = cx - b.x, rby = cy - b.y;
+
+    const vax = a.vx - a.av * ray, vay = a.vy + a.av * rax;
+    const vbx = b.vx - b.av * rby, vby = b.vy + b.av * rbx;
+    const rvx = vbx - vax, rvy = vby - vay;
+    const vn = rvx * nx + rvy * ny;
+    if (vn >= 0) return; // already separating
+
+    let e = 0.3;
+    if (a.dashTimer > 0 || b.dashTimer > 0) e = 0.6;   // a dash ram hits hard
+    if (a.megaTimer > 0 || b.megaTimer > 0) e += 0.15;
+
+    const raN = rax * ny - ray * nx, rbN = rbx * ny - rby * nx;
+    const k = invA + invB + raN * raN / A.inertia + rbN * rbN / B.inertia;
+    const j = -(1 + e) * vn / k;
+
+    let ix = nx * j, iy = ny * j;
+
+    // Tangential friction (scraping) — gives glancing blows their spin
+    const tx = -ny, ty = nx;
+    const vt = rvx * tx + rvy * ty;
+    const raT = rax * ty - ray * tx, rbT = rbx * ty - rby * tx;
+    const kt = invA + invB + raT * raT / A.inertia + rbT * rbT / B.inertia;
+    const jt = Math.max(-0.25 * j, Math.min(0.25 * j, -vt / kt));
+    ix += tx * jt; iy += ty * jt;
+
+    a.vx -= ix * invA; a.vy -= iy * invA;
+    b.vx += ix * invB; b.vy += iy * invB;
+    a.av -= (rax * iy - ray * ix) / A.inertia;
+    b.av += (rbx * iy - rby * ix) / B.inertia;
+    a.av = Math.max(-MAX_SPIN, Math.min(MAX_SPIN, a.av));
+    b.av = Math.max(-MAX_SPIN, Math.min(MAX_SPIN, b.av));
+
+    const impact = -vn;
+    if (impact > 60) {
+        markHit(a, b, now);
+        markHit(b, a, now);
+        a.damageDealt += impact * 0.5;
+        b.damageDealt += impact * 0.5;
+    }
+    if (impact > 90 && (!fx.best || impact > fx.best.impact)) {
+        fx.best = { impact, x: cx, y: cy, type: 'car' };
+    }
+}
+
+// Car vs fence: a solid barrier that bounces you back. It only gives way when you
+// are slammed into it by someone else — or in sudden death, when it's electrified.
+function resolveFence(B, R, room, now, fx) {
+    const p = B.p;
+    let far = null, farD = 0;
+    for (const c of B.corners) {
+        const d = Math.hypot(c[0], c[1]);
+        if (d > farD) { farD = d; far = c; }
+    }
+    if (farD <= R) return;
+
+    const nx = far[0] / farD, ny = far[1] / farD;     // outward normal
+    const rx = far[0] - p.x, ry = far[1] - p.y;
+    const vcx = p.vx - p.av * ry, vcy = p.vy + p.av * rx;
+    const vn = vcx * nx + vcy * ny;                    // >0 = heading out
+
+    const pushed = now - (p.lastHitAt || 0) < HIT_WINDOW_MS;
+    const lethal = (room.suddenDeath && vn > 80) || (vn > FENCE_BREAK_SPEED && pushed);
+    if (lethal) {
+        if (p.shield) {
+            p.shield = false; p.shieldTimer = 0;       // shield absorbs it once
+        } else {
+            eliminate(p, room, now, room.suddenDeath ? 'electric' : 'fence');
+            return;
+        }
+    }
+
+    if (vn > 0) {
+        const rn = rx * ny - ry * nx;
+        const j = (1 + 0.3) * vn / (1 / B.m + rn * rn / B.inertia);
+        p.vx -= nx * j / B.m; p.vy -= ny * j / B.m;
+        p.av -= rn * j / B.inertia;
+        p.av = Math.max(-MAX_SPIN, Math.min(MAX_SPIN, p.av));
+        if (vn > 140 && (!fx.best || vn > fx.best.impact)) {
+            fx.best = { impact: vn, x: far[0], y: far[1], type: 'wall' };
+        }
+    }
+    const pen = farD - R;
+    p.x -= nx * pen; p.y -= ny * pen;
+}
+
+// Engine, brakes, steering and tyre grip — applied once per tick
+function driveCar(p, room, now) {
+    const inp = p.inputs;
+    const spec = carSpec(p);
+    const fx = Math.cos(p.angle), fy = Math.sin(p.angle);
+    let fwd = p.vx * fx + p.vy * fy;
+    let lat = -p.vx * fy + p.vy * fx;
+    const top = spec.top * p.speedMult;
+    const accel = spec.accel * p.speedMult;
+    const thr = inp.forward;
+
+    // Engine / brakes
+    if (thr > 0.05) {
+        if (fwd < -15) fwd = Math.min(0, fwd + 1100 * thr * DT);           // braking out of reverse
+        else fwd += accel * thr * (1 - fwd / top) * DT;                      // also drags back above top speed
+    } else if (thr < -0.05) {
+        const rTop = top * 0.45;
+        if (fwd > 15) fwd = Math.max(0, fwd + 1100 * thr * DT);           // brake
+        else fwd += accel * 0.6 * thr * (1 + fwd / rTop) * DT;              // reverse gear
+    } else {
+        const roll = (160 + 0.9 * Math.abs(fwd)) * DT;                       // rolling resistance
+        fwd = Math.abs(fwd) <= roll ? 0 : fwd - Math.sign(fwd) * roll;
+    }
+
+    // Dash: a burst of extra speed that lets you ram
+    if (inp.dash && p.dashCooldown <= 0) {
+        fwd = Math.max(fwd, 0) + 340 * p.carStats.dashForce;
+        p.dashCooldown = DASH_COOLDOWN;
+        p.dashTimer = 0.45;
+        p.dashesUsed++;
+    }
+
+    // Tyre grip: scrub sideways velocity, but only so fast — hits make you slide
+    const grip = p.slip > 0 ? 220 : spec.grip;
+    const scrub = grip * DT;
+    p.skid = Math.abs(lat) > 150 || p.slip > 0;
+    lat = Math.abs(lat) <= scrub ? 0 : lat - Math.sign(lat) * scrub;
+
+    // Steering: yaw rate grows with speed, flips in reverse, tyres fight any spin
+    const spd = Math.abs(fwd);
+    const steerScale = Math.min(1, spd / 120) * (1 - 0.25 * Math.min(1, spd / top));
+    const dir = fwd < -5 ? -1 : 1;
+    const targetYaw = inp.steer * spec.turn * steerScale * dir;
+    const yawResponse = p.slip > 0 ? 2.5 : 10;
+    p.av += (targetYaw - p.av) * Math.min(1, yawResponse * DT);
+    if (p.slip > 0) p.slip -= DT;
+
+    p.vx = fx * fwd - fy * lat;
+    p.vy = fy * fwd + fx * lat;
+
+    const v = Math.hypot(p.vx, p.vy);
+    if (v > 1600) { p.vx *= 1600 / v; p.vy *= 1600 / v; }
+}
+
+function updateArena(room, now) {
+    const t = Math.max(0, (now - room.matchStartTime) / 1000);
+    const R0 = room.settings.arenaRadius;
+    let frac = 1;
+    if (t >= SHRINK_END) frac = SHRINK_FRAC + (FINAL_FRAC - SHRINK_FRAC) * Math.min(1, (t - SHRINK_END) / (FINAL_END - SHRINK_END));
+    else if (t >= SHRINK_START) frac = 1 + (SHRINK_FRAC - 1) * (t - SHRINK_START) / (SHRINK_END - SHRINK_START);
+    room.arenaR = R0 * frac;
+    const wasSD = room.suddenDeath;
+    room.suddenDeath = t >= SHRINK_END;
+    if (room.suddenDeath && !wasSD) io.to(room.id).emit('arenaEvent', { type: 'suddenDeath' });
+    if (t >= SHRINK_START && !room._shrinkAnnounced) {
+        room._shrinkAnnounced = true;
+        io.to(room.id).emit('arenaEvent', { type: 'shrink' });
+    }
+    return t;
+}
+
+function sendSnapshot(room, now) {
+    const t = Math.max(0, (now - room.matchStartTime) / 1000);
+    io.to(room.id).emit('snapshot', {
+        players: Object.values(room.players).map(p => ({
+            id: p.id, name: p.name, isBot: p.isBot, carType: p.carType,
+            cosmetics: p.cosmetics,
+            x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10,
+            angle: Math.round(p.angle * 1000) / 1000,
+            alive: p.alive, shield: p.shield, scale: p.scale,
+            isDashing: p.dashTimer > 0, skid: !!p.skid,
+            dashCooldown: p.dashCooldown, shootCooldown: p.shootCooldown,
+            speedMult: p.speedMult, slip: p.slip,
+            magnetTimer: p.magnetTimer || 0,
+            weapon: p.weapon || null,
+            kills: p.kills
+        })),
+        powerups: room.powerups,
+        projectiles: room.projectiles,
+        hazards: room.hazards.map(h => ({ id: h.id, type: h.type, x: h.x, y: h.y })),
+        timestamp: now,
+        elapsed: Math.max(0, now - room.matchStartTime),
+        arenaRadius: room.arenaR || room.settings.arenaRadius,
+        arenaBase: room.settings.arenaRadius,
+        suddenDeath: !!room.suddenDeath,
+        shrinkIn: room.countdown > 0 ? SHRINK_START : Math.max(0, SHRINK_START - t),
+        round: room.round,
+        maxRounds: room.maxRounds,
+    });
+}
+
 // ─── Game loop ─────────────────────────────────────────────────────────────
 setInterval(() => {
     const now = Date.now();
@@ -644,7 +958,7 @@ setInterval(() => {
         const room = rooms[roomId];
         if (!room.running) continue;
 
-        // Countdown
+        // Countdown — cars sit on the grid, but clients still get the scene
         if (room.countdown > 0) {
             if (!room._cdlast || now - room._cdlast >= 1000) {
                 room.countdown -= 1;
@@ -653,9 +967,16 @@ setInterval(() => {
             }
             if (room.countdown <= 0) {
                 room.countdown = 0;
+                room.matchStartTime = now;
                 for (let i = 0; i < 6; i++) spawnPowerup(room);
-            } else continue;
+            } else {
+                room.arenaR = room.settings.arenaRadius;
+                if (++room._cdSnap % 6 === 0) sendSnapshot(room, now);
+                continue;
+            }
         }
+
+        updateArena(room, now);
 
         // Spawn powerups
         if (!room._lastPU || now - room._lastPU > room.settings.powerupInterval) {
@@ -669,46 +990,25 @@ setInterval(() => {
             if (p.isBot && p.alive) updateBotAI(p, room, now);
         }
 
-        // ─── Physics per player ────────────────────────────────────────
+        // ─── Controls, weapons, powerups per player ────────────────────
         for (const id in room.players) {
             const p = room.players[id];
-            if (!p.alive) { p.survivalTime = p.survivalTime || 0; continue; }
+            if (!p.alive) {
+                // Wrecks keep sliding out through the broken fence
+                p.x += p.vx * DT; p.y += p.vy * DT;
+                p.vx *= 0.95; p.vy *= 0.95;
+                continue;
+            }
             p.survivalTime = now - room.matchStartTime;
 
             const inp = p.inputs;
-
-            // Timers
             tickTimers(p);
-
-            // ─── Driving model: speed-sensitive steering ───────────────
-            const curSpeed = Math.hypot(p.vx, p.vy);
-            const fdot = p.vx * Math.cos(p.angle) + p.vy * Math.sin(p.angle);
-            // You can only steer while moving; steering inverts when reversing
-            const steerAuthority = Math.min(1, curSpeed / 260);
-            const reverseDir = fdot < -8 ? -1 : 1;
-            let steerGrip = 1;
-            if (p.slip > 0) { steerGrip = 0.45; p.slip -= DT; }
-            p.angle += inp.steer * 3.4 * p.carStats.turn * DT * steerAuthority * reverseDir * steerGrip;
-
-            // Engine thrust along heading (forward / reverse-brake)
-            const engine = 780 * p.carStats.accel * inp.forward * p.speedMult;
-            p.vx += Math.cos(p.angle) * engine * DT;
-            p.vy += Math.sin(p.angle) * engine * DT;
-
-            // Dash
-            p.isDashing = false;
-            if (inp.dash && p.dashCooldown <= 0) {
-                p.vx += Math.cos(p.angle) * 1200 * p.carStats.dashForce;
-                p.vy += Math.sin(p.angle) * 1200 * p.carStats.dashForce;
-                p.dashCooldown = 1.5;
-                p.isDashing = true;
-                p.dashesUsed++;
-            }
+            driveCar(p, room, now);
 
             // Drop a held trap weapon (Oil / Reverse) behind the car
             if (inp.drop && p.weapon && p.dropCooldown <= 0) {
-                const bx = p.x - Math.cos(p.angle) * 42;
-                const by = p.y - Math.sin(p.angle) * 42;
+                const bx = p.x - Math.cos(p.angle) * 56;
+                const by = p.y - Math.sin(p.angle) * 56;
                 const isOil = p.weapon === 'oil';
                 room.hazards.push({
                     id: uuidv4().slice(0, 6),
@@ -726,19 +1026,19 @@ setInterval(() => {
 
             // Shoot
             if (inp.shoot && p.shootCooldown <= 0 && room.projectiles.length < MAX_PROJECTILES) {
-                const speed = 1500;
+                const speed = 1150;
                 room.projectiles.push({
                     id: uuidv4().slice(0, 6),
                     ownerId: p.id,
-                    x: p.x + Math.cos(p.angle) * 40,
-                    y: p.y + Math.sin(p.angle) * 40,
-                    vx: Math.cos(p.angle) * speed,
-                    vy: Math.sin(p.angle) * speed,
+                    x: p.x + Math.cos(p.angle) * 50,
+                    y: p.y + Math.sin(p.angle) * 50,
+                    vx: Math.cos(p.angle) * speed + p.vx,
+                    vy: Math.sin(p.angle) * speed + p.vy,
                     created: now
                 });
                 p.shootCooldown = 0.8;
-                p.vx -= Math.cos(p.angle) * 150;
-                p.vy -= Math.sin(p.angle) * 150;
+                p.vx -= Math.cos(p.angle) * 50;
+                p.vy -= Math.sin(p.angle) * 50;
                 p.shotsFired++;
             }
 
@@ -754,62 +1054,51 @@ setInterval(() => {
                 }
             }
 
-            // ─── Traction: keep forward momentum, scrub sideways (grip) ─
-            {
-                const fx = Math.cos(p.angle), fy = Math.sin(p.angle);
-                let fwd = p.vx * fx + p.vy * fy;      // forward component
-                let lat = -p.vx * fy + p.vy * fx;     // lateral (sideways) component
-                // Lower retain = more grip (car tracks its heading)
-                let latRetain = p.carStats.turn > 1.25 ? 0.90 : 0.82; // drifters slide more
-                if (p.isDashing) latRetain = 0.95;                    // dash slides
-                if (p.slip > 0) latRetain = 0.985;                    // oil = very slidey
-                lat *= latRetain;
-                // Rolling resistance: momentum when on the gas, firmer drag when coasting
-                fwd *= (Math.abs(inp.forward) > 0.05 ? 0.99 : 0.955);
-                p.vx = fx * fwd - fy * lat;
-                p.vy = fy * fwd + fx * lat;
-            }
-
-            // Velocity cap
-            const vel = Math.hypot(p.vx, p.vy);
-            const maxVel = 2500 * p.carStats.maxSpeed;
-            if (vel > maxVel) { p.vx = (p.vx / vel) * maxVel; p.vy = (p.vy / vel) * maxVel; }
-
-            p.x += p.vx * DT;
-            p.y += p.vy * DT;
-
             p.dashCooldown = Math.max(0, p.dashCooldown - DT);
+            p.dashTimer = Math.max(0, p.dashTimer - DT);
             p.shootCooldown = Math.max(0, p.shootCooldown - DT);
             p.dropCooldown = Math.max(0, p.dropCooldown - DT);
+        }
 
-            // Arena boundary
-            const distFromCenter = Math.hypot(p.x, p.y);
-            if (distFromCenter > room.settings.arenaRadius) {
-                if (!p.shield) {
-                    p.alive = false;
-                    room.eliminationOrder.push({ id: p.id, name: p.name });
-                    io.to(room.id).emit('playerEliminated', { id: p.id, name: p.name });
-                } else {
-                    const ang = Math.atan2(p.y, p.x);
-                    p.vx = -Math.cos(ang) * 600;
-                    p.vy = -Math.sin(ang) * 600;
-                    p.x = Math.cos(ang) * (room.settings.arenaRadius - 10);
-                    p.y = Math.sin(ang) * (room.settings.arenaRadius - 10);
-                    p.shield = false;
-                    p.shieldTimer = 0;
+        // ─── Integrate + resolve contacts in sub-steps ─────────────────
+        const fx = { best: null };
+        const h = DT / SUBSTEPS;
+        for (let s = 0; s < SUBSTEPS; s++) {
+            const alive = Object.values(room.players).filter(p => p.alive);
+            for (const p of alive) {
+                p.x += p.vx * h;
+                p.y += p.vy * h;
+                p.angle += p.av * h;
+            }
+            let boxes = alive.map(carBox);
+            for (let i = 0; i < boxes.length; i++) {
+                for (let j = i + 1; j < boxes.length; j++) {
+                    const A = boxes[i], B = boxes[j];
+                    const reach = (A.hl + B.hl) + 2;
+                    if (Math.abs(A.p.x - B.p.x) > reach || Math.abs(A.p.y - B.p.y) > reach) continue;
+                    resolveCars(A, B, room, now, fx);
                 }
             }
+            boxes = alive.map(carBox);          // positions moved — rebuild before the fence pass
+            for (const B of boxes) resolveFence(B, room.arenaR, room, now, fx);
+        }
+        if (fx.best) io.to(room.id).emit('collision', fx.best);
 
-            // Powerup pickup
+        // Powerup pickup
+        for (const id in room.players) {
+            const p = room.players[id];
+            if (!p.alive) continue;
             for (let i = room.powerups.length - 1; i >= 0; i--) {
                 const pu = room.powerups[i];
-                if (Math.hypot(p.x - pu.x, p.y - pu.y) < 30 * p.scale * p.carStats.size) {
+                if (Math.hypot(p.x - pu.x, p.y - pu.y) < 40 * p.scale * p.carStats.size) {
                     applyPowerup(pu.type, p, room);
                     room.powerups.splice(i, 1);
                     io.to(room.id).emit('powerupCollected', { playerId: p.id, puId: pu.id, type: pu.type });
                 }
             }
         }
+        // Powerups caught outside the shrinking fence are lost
+        room.powerups = room.powerups.filter(pu => Math.hypot(pu.x, pu.y) < room.arenaR - 30);
 
         // ─── Projectile physics ────────────────────────────────────────
         for (let i = room.projectiles.length - 1; i >= 0; i--) {
@@ -817,7 +1106,7 @@ setInterval(() => {
             proj.x += proj.vx * DT;
             proj.y += proj.vy * DT;
 
-            if (Math.hypot(proj.x, proj.y) > room.settings.arenaRadius || now - proj.created > 2000) {
+            if (Math.hypot(proj.x, proj.y) > room.arenaR + 40 || now - proj.created > 1300) {
                 room.projectiles.splice(i, 1);
                 continue;
             }
@@ -825,81 +1114,26 @@ setInterval(() => {
             for (const id in room.players) {
                 const p = room.players[id];
                 if (!p.alive || p.id === proj.ownerId) continue;
-                if (Math.hypot(p.x - proj.x, p.y - proj.y) < 30 * p.scale * p.carStats.size) {
+                if (Math.hypot(p.x - proj.x, p.y - proj.y) < 34 * p.scale * p.carStats.size) {
                     const ang = Math.atan2(proj.vy, proj.vx);
-                    const force = (p.shield ? 400 : 1000) / p.carStats.mass;
+                    const force = (p.shield ? 160 : 420) / carMass(p);
                     p.vx += Math.cos(ang) * force;
                     p.vy += Math.sin(ang) * force;
+                    p.av += (Math.random() - 0.5) * 3;
 
-                    // Track damage
                     const shooter = room.players[proj.ownerId];
-                    if (shooter) shooter.damageDealt += force;
+                    if (shooter) { shooter.damageDealt += force; markHit(p, shooter, now); }
 
                     room.projectiles.splice(i, 1);
-                    io.to(room.id).emit('collision', { impact: 500, x: p.x, y: p.y, type: 'projectile' });
+                    io.to(room.id).emit('collision', { impact: 260, x: p.x, y: p.y, type: 'projectile' });
                     break;
-                }
-            }
-        }
-
-        // ─── Car-to-car collisions ─────────────────────────────────────
-        const alive = Object.values(room.players).filter(p => p.alive);
-        for (let i = 0; i < alive.length; i++) {
-            for (let j = i + 1; j < alive.length; j++) {
-                const a = alive[i], b = alive[j];
-                const dx = b.x - a.x, dy = b.y - a.y;
-                const dist = Math.hypot(dx, dy);
-                const rA = 25 * a.scale * a.carStats.size, rB = 25 * b.scale * b.carStats.size;
-                const minDist = rA + rB;
-
-                if (dist < minDist && dist > 0) {
-                    const overlap = minDist - dist;
-                    const nx = dx / dist, ny = dy / dist;
-
-                    // Separate
-                    a.x -= nx * overlap * 0.5;
-                    a.y -= ny * overlap * 0.5;
-                    b.x += nx * overlap * 0.5;
-                    b.y += ny * overlap * 0.5;
-
-                    const dvx = a.vx - b.vx, dvy = a.vy - b.vy;
-                    const vn = dvx * nx + dvy * ny;
-                    if (vn > 0) continue;
-
-                    let bounce = 1.3;
-                    const massA = a.scale * a.scale * a.carStats.mass;
-                    const massB = b.scale * b.scale * b.carStats.mass;
-                    if (a.scale > 1.2) bounce *= 1.5;
-                    if (b.scale > 1.2) bounce *= 1.5;
-                    if (a.isDashing) bounce *= 1.4;
-                    if (b.isDashing) bounce *= 1.4;
-
-                    const impulse = -vn * bounce;
-                    const totalMass = massA + massB;
-
-                    a.vx -= nx * impulse * (massB / totalMass);
-                    a.vy -= ny * impulse * (massB / totalMass);
-                    b.vx += nx * impulse * (massA / totalMass);
-                    b.vy += ny * impulse * (massA / totalMass);
-
-                    // Track damage/kills
-                    const impactForce = Math.abs(vn);
-                    a.damageDealt += impactForce * 0.5;
-                    b.damageDealt += impactForce * 0.5;
-
-                    if (impactForce > 80) {
-                        io.to(room.id).emit('collision', {
-                            impact: impactForce,
-                            x: (a.x + b.x) / 2, y: (a.y + b.y) / 2,
-                            type: 'car'
-                        });
-                    }
                 }
             }
         }
 
         // ─── Trap hazards (dropped Oil / Reverse) ──────────────────────
         if (room.hazards && room.hazards.length) {
+            const alive = Object.values(room.players).filter(p => p.alive);
             const live = [];
             for (const hz of room.hazards) {
                 if (now > hz.expires) continue;
@@ -912,6 +1146,7 @@ setInterval(() => {
                             p.slip = Math.max(p.slip, 2.5);
                         } else { // reverse
                             p.angle += Math.PI;
+                            p.av = 0;
                             p.vx *= -0.5; p.vy *= -0.5;
                             io.to(room.id).emit('collision', { impact: 60, x: hz.x, y: hz.y, type: 'reverse' });
                             consumed = true;
@@ -924,28 +1159,7 @@ setInterval(() => {
             room.hazards = live;
         }
 
-        // ─── Broadcast snapshot ────────────────────────────────────────
-        io.to(room.id).emit('snapshot', {
-            players: Object.values(room.players).map(p => ({
-                id: p.id, name: p.name, isBot: p.isBot, carType: p.carType,
-                cosmetics: p.cosmetics,
-                x: p.x, y: p.y, angle: p.angle,
-                alive: p.alive, shield: p.shield, scale: p.scale,
-                isDashing: p.isDashing,
-                dashCooldown: p.dashCooldown, shootCooldown: p.shootCooldown,
-                speedMult: p.speedMult, slip: p.slip,
-                magnetTimer: p.magnetTimer || 0,
-                weapon: p.weapon || null,
-                kills: p.kills
-            })),
-            powerups: room.powerups,
-            projectiles: room.projectiles,
-            hazards: room.hazards.map(h => ({ id: h.id, type: h.type, x: h.x, y: h.y })),
-            timestamp: Date.now(),
-            elapsed: Math.max(0, Date.now() - room.matchStartTime),
-            dangerZone: DANGER_ZONE,
-            arenaRadius: room.settings.arenaRadius
-        });
+        sendSnapshot(room, now);
 
         // ─── Win condition ─────────────────────────────────────────────
         const aliveCount = Object.values(room.players).filter(p => p.alive).length;
@@ -953,7 +1167,9 @@ setInterval(() => {
 
         if ((totalPlayers > 1 && aliveCount <= 1) || (totalPlayers === 1 && aliveCount === 0)) {
             room.running = false;
-            const winner = Object.values(room.players).find(p => p.alive);
+            // Last car standing — or, if the final cars went out together, the last one out
+            const winner = Object.values(room.players).find(p => p.alive)
+                || (room.eliminationOrder.length ? room.players[room.eliminationOrder.pop().id] : null);
 
             // Score: 1st=10, 2nd=6, 3rd=4, 4th=3, 5th=2, rest=1
             const scoreTable = [10, 6, 4, 3, 2, 1, 1, 1];
@@ -963,8 +1179,6 @@ setInterval(() => {
                 r.rank = i + 1;
                 r.score = scoreTable[i] || 1;
                 room.scores[r.id] = (room.scores[r.id] || 0) + r.score;
-                // Count kills (players eliminated while being pushed by this player... simplified: winner gets kill credit)
-                if (winner && r.id !== winner.id) winner.kills++;
             });
 
             const matchOver = room.round >= room.maxRounds;
@@ -986,23 +1200,16 @@ setInterval(() => {
                     survivalTime: Math.round(p.survivalTime / 1000)
                 }))
             });
+            if (matchOver) io.to(room.id).emit('roomUpdate', roomSummary(room));
 
             // Auto-start next round after delay
             if (!matchOver) {
                 setTimeout(() => {
-                    if (!rooms[roomId] || rooms[roomId].running) return;
-                    rooms[roomId].running = true;
-                    rooms[roomId].countdown = 3;
-                    rooms[roomId].powerups = [];
-                    rooms[roomId].projectiles = [];
-                    rooms[roomId].hazards = [];
-                    rooms[roomId].round++;
-                    rooms[roomId].matchStartTime = Date.now() + 3000;
-                    rooms[roomId].eliminationOrder = [];
-                    rooms[roomId]._cdlast = 0;
-                    resetPlayers(rooms[roomId]);
-                    io.to(roomId).emit('matchStart', { count: 3, round: rooms[roomId].round });
-                }, 5000);
+                    const r = rooms[roomId];
+                    if (!r || r.running) return;
+                    r.round++;
+                    beginRound(r);
+                }, 6000);
             }
         }
     }

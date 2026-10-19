@@ -4,7 +4,7 @@ import { soundManager } from '../utils/SoundManager';
 import { drawCarBody, drawWheels, drawHeadlights } from './CanvasRenderer';
 import {
     PAINTS, TOPPERS, TRAILS,
-    loadCosmetics, saveCosmetics,
+    loadGarage, saveGarage, cosmeticsFor,
     paintColor, drawTopper,
 } from '../cosmetics';
 import { CAR_VARIANT, tintedCar, preloadCarArt } from '../carArt';
@@ -128,7 +128,7 @@ function CarShowroom({ car, cos }) {
             ctx.save();
             ctx.translate(cx, cy);
             ctx.rotate(angle);
-            ctx.scale(5.0, 5.0);
+            ctx.scale(2.8, 2.8);   // ≈ the sprite's native size → crisp, not blown up
             paintCar(ctx, car.key, car.color, cos);
             ctx.restore();
 
@@ -170,7 +170,7 @@ function CarShowroom({ car, cos }) {
 }
 
 // Small static thumbnail used in the picker strip.
-function CarThumb({ car, active, onSelect }) {
+function CarThumb({ car, cos, active, onSelect }) {
     const canvasRef = useRef(null);
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -184,7 +184,8 @@ function CarThumb({ car, active, onSelect }) {
         const draw = () => {
             if (cancelled) return;
             ctx.clearRect(0, 0, W, H);
-            const sprite = tintedCar(CAR_VARIANT[car.key] || 1, car.color);
+            const paint = (cos && paintColor(cos.paint)) || car.color;
+            const sprite = tintedCar(CAR_VARIANT[car.key] || 1, paint);
             if (sprite) {
                 const h = 34, w = h * sprite.width / sprite.height;
                 ctx.drawImage(sprite, W / 2 - w / 2, H / 2 - h / 2, w, h);
@@ -198,7 +199,7 @@ function CarThumb({ car, active, onSelect }) {
         draw();
         preloadCarArt(draw);
         return () => { cancelled = true; };
-    }, [car.key, car.color]);
+    }, [car.key, car.color, cos && cos.paint]);
 
     return (
         <button
@@ -398,22 +399,38 @@ function CarStats({ carKey }) {
 const INVITE_CODE = (new URLSearchParams(window.location.search).get('room') || '').toUpperCase();
 
 export default function Lobby({ room, setRoom, setPlayer, player, connected, connError }) {
-    const [name, setName] = useState('Player');
+    const [name, setName] = useState(() => {
+        try { return localStorage.getItem('dasharena.name') || 'Player'; } catch (_) { return 'Player'; }
+    });
     const [rid, setRid] = useState(INVITE_CODE);
     const [error, setError] = useState('');
     const [botCount, setBotCount] = useState(3);
     const [botDifficulty, setBotDifficulty] = useState('medium');
-    const [carType, setCarType] = useState('sports');
+    const [carType, setCarTypeRaw] = useState(() => {
+        try {
+            const k = localStorage.getItem('dasharena.car');
+            return CAR_TYPES.some(c => c.key === k) ? k : 'sports';
+        } catch (_) { return 'sports'; }
+    });
+    const setCarType = (k) => {
+        setCarTypeRaw(k);
+        try { localStorage.setItem('dasharena.car', k); } catch (_) { /* ignore */ }
+    };
     const [tab, setTab] = useState('multi');
     const [copied, setCopied] = useState(false);
     const [step, setStep] = useState('name');
-    const [cosmetics, setCosmetics] = useState(loadCosmetics);
+    const [garage, setGarage] = useState(loadGarage);
+    const cosmetics = cosmeticsFor(garage, carType);   // the selected car's own look
 
     useEffect(() => { preloadCarArt(); }, []);
+    useEffect(() => {
+        try { localStorage.setItem('dasharena.name', name); } catch (_) { /* ignore */ }
+    }, [name]);
 
     function updateCosmetics(next) {
-        setCosmetics(next);
-        saveCosmetics(next);
+        const g = { ...garage, [carType]: next };
+        setGarage(g);
+        saveGarage(g);
     }
 
     function createRoom() {
@@ -608,6 +625,7 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
                                         <CarThumb
                                             key={car.key}
                                             car={car}
+                                            cos={cosmeticsFor(garage, car.key)}
                                             active={carType === car.key}
                                             onSelect={k => { setCarType(k); soundManager.playClick(); }}
                                         />
@@ -728,9 +746,41 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
                             </ul>
                         </div>
 
-                        <button className="btn" onClick={startMatch} style={{ marginTop: '0.5rem' }}>
-                            START MATCH
-                        </button>
+                        {/* Match length — the host picks how many rounds */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                            <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8899aa' }}>Rounds</span>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                                {[1, 3, 5].map(n => {
+                                    const isHost = room.hostId === socket.id;
+                                    const on = (room.maxRounds || 3) === n;
+                                    return (
+                                        <button key={n} disabled={!isHost}
+                                            onClick={() => { socket.emit('updateSettings', { roomId: room.id, settings: { maxRounds: n } }); soundManager.playClick(); }}
+                                            style={{
+                                                minWidth: 44, padding: '6px 10px', borderRadius: 6, fontFamily: 'inherit', fontWeight: 700,
+                                                cursor: isHost ? 'pointer' : 'default', opacity: isHost || on ? 1 : 0.45,
+                                                background: on ? 'rgba(232,160,48,0.16)' : 'transparent',
+                                                border: `1px solid ${on ? '#e8a030' : 'rgba(255,255,255,0.1)'}`,
+                                                color: on ? '#e8a030' : '#8899aa',
+                                            }}>{n}</button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: '#8899aa', textAlign: 'center', lineHeight: 1.4 }}>
+                            Push rivals through the fence. Last car standing wins the round —
+                            after {room.maxRounds || 3} round{(room.maxRounds || 3) > 1 ? 's' : ''}, the most points wins the match.
+                        </div>
+
+                        {room.hostId === socket.id ? (
+                            <button className="btn" onClick={startMatch} style={{ marginTop: '0.25rem' }}>
+                                START MATCH
+                            </button>
+                        ) : (
+                            <div style={{ textAlign: 'center', color: '#e8a030', fontSize: '0.85rem', padding: '10px' }}>
+                                Waiting for the host to start…
+                            </div>
+                        )}
                         <button className="btn btn-secondary" onClick={leaveRoom} style={{ fontSize: '0.8rem', padding: '8px' }}>
                             LEAVE ROOM
                         </button>
