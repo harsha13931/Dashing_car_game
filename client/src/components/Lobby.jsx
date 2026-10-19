@@ -3,10 +3,11 @@ import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
 import { drawCarBody, drawWheels, drawHeadlights } from './CanvasRenderer';
 import {
-    PAINTS, WHEELS, TOPPERS, TRAILS,
-    DEFAULT_COSMETICS, loadCosmetics, saveCosmetics,
-    paintColor, wheelStyle, trailStyle, drawTopper,
+    PAINTS, TOPPERS, TRAILS,
+    loadCosmetics, saveCosmetics,
+    paintColor, drawTopper,
 } from '../cosmetics';
+import { CAR_VARIANT, tintedCar, preloadCarArt } from '../carArt';
 
 const DIFFICULTIES = [
     { key: 'easy', label: 'Easy', color: '#4ade80', desc: 'Relaxed bots' },
@@ -45,7 +46,8 @@ function StatBar({ value, max = 5, color }) {
 // `cos` (optional) applies equipped cosmetics.
 function paintCar(ctx, carKey, baseColor, cos) {
     const color = (cos && paintColor(cos.paint)) || baseColor;
-    const wheel = cos ? wheelStyle(cos.wheel) : null;
+    const variant = CAR_VARIANT[carKey] || 1;
+    const sprite = tintedCar(variant, color);
 
     // Drop shadow under the car
     ctx.save();
@@ -55,10 +57,19 @@ function paintCar(ctx, carKey, baseColor, cos) {
     ctx.fill();
     ctx.restore();
 
-    drawWheels(ctx, carKey, wheel);
-    drawCarBody(ctx, carKey, color, false);
-    drawHeadlights(ctx, carKey);
-    if (cos) drawTopper(ctx, cos.topper);
+    if (sprite) {
+        // Kenney sprite faces up; our local space has the nose at +x → rotate 90°
+        const L = 46, W = L * sprite.width / sprite.height;
+        ctx.save();
+        ctx.rotate(Math.PI / 2);
+        ctx.drawImage(sprite, -W / 2, -L / 2, W, L);
+        ctx.restore();
+    } else {
+        drawWheels(ctx, carKey);
+        drawCarBody(ctx, carKey, color, false);
+        drawHeadlights(ctx, carKey);
+    }
+    if (cos && cos.topper && cos.topper !== 'none') drawTopper(ctx, cos.topper);
 }
 
 // Large rotating turntable preview of the selected car.
@@ -169,14 +180,24 @@ function CarThumb({ car, active, onSelect }) {
         const W = 50, H = 38;
         canvas.width = W * dpr; canvas.height = H * dpr;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, W, H);
-        ctx.save();
-        ctx.translate(W / 2, H / 2);
-        ctx.rotate(-Math.PI / 2);
-        ctx.scale(1.25, 1.25);
-        drawWheels(ctx, car.key);
-        drawCarBody(ctx, car.key, car.color, false);
-        ctx.restore();
+        let cancelled = false;
+        const draw = () => {
+            if (cancelled) return;
+            ctx.clearRect(0, 0, W, H);
+            const sprite = tintedCar(CAR_VARIANT[car.key] || 1, car.color);
+            if (sprite) {
+                const h = 34, w = h * sprite.width / sprite.height;
+                ctx.drawImage(sprite, W / 2 - w / 2, H / 2 - h / 2, w, h);
+            } else {
+                ctx.save();
+                ctx.translate(W / 2, H / 2); ctx.rotate(-Math.PI / 2); ctx.scale(1.25, 1.25);
+                drawWheels(ctx, car.key); drawCarBody(ctx, car.key, car.color, false);
+                ctx.restore();
+            }
+        };
+        draw();
+        preloadCarArt(draw);
+        return () => { cancelled = true; };
     }, [car.key, car.color]);
 
     return (
@@ -244,7 +265,6 @@ function TopperThumb({ topperKey }) {
 
 const CUSTOMIZE_TABS = [
     { key: 'paint',  label: 'Paint' },
-    { key: 'wheel',  label: 'Wheels' },
     { key: 'topper', label: 'Hat' },
     { key: 'trail',  label: 'Trail' },
 ];
@@ -325,19 +345,6 @@ function CustomizeScreen({ car, cos, onChange, onDone }) {
                     </Swatch>
                 ))}
 
-                {tab === 'wheel' && WHEELS.map(w => (
-                    <Swatch key={w.key} active={cos.wheel === w.key} title={w.name} onClick={() => set('wheel', w.key)}>
-                        <div style={{
-                            width: '32px', height: '32px', borderRadius: '50%',
-                            background: '#0e0e0e', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        }}>
-                            <div style={{ width: '22px', height: '22px', borderRadius: '50%', background: w.rim, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: w.hub }} />
-                            </div>
-                        </div>
-                    </Swatch>
-                ))}
-
                 {tab === 'topper' && TOPPERS.map(tp => (
                     <Swatch key={tp.key} active={cos.topper === tp.key} title={tp.name} onClick={() => set('topper', tp.key)}>
                         <div style={{ width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -398,6 +405,8 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
     const [tab, setTab] = useState('solo');
     const [step, setStep] = useState('name');
     const [cosmetics, setCosmetics] = useState(loadCosmetics);
+
+    useEffect(() => { preloadCarArt(); }, []);
 
     function updateCosmetics(next) {
         setCosmetics(next);
