@@ -8,11 +8,13 @@ const CAR_VARIANT = {           // car type → Kenney body style (1-5)
     sports: 3, muscle: 1, truck: 4, rally: 5,
     kart: 2, suv: 4, drift: 3, supercar: 2,
 };
-const TYPE_SIZE = {             // relative display size per type
-    sports: 0.95, muscle: 1.1, truck: 1.45, rally: 0.98,
-    kart: 0.72, suv: 1.22, drift: 0.98, supercar: 0.9,
+const TYPE_SIZE = {             // matches server carStats.size for hitbox accuracy
+    sports: 0.9, muscle: 1.1, truck: 1.4, rally: 0.95,
+    kart: 0.7, suv: 1.2, drift: 0.95, supercar: 0.85,
 };
-const BASE_SPRITE_SCALE = 0.52; // Kenney car is ~131px long → ~68px
+// Server collision radius = 25 * size → diameter 50*size. Kenney car is 71px wide,
+// so width ≈ collision diameter when scale = 50*size/71 ≈ 0.7*size.
+const BASE_SPRITE_SCALE = 0.7;
 
 function hashId(id) {
     let h = 0;

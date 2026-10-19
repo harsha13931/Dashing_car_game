@@ -16,6 +16,16 @@ export default function Game({ room, player, onBack }) {
     const activeButtons = useRef(new Set());
     const joystickInput = useRef({ forward: 0, steer: 0 });
 
+    const joyRef = useRef({ active: false, bx: 0, by: 0, maxR: 55 });
+    const [joyView, setJoyView] = useState({ active: false, bx: 0, by: 0, kx: 0, ky: 0 });
+    const [touchUI, setTouchUI] = useState(false);
+
+    useEffect(() => {
+        const coarse = (navigator.maxTouchPoints || 0) > 0 ||
+            (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+        setTouchUI(!!coarse);
+    }, []);
+
     // ─── Socket listeners ───────────────────────────────────────────────
     useEffect(() => {
         socket.on('snapshot', snap => setSnapshot(snap));
@@ -109,59 +119,53 @@ export default function Game({ room, player, onBack }) {
         return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp); };
     }, []);
 
-    // ─── Joystick ───────────────────────────────────────────────────────
-    const joystickRef = useRef(null);
-    const knobRef = useRef(null);
-
+    // ─── Floating joystick (appears where you touch the left half) ───────
+    const zoneRef = useRef(null);
     useEffect(() => {
-        const joystick = joystickRef.current;
-        if (!joystick) return;
-
-        let startX = 0, startY = 0;
-
-        const handleMove = (clientX, clientY) => {
-            const rect = joystick.getBoundingClientRect();
-            const centerX = rect.left + rect.width / 2;
-            const centerY = rect.top + rect.height / 2;
-            const maxR = 45;
-            let dx = clientX - centerX;
-            let dy = clientY - centerY;
-            const mag = Math.hypot(dx, dy);
-            if (mag > maxR) { dx = (dx / mag) * maxR; dy = (dy / mag) * maxR; }
-
-            const steer = dx / maxR;
-            const forward = -dy / maxR;
-
-            joystickInput.current = { forward, steer };
-
-            // Move knob visual
-            if (knobRef.current) {
-                knobRef.current.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
-            }
-            resolveInput();
-        };
-
-        const resetKnob = () => {
-            joystickInput.current = { forward: 0, steer: 0 };
-            if (knobRef.current) knobRef.current.style.transform = 'translate(-50%, -50%)';
-            resolveInput();
-        };
+        if (!touchUI) return;
+        const zone = zoneRef.current;
+        if (!zone) return;
+        const computeMaxR = () => Math.max(42, Math.min(70, window.innerWidth * 0.11));
 
         const onDown = (e) => {
             e.preventDefault();
-            joystick.setPointerCapture(e.pointerId);
-            handleMove(e.clientX, e.clientY);
-
-            const onMove = (ev) => { ev.preventDefault(); handleMove(ev.clientX, ev.clientY); };
-            const onUp = (ev) => { ev.preventDefault(); resetKnob(); joystick.removeEventListener('pointermove', onMove); joystick.removeEventListener('pointerup', onUp); };
-
-            joystick.addEventListener('pointermove', onMove);
-            joystick.addEventListener('pointerup', onUp);
+            try { zone.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+            const maxR = computeMaxR();
+            joyRef.current = { active: true, bx: e.clientX, by: e.clientY, maxR };
+            setJoyView({ active: true, bx: e.clientX, by: e.clientY, kx: e.clientX, ky: e.clientY });
+            joystickInput.current = { forward: 0, steer: 0 };
+            resolveInput();
         };
-
-        joystick.addEventListener('pointerdown', onDown);
-        return () => joystick.removeEventListener('pointerdown', onDown);
-    }, []);
+        const onMove = (e) => {
+            const j = joyRef.current;
+            if (!j.active) return;
+            e.preventDefault();
+            let dx = e.clientX - j.bx, dy = e.clientY - j.by;
+            const mag = Math.hypot(dx, dy);
+            if (mag > j.maxR) { dx = (dx / mag) * j.maxR; dy = (dy / mag) * j.maxR; }
+            joystickInput.current = { forward: -dy / j.maxR, steer: dx / j.maxR };
+            setJoyView({ active: true, bx: j.bx, by: j.by, kx: j.bx + dx, ky: j.by + dy });
+            resolveInput();
+        };
+        const onUp = (e) => {
+            if (!joyRef.current.active) return;
+            e.preventDefault();
+            joyRef.current = { active: false, bx: 0, by: 0, maxR: computeMaxR() };
+            setJoyView({ active: false, bx: 0, by: 0, kx: 0, ky: 0 });
+            joystickInput.current = { forward: 0, steer: 0 };
+            resolveInput();
+        };
+        zone.addEventListener('pointerdown', onDown);
+        zone.addEventListener('pointermove', onMove);
+        zone.addEventListener('pointerup', onUp);
+        zone.addEventListener('pointercancel', onUp);
+        return () => {
+            zone.removeEventListener('pointerdown', onDown);
+            zone.removeEventListener('pointermove', onMove);
+            zone.removeEventListener('pointerup', onUp);
+            zone.removeEventListener('pointercancel', onUp);
+        };
+    }, [touchUI]);
 
     // ─── Button helpers ─────────────────────────────────────────────────
     const handleBtn = (action, pressed) => {
@@ -185,6 +189,8 @@ export default function Game({ room, player, onBack }) {
 
             {/* ─── HUD Overlay ──────────────────────────────────────────── */}
             <div className="full-screen" style={{ pointerEvents: 'none', zIndex: 4 }}>
+
+                <Minimap snapshot={snapshot} localId={socket.id} />
 
                 {/* Top Center: Timer + Round */}
                 <div style={{
@@ -399,61 +405,111 @@ export default function Game({ room, player, onBack }) {
                 </div>
             )}
 
-            {/* ─── Mobile Controls ──────────────────────────────────────── */}
-            <div className="full-screen" style={{ pointerEvents: 'none', zIndex: 5 }}>
-                {/* Joystick */}
-                <div
-                    ref={joystickRef}
-                    style={{
-                        position: 'absolute', bottom: 30, left: 30,
-                        width: 110, height: 110,
-                        background: 'rgba(255,255,255,0.06)',
-                        borderRadius: '50%',
-                        border: '2px solid rgba(255,255,255,0.15)',
-                        pointerEvents: 'auto', touchAction: 'none'
-                    }}
-                >
+            {/* ─── Touch Controls (touch devices only) ──────────────────── */}
+            {touchUI && (
+                <>
+                    {/* Dynamic joystick zone: left half of the screen */}
                     <div
-                        ref={knobRef}
+                        ref={zoneRef}
                         style={{
-                            position: 'absolute', top: '50%', left: '50%',
-                            transform: 'translate(-50%, -50%)',
-                            width: 44, height: 44,
-                            background: 'rgba(0, 200, 255, 0.3)',
-                            borderRadius: '50%',
-                            border: '2px solid rgba(0, 200, 255, 0.5)',
-                            boxShadow: '0 0 10px rgba(0,200,255,0.3)',
-                            transition: 'none'
+                            position: 'absolute', left: 0, top: 0, bottom: 0, width: '45%',
+                            zIndex: 5, touchAction: 'none', pointerEvents: 'auto',
                         }}
                     />
-                </div>
+                    {joyView.active && (
+                        <div style={{ position: 'absolute', inset: 0, zIndex: 5, pointerEvents: 'none' }}>
+                            <div style={{
+                                position: 'absolute', left: joyView.bx, top: joyView.by,
+                                width: 120, height: 120, marginLeft: -60, marginTop: -60,
+                                borderRadius: '50%', background: 'rgba(255,255,255,0.08)',
+                                border: '2px solid rgba(232,160,48,0.35)',
+                                boxShadow: '0 0 20px rgba(0,0,0,0.4)',
+                            }} />
+                            <div style={{
+                                position: 'absolute', left: joyView.kx, top: joyView.ky,
+                                width: 54, height: 54, marginLeft: -27, marginTop: -27,
+                                borderRadius: '50%', background: 'rgba(232,160,48,0.35)',
+                                border: '2px solid rgba(232,160,48,0.7)',
+                                boxShadow: '0 0 14px rgba(232,160,48,0.4)',
+                            }} />
+                        </div>
+                    )}
 
-                {/* Action Buttons */}
-                <div style={{ position: 'absolute', bottom: 30, right: 20, pointerEvents: 'auto', display: 'flex', gap: '14px', alignItems: 'flex-end' }}>
-                    <ActionButton
-                        label="SHOOT"
-                        color="#ff2255"
-                        action="shoot"
-                        onAction={handleBtn}
-                        cooldown={me?.shootCooldown}
-                        maxCooldown={0.8}
-                    />
-                    <ActionButton
-                        label="NITRO"
-                        color="#00ccff"
-                        action="nitro"
-                        onAction={handleBtn}
-                        cooldown={me?.dashCooldown}
-                        maxCooldown={1.5}
-                        size={85}
-                    />
+                    {/* Action buttons: right side, responsive sizing */}
+                    <div style={{
+                        position: 'absolute',
+                        bottom: 'max(24px, env(safe-area-inset-bottom))',
+                        right: 'max(18px, env(safe-area-inset-right))',
+                        pointerEvents: 'auto', display: 'flex', gap: '14px', alignItems: 'flex-end', zIndex: 6,
+                    }}>
+                        <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
+                            cooldown={me?.shootCooldown} maxCooldown={0.8} size="clamp(56px,15vw,78px)" />
+                        <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
+                            cooldown={me?.dashCooldown} maxCooldown={1.5} size="clamp(66px,18vw,94px)" />
+                    </div>
+                </>
+            )}
+
+            {/* Desktop keyboard hint */}
+            {!touchUI && (
+                <div style={{
+                    position: 'absolute', bottom: 14, left: '50%', transform: 'translateX(-50%)',
+                    zIndex: 5, pointerEvents: 'none',
+                    background: 'rgba(0,0,0,0.45)', borderRadius: 10, padding: '6px 14px',
+                    color: '#9fb0c3', fontSize: '0.72rem', letterSpacing: '0.3px',
+                }}>
+                    WASD / Arrows to drive · Space: Nitro · Shift / F: Shoot
                 </div>
-            </div>
+            )}
         </div>
     );
 }
 
 // ─── Sub-components ─────────────────────────────────────────────────────
+function Minimap({ snapshot, localId }) {
+    const ref = useRef(null);
+    useEffect(() => {
+        const cv = ref.current;
+        if (!cv) return;
+        const ctx = cv.getContext('2d');
+        const S = 116, dpr = Math.min(window.devicePixelRatio || 1, 2);
+        if (cv.width !== S * dpr) { cv.width = S * dpr; cv.height = S * dpr; }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, S, S);
+        const R = (snapshot.arenaRadius || 1000);
+        const cx = S / 2, cy = S / 2, rad = S / 2 - 6;
+
+        // Arena disc
+        ctx.fillStyle = 'rgba(255,255,255,0.04)';
+        ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(232,160,48,0.5)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.stroke();
+
+        for (const p of (snapshot.players || [])) {
+            if (!p.alive) continue;
+            const px = cx + (p.x / R) * rad;
+            const py = cy + (p.y / R) * rad;
+            const me = p.id === localId;
+            ctx.fillStyle = me ? '#8fe3ff' : (p.isBot ? '#e8a030' : '#4ade80');
+            ctx.beginPath(); ctx.arc(px, py, me ? 3.5 : 2.5, 0, Math.PI * 2); ctx.fill();
+            if (me) {
+                ctx.strokeStyle = '#8fe3ff'; ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke();
+            }
+        }
+    }, [snapshot, localId]);
+
+    return (
+        <div style={{
+            position: 'absolute', top: 12, left: 12, width: 116, height: 116,
+            borderRadius: '50%', overflow: 'hidden',
+            background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.1)',
+        }}>
+            <canvas ref={ref} style={{ width: 116, height: 116 }} />
+        </div>
+    );
+}
+
 function StatusPill({ label, color }) {
     return (
         <div style={{
