@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import CanvasRenderer from './CanvasRenderer';
+import PhaserGame from './PhaserGame';
 import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
 
@@ -181,7 +181,7 @@ export default function Game({ room, player, onBack }) {
     // ─── Render ─────────────────────────────────────────────────────────
     return (
         <div className="full-screen" style={{ background: '#030308' }}>
-            <CanvasRenderer snapshot={snapshot} localId={socket.id} />
+            <PhaserGame snapshot={snapshot} localId={socket.id} />
 
             {/* ─── HUD Overlay ──────────────────────────────────────────── */}
             <div className="full-screen" style={{ pointerEvents: 'none', zIndex: 4 }}>
