@@ -1,4 +1,5 @@
 import React, { useRef, useEffect } from 'react';
+import { wheelStyle, paintColor, trailColor, drawTopper } from '../cosmetics';
 
 const ARENA_RADIUS = 1000;
 const WALL_THICKNESS = 40;
@@ -14,6 +15,16 @@ function hexToRgb(hex) {
 export function shade(hex, amt) {
     const [r, g, b] = hexToRgb(hex);
     return `rgb(${clamp(r + amt, 0, 255)},${clamp(g + amt, 0, 255)},${clamp(b + amt, 0, 255)})`;
+}
+// Returns a color string with alpha applied (handles #hex and hsl()).
+function fade(color, a) {
+    if (!color) return `rgba(255,120,0,${a})`;
+    if (color[0] === '#') {
+        const [r, g, b] = hexToRgb(color);
+        return `rgba(${r},${g},${b},${a})`;
+    }
+    if (color.startsWith('hsl(')) return color.replace('hsl(', 'hsla(').replace(')', `,${a})`);
+    return color;
 }
 
 // ─── Procedural asphalt texture ─────────────────────────────────────────
@@ -357,7 +368,9 @@ export function drawCarBody(ctx, type, color, dead) {
     }
 }
 
-export function drawWheels(ctx, type) {
+export function drawWheels(ctx, type, wheel) {
+    const rimColor = (wheel && wheel.rim) || '#3a3a3a';
+    const hubColor = (wheel && wheel.hub) || '#555';
     const t = type || 'sports';
     let wheels;
     switch (t) {
@@ -393,12 +406,12 @@ export function drawWheels(ctx, type) {
         ctx.ellipse(cx, cy, rw / 2 + 0.5, rh / 2 + 0.5, 0, 0, Math.PI * 2);
         ctx.fill();
         // Rim
-        ctx.fillStyle = '#3a3a3a';
+        ctx.fillStyle = rimColor;
         ctx.beginPath();
         ctx.ellipse(cx, cy, rw / 2 - 1.2, rh / 2 - 0.6, 0, 0, Math.PI * 2);
         ctx.fill();
         // Hub
-        ctx.fillStyle = '#555';
+        ctx.fillStyle = hubColor;
         ctx.beginPath();
         ctx.ellipse(cx, cy, 1.2, 0.8, 0, 0, Math.PI * 2);
         ctx.fill();
@@ -904,6 +917,10 @@ export default function CanvasRenderer({ snapshot, localId }) {
                 const col = getPlayerColor(p.id);
                 const dead = !p.alive;
                 const carType = p.carType || 'sports';
+                const cos = p.cosmetics || null;
+                const bodyColor = (cos && paintColor(cos.paint)) || col.body;
+                const wheel = cos ? wheelStyle(cos.wheel) : null;
+                const trailCol = cos ? trailColor(cos.trail, now) : null;
 
                 // Tire marks
                 if (p.alive && (p.isDashing || p.slip > 0)) {
@@ -946,11 +963,12 @@ export default function CanvasRenderer({ snapshot, localId }) {
                     ctx.save();
                     if (p.isDashing) {
                         const flameLen = 30 + Math.random() * 18;
+                        const base = trailCol || '#ff5000';
                         // Outer flame
                         const fg = ctx.createLinearGradient(-14, 0, -flameLen, 0);
-                        fg.addColorStop(0, 'rgba(255,160,0,0.8)');
-                        fg.addColorStop(0.5, 'rgba(255,80,0,0.4)');
-                        fg.addColorStop(1, 'rgba(255,40,0,0)');
+                        fg.addColorStop(0, fade(base, 0.85));
+                        fg.addColorStop(0.5, fade(base, 0.4));
+                        fg.addColorStop(1, fade(base, 0));
                         ctx.fillStyle = fg;
                         ctx.beginPath();
                         ctx.moveTo(-14, -4); ctx.lineTo(-flameLen, 0); ctx.lineTo(-14, 4);
@@ -961,9 +979,10 @@ export default function CanvasRenderer({ snapshot, localId }) {
                         ctx.moveTo(-14, -2); ctx.lineTo(-flameLen * 0.5, 0); ctx.lineTo(-14, 2);
                         ctx.fill();
                     } else if (p.speedMult > 1) {
+                        const base = trailCol || '#00c864';
                         const sg = ctx.createLinearGradient(-14, 0, -25, 0);
-                        sg.addColorStop(0, 'rgba(0,200,100,0.5)');
-                        sg.addColorStop(1, 'rgba(0,200,100,0)');
+                        sg.addColorStop(0, fade(base, 0.5));
+                        sg.addColorStop(1, fade(base, 0));
                         ctx.fillStyle = sg;
                         ctx.beginPath();
                         ctx.moveTo(-14, -2.5); ctx.lineTo(-25 - Math.random() * 6, 0); ctx.lineTo(-14, 2.5);
@@ -981,9 +1000,10 @@ export default function CanvasRenderer({ snapshot, localId }) {
                 }
 
                 // ─── Car body ──────────────────────────────────────────
-                drawWheels(ctx, carType);
-                drawCarBody(ctx, carType, col.body, dead);
+                drawWheels(ctx, carType, wheel);
+                drawCarBody(ctx, carType, bodyColor, dead);
                 if (!dead) drawHeadlights(ctx, carType);
+                if (!dead && cos) drawTopper(ctx, cos.topper);
 
                 // ─── Speed lines ───────────────────────────────────────
                 if (p.alive && p.speedMult > 1) {

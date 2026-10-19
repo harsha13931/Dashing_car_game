@@ -24,6 +24,9 @@ export default function App() {
             setGameState('playing');
         });
 
+        // Re-sync in case 'connect' fired before this listener was attached.
+        setConnected(socket.connected);
+
         return () => { socket.off(); };
     }, [gameState]);
 

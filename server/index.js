@@ -69,7 +69,18 @@ const io = new Server(server, {
 let rooms = {};
 
 // ─── Player / Bot factory ──────────────────────────────────────────────────
-function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 'sports') {
+function sanitizeCosmetics(c) {
+    if (!c || typeof c !== 'object') return null;
+    const pick = (v) => (typeof v === 'string' && v.length <= 24 ? v : undefined);
+    return {
+        paint: pick(c.paint) || 'factory',
+        wheel: pick(c.wheel) || 'stock',
+        topper: pick(c.topper) || 'none',
+        trail: pick(c.trail) || 'classic',
+    };
+}
+
+function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 'sports', cosmetics = null) {
     const diff = BOT_DIFFICULTY[difficulty] || BOT_DIFFICULTY.medium;
     const validCar = CAR_TYPES[carType] ? carType : 'sports';
     return {
@@ -77,6 +88,7 @@ function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 's
         name: name || `Player_${id.slice(0, 4)}`,
         carType: validCar,
         carStats: CAR_TYPES[validCar],
+        cosmetics: sanitizeCosmetics(cosmetics),
         x: 0, y: 0,
         angle: 0,
         vx: 0, vy: 0,
@@ -487,13 +499,13 @@ function tickTimers(p) {
 io.on('connection', socket => {
     console.log(`[connect] ${socket.id}`);
 
-    socket.on('createRoom', ({ name, botCount, botDifficulty, carType }, cb) => {
+    socket.on('createRoom', ({ name, botCount, botDifficulty, carType, cosmetics }, cb) => {
         if (typeof cb !== 'function') return;
         const room = createRoom(socket.id);
         if (!room) return cb({ error: 'Server full, try again later' });
 
         socket.join(room.id);
-        room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType);
+        room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType, cosmetics);
         room.settings.botCount = Math.min(7, Math.max(0, parseInt(botCount) || 3));
         room.settings.botDifficulty = BOT_DIFFICULTY[botDifficulty] ? botDifficulty : 'medium';
 
@@ -501,7 +513,7 @@ io.on('connection', socket => {
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
 
-    socket.on('joinRoom', ({ roomId, name, carType }, cb) => {
+    socket.on('joinRoom', ({ roomId, name, carType, cosmetics }, cb) => {
         if (typeof cb !== 'function') return;
         const room = rooms[roomId?.toUpperCase?.()];
         if (!room) return cb({ error: 'Room not found' });
@@ -509,7 +521,7 @@ io.on('connection', socket => {
         if (room.running) return cb({ error: 'Match in progress' });
 
         socket.join(room.id);
-        room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType);
+        room.players[socket.id] = makePlayer(socket.id, name, false, 'medium', carType, cosmetics);
         cb({ roomId: room.id });
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
@@ -848,6 +860,7 @@ setInterval(() => {
         io.to(room.id).emit('snapshot', {
             players: Object.values(room.players).map(p => ({
                 id: p.id, name: p.name, isBot: p.isBot, carType: p.carType,
+                cosmetics: p.cosmetics,
                 x: p.x, y: p.y, angle: p.angle,
                 alive: p.alive, shield: p.shield, scale: p.scale,
                 isDashing: p.isDashing,

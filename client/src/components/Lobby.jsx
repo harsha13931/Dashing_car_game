@@ -2,6 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
 import { drawCarBody, drawWheels, drawHeadlights } from './CanvasRenderer';
+import {
+    PAINTS, WHEELS, TOPPERS, TRAILS,
+    DEFAULT_COSMETICS, loadCosmetics, saveCosmetics,
+    paintColor, wheelStyle, trailStyle, drawTopper,
+} from '../cosmetics';
 
 const DIFFICULTIES = [
     { key: 'easy', label: 'Easy', color: '#4ade80', desc: 'Relaxed bots' },
@@ -35,9 +40,13 @@ function StatBar({ value, max = 5, color }) {
     );
 }
 
-// Draws a single car (wheels → body → headlights) centered at the current
-// transform origin, pointing right (+x), matching the in-game composition.
-function paintCar(ctx, carKey, color) {
+// Draws a single car (wheels → body → headlights → topper) centered at the
+// current transform origin, pointing right (+x), matching the in-game look.
+// `cos` (optional) applies equipped cosmetics.
+function paintCar(ctx, carKey, baseColor, cos) {
+    const color = (cos && paintColor(cos.paint)) || baseColor;
+    const wheel = cos ? wheelStyle(cos.wheel) : null;
+
     // Drop shadow under the car
     ctx.save();
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
@@ -46,13 +55,14 @@ function paintCar(ctx, carKey, color) {
     ctx.fill();
     ctx.restore();
 
-    drawWheels(ctx, carKey);
+    drawWheels(ctx, carKey, wheel);
     drawCarBody(ctx, carKey, color, false);
     drawHeadlights(ctx, carKey);
+    if (cos) drawTopper(ctx, cos.topper);
 }
 
 // Large rotating turntable preview of the selected car.
-function CarShowroom({ car }) {
+function CarShowroom({ car, cos }) {
     const canvasRef = useRef(null);
 
     useEffect(() => {
@@ -108,7 +118,7 @@ function CarShowroom({ car }) {
             ctx.translate(cx, cy);
             ctx.rotate(angle);
             ctx.scale(5.0, 5.0);
-            paintCar(ctx, car.key, car.color);
+            paintCar(ctx, car.key, car.color, cos);
             ctx.restore();
 
             // Bottom scrim so the name stays readable over the platform
@@ -123,7 +133,7 @@ function CarShowroom({ car }) {
         }
         frame();
         return () => { running = false; cancelAnimationFrame(raf); };
-    }, [car.key, car.color]);
+    }, [car.key, car.color, cos && cos.paint, cos && cos.wheel, cos && cos.topper]);
 
     return (
         <div style={{
@@ -204,6 +214,157 @@ function NavArrow({ dir, onClick }) {
     );
 }
 
+// Small canvas preview of a topper for the customize grid.
+function TopperThumb({ topperKey }) {
+    const canvasRef = useRef(null);
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const S = 40;
+        canvas.width = S * dpr; canvas.height = S * dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, S, S);
+        if (topperKey === 'none') {
+            ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(14, 20); ctx.lineTo(26, 20); ctx.stroke();
+            return;
+        }
+        ctx.save();
+        ctx.translate(S / 2, S / 2 + 6);
+        ctx.rotate(-Math.PI / 2);   // orient topper upright in the thumb
+        ctx.scale(1.5, 1.5);
+        drawTopper(ctx, topperKey);
+        ctx.restore();
+    }, [topperKey]);
+    return <canvas ref={canvasRef} style={{ width: '40px', height: '40px' }} />;
+}
+
+const CUSTOMIZE_TABS = [
+    { key: 'paint',  label: 'Paint' },
+    { key: 'wheel',  label: 'Wheels' },
+    { key: 'topper', label: 'Hat' },
+    { key: 'trail',  label: 'Trail' },
+];
+
+function Swatch({ active, onClick, title, children }) {
+    return (
+        <button
+            onClick={onClick}
+            title={title}
+            style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px',
+                padding: '7px 4px', cursor: 'pointer', fontFamily: 'inherit',
+                background: active ? 'rgba(232,160,48,0.14)' : 'rgba(255,255,255,0.02)',
+                border: `2px solid ${active ? '#e8a030' : 'rgba(255,255,255,0.07)'}`,
+                borderRadius: '10px', transition: 'all 0.15s', position: 'relative',
+            }}
+        >
+            {children}
+            <span style={{
+                fontSize: '0.6rem', color: active ? '#e8a030' : '#8899aa',
+                fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.3px',
+            }}>{title}</span>
+        </button>
+    );
+}
+
+function CustomizeScreen({ car, cos, onChange, onDone }) {
+    const [tab, setTab] = useState('paint');
+
+    const set = (field, value) => { onChange({ ...cos, [field]: value }); soundManager.playClick(); };
+
+    return (
+        <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.25rem' }}>
+                <button
+                    onClick={() => { onDone(); soundManager.playClick(); }}
+                    style={{ background: 'none', border: 'none', color: '#8899aa', cursor: 'pointer', fontSize: '1.2rem', padding: '4px', fontFamily: 'inherit' }}
+                >←</button>
+                <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8899aa' }}>
+                    Customize · {car.name}
+                </span>
+            </div>
+
+            <CarShowroom car={car} cos={cos} />
+
+            {/* Category tabs */}
+            <div style={{ display: 'flex', gap: '4px' }}>
+                {CUSTOMIZE_TABS.map(t => (
+                    <button
+                        key={t.key}
+                        onClick={() => { setTab(t.key); soundManager.playClick(); }}
+                        style={{
+                            flex: 1, padding: '7px', borderRadius: '6px', cursor: 'pointer',
+                            fontFamily: 'inherit', fontWeight: 700, fontSize: '0.72rem',
+                            textTransform: 'uppercase', letterSpacing: '0.5px',
+                            background: tab === t.key ? 'rgba(232,160,48,0.16)' : 'transparent',
+                            border: `1px solid ${tab === t.key ? '#e8a030' : 'rgba(255,255,255,0.08)'}`,
+                            color: tab === t.key ? '#e8a030' : '#8899aa', transition: 'all 0.15s',
+                        }}
+                    >{t.label}</button>
+                ))}
+            </div>
+
+            {/* Item grid */}
+            <div style={{
+                display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px',
+                background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '10px',
+                maxHeight: '150px', overflowY: 'auto',
+            }}>
+                {tab === 'paint' && PAINTS.map(p => (
+                    <Swatch key={p.key} active={cos.paint === p.key} title={p.name} onClick={() => set('paint', p.key)}>
+                        <div style={{
+                            width: '32px', height: '32px', borderRadius: '50%',
+                            background: p.color || car.color,
+                            border: '2px solid rgba(255,255,255,0.15)',
+                            boxShadow: 'inset 0 -4px 6px rgba(0,0,0,0.35), inset 0 3px 4px rgba(255,255,255,0.25)',
+                        }} />
+                    </Swatch>
+                ))}
+
+                {tab === 'wheel' && WHEELS.map(w => (
+                    <Swatch key={w.key} active={cos.wheel === w.key} title={w.name} onClick={() => set('wheel', w.key)}>
+                        <div style={{
+                            width: '32px', height: '32px', borderRadius: '50%',
+                            background: '#0e0e0e', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        }}>
+                            <div style={{ width: '22px', height: '22px', borderRadius: '50%', background: w.rim, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: w.hub }} />
+                            </div>
+                        </div>
+                    </Swatch>
+                ))}
+
+                {tab === 'topper' && TOPPERS.map(tp => (
+                    <Swatch key={tp.key} active={cos.topper === tp.key} title={tp.name} onClick={() => set('topper', tp.key)}>
+                        <div style={{ width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <TopperThumb topperKey={tp.key} />
+                        </div>
+                    </Swatch>
+                ))}
+
+                {tab === 'trail' && TRAILS.map(tr => (
+                    <Swatch key={tr.key} active={cos.trail === tr.key} title={tr.name} onClick={() => set('trail', tr.key)}>
+                        <div style={{
+                            width: '34px', height: '18px', borderRadius: '9px',
+                            background: tr.rainbow
+                                ? 'linear-gradient(90deg,#ff3b3b,#ffb03b,#ffe83b,#3bff6b,#3bc6ff,#b23bff)'
+                                : `linear-gradient(90deg, ${tr.color}, rgba(0,0,0,0))`,
+                        }} />
+                    </Swatch>
+                ))}
+            </div>
+
+            <button className="btn" onClick={() => { onDone(); soundManager.playClick(); }} style={{ marginTop: '0.25rem' }}>
+                DONE
+            </button>
+        </>
+    );
+}
+
 function CarStats({ carKey }) {
     const car = CAR_TYPES.find(c => c.key === carKey);
     if (!car) return null;
@@ -236,6 +397,12 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
     const [carType, setCarType] = useState('sports');
     const [tab, setTab] = useState('solo');
     const [step, setStep] = useState('name');
+    const [cosmetics, setCosmetics] = useState(loadCosmetics);
+
+    function updateCosmetics(next) {
+        setCosmetics(next);
+        saveCosmetics(next);
+    }
 
     function createRoom() {
         soundManager.playClick();
@@ -245,6 +412,7 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
             botCount: tab === 'solo' ? botCount : 0,
             botDifficulty,
             carType,
+            cosmetics,
         }, (res) => {
             if (res.error) return setError(res.error);
             setRoom(res && res.roomId ? { id: res.roomId } : null);
@@ -257,7 +425,7 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
         if (!rid.trim()) return setError('Please enter a Room ID');
         soundManager.playClick();
         socket.connect();
-        socket.emit('joinRoom', { roomId: rid, name, carType }, (res) => {
+        socket.emit('joinRoom', { roomId: rid, name, carType, cosmetics }, (res) => {
             if (res && res.error) { setError(res.error); return; }
             setRoom({ id: rid });
             setError('');
@@ -394,7 +562,7 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
 
                                 {/* Showroom preview with browse arrows */}
                                 <div style={{ position: 'relative' }}>
-                                    <CarShowroom car={selectedCar} />
+                                    <CarShowroom car={selectedCar} cos={cosmetics} />
                                     <NavArrow dir="prev" onClick={() => cycleCar(-1)} />
                                     <NavArrow dir="next" onClick={() => cycleCar(1)} />
                                 </div>
@@ -410,6 +578,17 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
                                         />
                                     ))}
                                 </div>
+
+                                <button
+                                    onClick={() => { setStep('customize'); soundManager.playClick(); }}
+                                    style={{
+                                        padding: '10px', borderRadius: '8px', cursor: 'pointer',
+                                        fontFamily: 'inherit', fontWeight: 700, fontSize: '0.85rem',
+                                        textTransform: 'uppercase', letterSpacing: '1px',
+                                        background: 'rgba(232,160,48,0.1)', border: '1px solid #e8a030',
+                                        color: '#e8a030',
+                                    }}
+                                >🎨 Customize</button>
 
                                 <CarStats carKey={carType} />
 
@@ -451,6 +630,15 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
                                     {tab === 'solo' ? 'START GAME' : (rid.trim() ? 'JOIN ROOM' : 'CREATE ROOM')}
                                 </button>
                             </>
+                        )}
+
+                        {step === 'customize' && (
+                            <CustomizeScreen
+                                car={selectedCar}
+                                cos={cosmetics}
+                                onChange={updateCosmetics}
+                                onDone={() => setStep('car')}
+                            />
                         )}
                     </>
                 ) : (
