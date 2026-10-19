@@ -395,14 +395,17 @@ function CarStats({ carKey }) {
     );
 }
 
+const INVITE_CODE = (new URLSearchParams(window.location.search).get('room') || '').toUpperCase();
+
 export default function Lobby({ room, setRoom, setPlayer, player, connected, connError }) {
     const [name, setName] = useState('Player');
-    const [rid, setRid] = useState('');
+    const [rid, setRid] = useState(INVITE_CODE);
     const [error, setError] = useState('');
     const [botCount, setBotCount] = useState(3);
     const [botDifficulty, setBotDifficulty] = useState('medium');
     const [carType, setCarType] = useState('sports');
-    const [tab, setTab] = useState('solo');
+    const [tab, setTab] = useState('multi');
+    const [copied, setCopied] = useState(false);
     const [step, setStep] = useState('name');
     const [cosmetics, setCosmetics] = useState(loadCosmetics);
 
@@ -434,11 +437,26 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
         if (!rid.trim()) return setError('Please enter a Room ID');
         soundManager.playClick();
         socket.connect();
-        socket.emit('joinRoom', { roomId: rid, name, carType, cosmetics }, (res) => {
+        const code = rid.trim().toUpperCase();
+        socket.emit('joinRoom', { roomId: code, name, carType, cosmetics }, (res) => {
             if (res && res.error) { setError(res.error); return; }
-            setRoom({ id: rid });
+            setRoom({ id: res.roomId || code });
+            if (res.player) setPlayer(res.player);
             setError('');
         });
+    }
+
+    function shareInvite() {
+        const link = `${window.location.origin}/?room=${room.id}`;
+        soundManager.playClick();
+        if (navigator.share) {
+            navigator.share({ title: 'Dash Arena', text: `Join my Dash Arena room ${room.id}!`, url: link }).catch(() => {});
+            return;
+        }
+        navigator.clipboard?.writeText(link).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        }).catch(() => {});
     }
 
     function startMatch() {
@@ -524,7 +542,7 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
                                 </div>
 
                                 <div className="flex-row" style={{ gap: '0', marginTop: '0.5rem' }}>
-                                    {['solo', 'multi'].map(t => (
+                                    {['multi', 'solo'].map(t => (
                                         <button
                                             key={t}
                                             onClick={() => { setTab(t); soundManager.playClick(); }}
@@ -535,7 +553,7 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
                                                 color: tab === t ? '#e8a030' : '#8899aa',
                                                 cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600,
                                                 fontSize: '0.85rem', textTransform: 'uppercase',
-                                                borderRadius: t === 'solo' ? '6px 0 0 6px' : '0 6px 6px 0',
+                                                borderRadius: t === 'multi' ? '6px 0 0 6px' : '0 6px 6px 0',
                                                 transition: 'all 0.2s',
                                             }}
                                         >
@@ -667,6 +685,11 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected, con
                                 fontWeight: 'bold', fontFamily: 'monospace', color: '#fff',
                             }}>{room.id}</div>
                             <div style={{ fontSize: '0.65rem', color: '#8899aa' }}>Share this code with friends</div>
+                            <button onClick={shareInvite} style={{
+                                marginTop: '6px', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer',
+                                fontFamily: 'inherit', fontWeight: 700, fontSize: '0.8rem', letterSpacing: '0.5px',
+                                background: 'rgba(232,160,48,0.12)', border: '1px solid #e8a030', color: '#e8a030',
+                            }}>{copied ? '✓ Link copied' : '🔗 Invite friends'}</button>
                         </div>
 
                         <div style={{
