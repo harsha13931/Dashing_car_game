@@ -26,6 +26,23 @@ export default function Game({ room, player, onBack }) {
         setTouchUI(!!coarse);
     }, []);
 
+    // Control scheme: 'joystick' or 'buttons'
+    const [ctrlMode, setCtrlMode] = useState(() => {
+        try { return localStorage.getItem('dasharena.ctrlmode') || 'joystick'; } catch (_) { return 'joystick'; }
+    });
+    const switchCtrl = () => {
+        setCtrlMode(m => {
+            const next = m === 'joystick' ? 'buttons' : 'joystick';
+            try { localStorage.setItem('dasharena.ctrlmode', next); } catch (_) { /* ignore */ }
+            return next;
+        });
+        joystickInput.current = { forward: 0, steer: 0 };
+        ['up', 'down', 'left', 'right'].forEach(a => activeButtons.current.delete(a));
+        setJoyView({ active: false, bx: 0, by: 0, kx: 0, ky: 0 });
+        resolveInput();
+        soundManager.playClick();
+    };
+
     // ─── Socket listeners ───────────────────────────────────────────────
     useEffect(() => {
         socket.on('snapshot', snap => setSnapshot(snap));
@@ -96,6 +113,10 @@ export default function Game({ room, player, onBack }) {
         // Buttons
         if (activeButtons.current.has('nitro')) dash = true;
         if (activeButtons.current.has('shoot')) shoot = true;
+        if (activeButtons.current.has('up')) forward += 1;
+        if (activeButtons.current.has('down')) forward -= 0.5;
+        if (activeButtons.current.has('left')) steer -= 1;
+        if (activeButtons.current.has('right')) steer += 1;
 
         forward = Math.max(-1, Math.min(1, forward));
         steer = Math.max(-1, Math.min(1, steer));
@@ -122,7 +143,7 @@ export default function Game({ room, player, onBack }) {
     // ─── Floating joystick (appears where you touch the left half) ───────
     const zoneRef = useRef(null);
     useEffect(() => {
-        if (!touchUI) return;
+        if (!touchUI || ctrlMode !== 'joystick') return;
         const zone = zoneRef.current;
         if (!zone) return;
         const computeMaxR = () => Math.max(42, Math.min(70, window.innerWidth * 0.11));
@@ -165,7 +186,7 @@ export default function Game({ room, player, onBack }) {
             zone.removeEventListener('pointerup', onUp);
             zone.removeEventListener('pointercancel', onUp);
         };
-    }, [touchUI]);
+    }, [touchUI, ctrlMode]);
 
     // ─── Button helpers ─────────────────────────────────────────────────
     const handleBtn = (action, pressed) => {
@@ -408,30 +429,49 @@ export default function Game({ room, player, onBack }) {
             {/* ─── Touch Controls (touch devices only) ──────────────────── */}
             {touchUI && (
                 <>
-                    {/* Dynamic joystick zone: left half of the screen */}
-                    <div
-                        ref={zoneRef}
-                        style={{
-                            position: 'absolute', left: 0, top: 0, bottom: 0, width: '45%',
-                            zIndex: 5, touchAction: 'none', pointerEvents: 'auto',
-                        }}
-                    />
-                    {joyView.active && (
-                        <div style={{ position: 'absolute', inset: 0, zIndex: 5, pointerEvents: 'none' }}>
-                            <div style={{
-                                position: 'absolute', left: joyView.bx, top: joyView.by,
-                                width: 120, height: 120, marginLeft: -60, marginTop: -60,
-                                borderRadius: '50%', background: 'rgba(255,255,255,0.08)',
-                                border: '2px solid rgba(232,160,48,0.35)',
-                                boxShadow: '0 0 20px rgba(0,0,0,0.4)',
-                            }} />
-                            <div style={{
-                                position: 'absolute', left: joyView.kx, top: joyView.ky,
-                                width: 54, height: 54, marginLeft: -27, marginTop: -27,
-                                borderRadius: '50%', background: 'rgba(232,160,48,0.35)',
-                                border: '2px solid rgba(232,160,48,0.7)',
-                                boxShadow: '0 0 14px rgba(232,160,48,0.4)',
-                            }} />
+                    {ctrlMode === 'joystick' ? (
+                        <>
+                            {/* Dynamic joystick zone: left half of the screen */}
+                            <div
+                                ref={zoneRef}
+                                style={{
+                                    position: 'absolute', left: 0, top: 0, bottom: 0, width: '45%',
+                                    zIndex: 5, touchAction: 'none', pointerEvents: 'auto',
+                                }}
+                            />
+                            {joyView.active && (
+                                <div style={{ position: 'absolute', inset: 0, zIndex: 5, pointerEvents: 'none' }}>
+                                    <div style={{
+                                        position: 'absolute', left: joyView.bx, top: joyView.by,
+                                        width: 120, height: 120, marginLeft: -60, marginTop: -60,
+                                        borderRadius: '50%', background: 'rgba(255,255,255,0.08)',
+                                        border: '2px solid rgba(232,160,48,0.35)',
+                                        boxShadow: '0 0 20px rgba(0,0,0,0.4)',
+                                    }} />
+                                    <div style={{
+                                        position: 'absolute', left: joyView.kx, top: joyView.ky,
+                                        width: 54, height: 54, marginLeft: -27, marginTop: -27,
+                                        borderRadius: '50%', background: 'rgba(232,160,48,0.35)',
+                                        border: '2px solid rgba(232,160,48,0.7)',
+                                        boxShadow: '0 0 14px rgba(232,160,48,0.4)',
+                                    }} />
+                                </div>
+                            )}
+                        </>
+                    ) : (
+                        /* Directional button pad (left side) */
+                        <div style={{
+                            position: 'absolute',
+                            left: 'max(20px, env(safe-area-inset-left))',
+                            bottom: 'max(24px, env(safe-area-inset-bottom))',
+                            zIndex: 6, pointerEvents: 'auto', display: 'grid',
+                            gridTemplateColumns: 'repeat(3, clamp(44px,13vw,60px))',
+                            gridTemplateRows: 'repeat(2, clamp(44px,13vw,60px))', gap: '8px',
+                        }}>
+                            <DirButton label="▲" action="up" grid="1 / 2 / 2 / 3" onAction={handleBtn} />
+                            <DirButton label="◀" action="left" grid="2 / 1 / 3 / 2" onAction={handleBtn} />
+                            <DirButton label="▼" action="down" grid="2 / 2 / 3 / 3" onAction={handleBtn} />
+                            <DirButton label="▶" action="right" grid="2 / 3 / 3 / 4" onAction={handleBtn} />
                         </div>
                     )}
 
@@ -447,6 +487,19 @@ export default function Game({ room, player, onBack }) {
                         <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
                             cooldown={me?.dashCooldown} maxCooldown={1.5} size="clamp(66px,18vw,94px)" />
                     </div>
+
+                    {/* Control-scheme toggle */}
+                    <button
+                        onClick={switchCtrl}
+                        style={{
+                            position: 'absolute', top: 136, left: 12, zIndex: 7, pointerEvents: 'auto',
+                            background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(232,160,48,0.5)',
+                            color: '#e8a030', borderRadius: 18, padding: '6px 12px',
+                            fontSize: '0.7rem', fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
+                        }}
+                    >
+                        {ctrlMode === 'joystick' ? '⇄ Buttons' : '⇄ Joystick'}
+                    </button>
                 </>
             )}
 
@@ -519,6 +572,24 @@ function StatusPill({ label, color }) {
         }}>
             {label}
         </div>
+    );
+}
+
+function DirButton({ label, action, onAction, grid }) {
+    return (
+        <div
+            onPointerDown={e => { e.preventDefault(); onAction(action, true); }}
+            onPointerUp={e => { e.preventDefault(); onAction(action, false); }}
+            onPointerLeave={e => { e.preventDefault(); onAction(action, false); }}
+            onPointerCancel={e => { e.preventDefault(); onAction(action, false); }}
+            style={{
+                gridArea: grid, borderRadius: 12,
+                background: 'rgba(255,255,255,0.06)', border: '2px solid rgba(232,160,48,0.5)',
+                color: '#e8a030', fontSize: '1.3rem',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                userSelect: 'none', touchAction: 'none',
+            }}
+        >{label}</div>
     );
 }
 
