@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
+import { drawCarBody, drawWheels, drawHeadlights } from './CanvasRenderer';
 
 const DIFFICULTIES = [
     { key: 'easy', label: 'Easy', color: '#4ade80', desc: 'Relaxed bots' },
@@ -10,14 +11,14 @@ const DIFFICULTIES = [
 ];
 
 const CAR_TYPES = [
-    { key: 'sports',   name: 'Venom GT',      emoji: '🏎️', color: '#00d4ff', speed: 4, handling: 3, power: 2, weight: 2, desc: 'Fast and agile' },
-    { key: 'muscle',   name: 'Thunder V8',    emoji: '💪', color: '#ff4444', speed: 3, handling: 2, power: 4, weight: 3, desc: 'Heavy hitter' },
-    { key: 'truck',    name: 'War Rig',       emoji: '🛻', color: '#ff8800', speed: 1, handling: 1, power: 5, weight: 5, desc: 'Unstoppable force' },
-    { key: 'rally',    name: 'Dust Devil',    emoji: '🏁', color: '#44ff44', speed: 3, handling: 5, power: 2, weight: 2, desc: 'Best handling' },
-    { key: 'kart',     name: 'Pocket Rocket', emoji: '🎮', color: '#ffff44', speed: 5, handling: 4, power: 1, weight: 1, desc: 'Tiny but fast' },
-    { key: 'suv',      name: 'Iron Shield',   emoji: '🛡️', color: '#8888ff', speed: 2, handling: 2, power: 3, weight: 4, desc: 'Tank with style' },
-    { key: 'drift',    name: 'Sidewinder',    emoji: '💨', color: '#ff44ff', speed: 3, handling: 5, power: 2, weight: 2, desc: 'Drift king' },
-    { key: 'supercar', name: 'Phantom X',     emoji: '⚡', color: '#ffaa00', speed: 5, handling: 3, power: 1, weight: 1, desc: 'Pure speed' },
+    { key: 'sports',   name: 'Venom GT',      emoji: '🏎️', color: '#1199dd', speed: 4, handling: 3, power: 2, weight: 2, desc: 'Fast and agile' },
+    { key: 'muscle',   name: 'Thunder V8',    emoji: '💪', color: '#cc2244', speed: 3, handling: 2, power: 4, weight: 3, desc: 'Heavy hitter' },
+    { key: 'truck',    name: 'War Rig',       emoji: '🛻', color: '#dd8800', speed: 1, handling: 1, power: 5, weight: 5, desc: 'Unstoppable force' },
+    { key: 'rally',    name: 'Dust Devil',    emoji: '🏁', color: '#22aa44', speed: 3, handling: 5, power: 2, weight: 2, desc: 'Best handling' },
+    { key: 'kart',     name: 'Pocket Rocket', emoji: '🎮', color: '#ccaa00', speed: 5, handling: 4, power: 1, weight: 1, desc: 'Tiny but fast' },
+    { key: 'suv',      name: 'Iron Shield',   emoji: '🛡️', color: '#00aaaa', speed: 2, handling: 2, power: 3, weight: 4, desc: 'Tank with style' },
+    { key: 'drift',    name: 'Sidewinder',    emoji: '💨', color: '#9944cc', speed: 3, handling: 5, power: 2, weight: 2, desc: 'Drift king' },
+    { key: 'supercar', name: 'Phantom X',     emoji: '⚡', color: '#cc5522', speed: 5, handling: 3, power: 1, weight: 1, desc: 'Pure speed' },
 ];
 
 function StatBar({ value, max = 5, color }) {
@@ -34,36 +35,172 @@ function StatBar({ value, max = 5, color }) {
     );
 }
 
-function CarCard({ car, selected, onSelect }) {
-    const active = selected === car.key;
+// Draws a single car (wheels → body → headlights) centered at the current
+// transform origin, pointing right (+x), matching the in-game composition.
+function paintCar(ctx, carKey, color) {
+    // Drop shadow under the car
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(1, 3, 17, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    drawWheels(ctx, carKey);
+    drawCarBody(ctx, carKey, color, false);
+    drawHeadlights(ctx, carKey);
+}
+
+// Large rotating turntable preview of the selected car.
+function CarShowroom({ car }) {
+    const canvasRef = useRef(null);
+
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const W = canvas.clientWidth || 440;
+        const H = 215;
+        canvas.width = W * dpr;
+        canvas.height = H * dpr;
+        canvas.style.height = H + 'px';
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        let raf, angle = -Math.PI / 2 - 0.5, running = true;
+
+        function frame() {
+            if (!running) return;
+            ctx.clearRect(0, 0, W, H);
+            const cx = W / 2, cy = 92;
+
+            // Spotlight glow
+            const glow = ctx.createRadialGradient(cx, cy - 10, 0, cx, cy, 150);
+            glow.addColorStop(0, 'rgba(232,160,48,0.14)');
+            glow.addColorStop(0.5, 'rgba(232,160,48,0.04)');
+            glow.addColorStop(1, 'rgba(232,160,48,0)');
+            ctx.fillStyle = glow;
+            ctx.fillRect(0, 0, W, H);
+
+            // Turntable platform (flattened ellipse) beneath the car
+            ctx.save();
+            ctx.translate(cx, cy + 52);
+            ctx.scale(1, 0.3);
+            ctx.beginPath();
+            ctx.arc(0, 0, 115, 0, Math.PI * 2);
+            const pg = ctx.createRadialGradient(0, 0, 0, 0, 0, 115);
+            pg.addColorStop(0, 'rgba(255,255,255,0.06)');
+            pg.addColorStop(1, 'rgba(255,255,255,0.01)');
+            ctx.fillStyle = pg;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(232,160,48,0.3)';
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(0, 0, 88, 0, Math.PI * 2);
+            ctx.strokeStyle = 'rgba(232,160,48,0.12)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.restore();
+
+            // Car on the turntable
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate(angle);
+            ctx.scale(5.0, 5.0);
+            paintCar(ctx, car.key, car.color);
+            ctx.restore();
+
+            // Bottom scrim so the name stays readable over the platform
+            const scrim = ctx.createLinearGradient(0, H - 58, 0, H);
+            scrim.addColorStop(0, 'rgba(10,13,19,0)');
+            scrim.addColorStop(1, 'rgba(10,13,19,0.85)');
+            ctx.fillStyle = scrim;
+            ctx.fillRect(0, H - 58, W, 58);
+
+            angle += 0.005;
+            raf = requestAnimationFrame(frame);
+        }
+        frame();
+        return () => { running = false; cancelAnimationFrame(raf); };
+    }, [car.key, car.color]);
+
+    return (
+        <div style={{
+            position: 'relative', borderRadius: '12px', overflow: 'hidden',
+            background: 'radial-gradient(ellipse at 50% 35%, #141922 0%, #0a0d13 100%)',
+            border: '1px solid rgba(255,255,255,0.06)',
+        }}>
+            <canvas ref={canvasRef} style={{ width: '100%', display: 'block' }} />
+            <div style={{
+                position: 'absolute', bottom: '10px', left: 0, right: 0,
+                textAlign: 'center', pointerEvents: 'none',
+            }}>
+                <div style={{
+                    fontSize: '1.35rem', fontWeight: 800, letterSpacing: '1px',
+                    color: '#fff', textShadow: '0 2px 10px rgba(0,0,0,0.9)',
+                }}>{car.name}</div>
+                <div style={{ fontSize: '0.75rem', color: car.color, fontStyle: 'italic' }}>
+                    {car.desc}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// Small static thumbnail used in the picker strip.
+function CarThumb({ car, active, onSelect }) {
+    const canvasRef = useRef(null);
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const W = 50, H = 38;
+        canvas.width = W * dpr; canvas.height = H * dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, W, H);
+        ctx.save();
+        ctx.translate(W / 2, H / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.scale(1.25, 1.25);
+        drawWheels(ctx, car.key);
+        drawCarBody(ctx, car.key, car.color, false);
+        ctx.restore();
+    }, [car.key, car.color]);
+
     return (
         <button
             onClick={() => onSelect(car.key)}
+            title={car.name}
             style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center',
-                padding: '10px 8px', gap: '4px',
-                background: active ? 'rgba(232, 160, 48, 0.08)' : 'rgba(255,255,255,0.02)',
+                flex: '1 1 0', minWidth: '48px', height: '46px', padding: 0,
+                background: active ? 'rgba(232,160,48,0.12)' : 'rgba(255,255,255,0.02)',
                 border: `2px solid ${active ? '#e8a030' : 'rgba(255,255,255,0.06)'}`,
-                borderRadius: '10px', cursor: 'pointer',
-                transition: 'all 0.2s', fontFamily: 'inherit',
-                minWidth: '90px', position: 'relative',
+                borderRadius: '8px', cursor: 'pointer', transition: 'all 0.15s',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}
         >
-            <span style={{ fontSize: '1.8rem' }}>{car.emoji}</span>
-            <span style={{
-                color: active ? car.color : '#999', fontWeight: 700,
-                fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.5px',
-            }}>{car.name}</span>
-            {active && (
-                <div style={{
-                    position: 'absolute', top: '-6px', right: '-6px',
-                    background: '#e8a030', borderRadius: '50%',
-                    width: '16px', height: '16px', display: 'flex',
-                    alignItems: 'center', justifyContent: 'center',
-                    fontSize: '10px', color: '#000', fontWeight: 900,
-                }}>✓</div>
-            )}
+            <canvas ref={canvasRef} style={{ width: '50px', height: '38px' }} />
         </button>
+    );
+}
+
+function NavArrow({ dir, onClick }) {
+    return (
+        <button
+            onClick={onClick}
+            aria-label={dir === 'prev' ? 'Previous car' : 'Next car'}
+            style={{
+                position: 'absolute', top: '50%', transform: 'translateY(-50%)',
+                [dir === 'prev' ? 'left' : 'right']: '10px',
+                width: '40px', height: '40px', borderRadius: '50%',
+                background: 'rgba(0,0,0,0.45)', border: '1px solid rgba(232,160,48,0.4)',
+                color: '#e8a030', fontSize: '1.3rem', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontFamily: 'inherit', lineHeight: 1, zIndex: 2,
+            }}
+        >{dir === 'prev' ? '‹' : '›'}</button>
     );
 }
 
@@ -145,6 +282,15 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
         soundManager.playClick();
         setStep('car');
     }
+
+    function cycleCar(dir) {
+        const idx = CAR_TYPES.findIndex(c => c.key === carType);
+        const next = (idx + dir + CAR_TYPES.length) % CAR_TYPES.length;
+        setCarType(CAR_TYPES[next].key);
+        soundManager.playClick();
+    }
+
+    const selectedCar = CAR_TYPES.find(c => c.key === carType) || CAR_TYPES[0];
 
     return (
         <div className="center full-screen" style={{ overflow: 'auto', padding: '1rem' }}>
@@ -246,14 +392,22 @@ export default function Lobby({ room, setRoom, setPlayer, player, connected }) {
                                     </span>
                                 </div>
 
-                                {/* Car grid */}
-                                <div style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'repeat(4, 1fr)',
-                                    gap: '8px',
-                                }}>
+                                {/* Showroom preview with browse arrows */}
+                                <div style={{ position: 'relative' }}>
+                                    <CarShowroom car={selectedCar} />
+                                    <NavArrow dir="prev" onClick={() => cycleCar(-1)} />
+                                    <NavArrow dir="next" onClick={() => cycleCar(1)} />
+                                </div>
+
+                                {/* Thumbnail picker strip */}
+                                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                                     {CAR_TYPES.map(car => (
-                                        <CarCard key={car.key} car={car} selected={carType} onSelect={k => { setCarType(k); soundManager.playClick(); }} />
+                                        <CarThumb
+                                            key={car.key}
+                                            car={car}
+                                            active={carType === car.key}
+                                            onSelect={k => { setCarType(k); soundManager.playClick(); }}
+                                        />
                                     ))}
                                 </div>
 

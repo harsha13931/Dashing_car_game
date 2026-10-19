@@ -11,7 +11,7 @@ function hexToRgb(hex) {
     const n = parseInt(hex.slice(1), 16);
     return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
-function shade(hex, amt) {
+export function shade(hex, amt) {
     const [r, g, b] = hexToRgb(hex);
     return `rgb(${clamp(r + amt, 0, 255)},${clamp(g + amt, 0, 255)},${clamp(b + amt, 0, 255)})`;
 }
@@ -44,7 +44,7 @@ function createAsphaltTexture() {
 }
 
 // ─── Car body shapes (with gradient shading) ────────────────────────────
-function drawCarBody(ctx, type, color, dead) {
+export function drawCarBody(ctx, type, color, dead) {
     const t = type || 'sports';
     const highlight = dead ? '#444' : shade(color, 50);
     const base = dead ? '#2a2a2a' : color;
@@ -357,7 +357,7 @@ function drawCarBody(ctx, type, color, dead) {
     }
 }
 
-function drawWheels(ctx, type) {
+export function drawWheels(ctx, type) {
     const t = type || 'sports';
     let wheels;
     switch (t) {
@@ -405,7 +405,7 @@ function drawWheels(ctx, type) {
     }
 }
 
-function drawHeadlights(ctx, type) {
+export function drawHeadlights(ctx, type) {
     const t = type || 'sports';
     let noseX = 15, spread = 5;
     switch (t) {
