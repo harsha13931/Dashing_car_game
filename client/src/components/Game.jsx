@@ -3,6 +3,12 @@ import PhaserGame from './PhaserGame';
 import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
 
+// Screen-edge offsets that respect phone notches / home indicators
+const EDGE_TOP = 'max(10px, env(safe-area-inset-top))';
+const EDGE_RIGHT = 'max(12px, env(safe-area-inset-right))';
+const EDGE_LEFT = 'max(12px, env(safe-area-inset-left))';
+const EDGE_BOTTOM = 'max(16px, env(safe-area-inset-bottom))';
+
 export default function Game({ room, player, onBack }) {
     const [snapshot, setSnapshot] = useState({ players: [], powerups: [], elapsed: 0 });
     const [rankings, setRankings] = useState([]);
@@ -19,6 +25,7 @@ export default function Game({ room, player, onBack }) {
     const joyRef = useRef({ active: false, bx: 0, by: 0, maxR: 55 });
     const [joyView, setJoyView] = useState({ active: false, bx: 0, by: 0, kx: 0, ky: 0 });
     const [touchUI, setTouchUI] = useState(false);
+    const [listOpen, setListOpen] = useState(false);
 
     useEffect(() => {
         const coarse = (navigator.maxTouchPoints || 0) > 0 ||
@@ -214,45 +221,55 @@ export default function Game({ room, player, onBack }) {
             {/* ─── HUD Overlay ──────────────────────────────────────────── */}
             <div className="full-screen" style={{ pointerEvents: 'none', zIndex: 4 }}>
 
-                <Minimap snapshot={snapshot} localId={socket.id} />
+                <Minimap snapshot={snapshot} localId={socket.id} size={touchUI ? 84 : 116} />
 
                 {/* Top Center: Timer + Round */}
                 <div style={{
-                    position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
-                    display: 'flex', gap: '12px', alignItems: 'center'
+                    position: 'absolute', top: EDGE_TOP, left: '50%', transform: 'translateX(-50%)',
+                    display: 'flex', gap: '8px', alignItems: 'center'
                 }}>
                     {round > 0 && (
                         <div style={{
-                            background: 'rgba(0,0,0,0.6)', padding: '6px 14px', borderRadius: '16px',
-                            border: '1px solid rgba(0,200,255,0.2)', color: '#aaa', fontSize: '0.85rem',
-                            fontWeight: '600'
+                            background: 'rgba(0,0,0,0.6)', padding: touchUI ? '4px 10px' : '6px 14px', borderRadius: '16px',
+                            border: '1px solid rgba(232,160,48,0.25)', color: '#aaa',
+                            fontSize: touchUI ? '0.72rem' : '0.85rem', fontWeight: '600'
                         }}>
                             R{round}/{matchData?.maxRounds || room?.maxRounds || 3}
                         </div>
                     )}
                     <div style={{
-                        background: 'rgba(0,0,0,0.6)', padding: '8px 20px', borderRadius: '20px',
-                        border: '1px solid rgba(0,200,255,0.2)', color: '#fff', fontSize: '1.3rem',
+                        background: 'rgba(0,0,0,0.6)', padding: touchUI ? '5px 14px' : '8px 20px', borderRadius: '20px',
+                        border: '1px solid rgba(232,160,48,0.25)', color: '#fff',
+                        fontSize: touchUI ? '1.05rem' : '1.3rem',
                         fontWeight: 'bold', fontVariantNumeric: 'tabular-nums',
-                        textShadow: '0 0 8px rgba(0,200,255,0.4)'
                     }}>
                         {formatTime(snapshot.elapsed || 0)}
                     </div>
                 </div>
 
-                {/* Top Right: Alive count + leaderboard */}
+                {/* Top Right: Alive count + leaderboard (folds into a chip on touch) */}
                 <div style={{
-                    position: 'absolute', top: 12, right: 12, width: 180,
-                    background: 'rgba(0,0,0,0.6)', padding: '12px', borderRadius: '10px',
-                    border: '1px solid rgba(255,255,255,0.08)'
+                    position: 'absolute', top: EDGE_TOP, right: EDGE_RIGHT,
+                    width: touchUI ? (listOpen ? 150 : 'auto') : 180,
+                    background: 'rgba(0,0,0,0.6)', padding: touchUI ? '6px 10px' : '12px', borderRadius: '10px',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    pointerEvents: touchUI ? 'auto' : 'none',
                 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                        <span style={{ color: '#888', fontSize: '0.75rem', textTransform: 'uppercase', fontWeight: 600 }}>Players</span>
-                        <span style={{ color: '#00ddff', fontSize: '0.85rem', fontWeight: 700 }}>
-                            {snapshot.players?.filter(p => p.alive).length || 0} alive
+                    <div
+                        onClick={touchUI ? () => setListOpen(o => !o) : undefined}
+                        style={{
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px',
+                            marginBottom: touchUI && !listOpen ? 0 : '8px', cursor: touchUI ? 'pointer' : 'default',
+                        }}
+                    >
+                        <span style={{ color: '#888', fontSize: '0.72rem', textTransform: 'uppercase', fontWeight: 600 }}>
+                            {touchUI ? '👥' : 'Players'}
+                        </span>
+                        <span style={{ color: '#e8a030', fontSize: touchUI ? '0.78rem' : '0.85rem', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                            {snapshot.players?.filter(p => p.alive).length || 0} alive{touchUI ? (listOpen ? ' ▴' : ' ▾') : ''}
                         </span>
                     </div>
-                    <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                    {(!touchUI || listOpen) && <div style={{ maxHeight: touchUI ? '40vh' : '200px', overflowY: 'auto' }}>
                         {snapshot.players?.slice()
                             .sort((a, b) => (b.alive === a.alive ? 0 : b.alive ? 1 : -1))
                             .map(p => (
@@ -271,14 +288,15 @@ export default function Game({ room, player, onBack }) {
                                     </span>
                                 </div>
                             ))}
-                    </div>
+                    </div>}
                 </div>
 
-                {/* Status bar (my cooldowns) */}
+                {/* Status pills (active effects) — under the timer, away from thumbs */}
                 {me && meAlive && (
                     <div style={{
-                        position: 'absolute', bottom: 160, left: '50%', transform: 'translateX(-50%)',
-                        display: 'flex', gap: '8px'
+                        position: 'absolute', top: `calc(${EDGE_TOP} + ${touchUI ? 40 : 52}px)`,
+                        left: '50%', transform: 'translateX(-50%)',
+                        display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'center', maxWidth: '60vw',
                     }}>
                         {me.shield && <StatusPill label="SHIELD" color="#00ddff" />}
                         {me.speedMult > 1 && <StatusPill label="SPEED" color="#00ff88" />}
@@ -438,10 +456,20 @@ export default function Game({ room, player, onBack }) {
                             <div
                                 ref={zoneRef}
                                 style={{
-                                    position: 'absolute', left: 0, top: 0, bottom: 0, width: '45%',
+                                    position: 'absolute', left: 0, top: '28%', bottom: 0, width: '48%',
                                     zIndex: 5, touchAction: 'none', pointerEvents: 'auto',
                                 }}
                             />
+                            {!joyView.active && (
+                                <div style={{
+                                    position: 'absolute', zIndex: 5, pointerEvents: 'none',
+                                    left: `calc(${EDGE_LEFT} + 14px)`, bottom: `calc(${EDGE_BOTTOM} + 14px)`,
+                                    width: 'clamp(96px, 28vmin, 120px)', height: 'clamp(96px, 28vmin, 120px)',
+                                    borderRadius: '50%', border: '2px dashed rgba(232,160,48,0.3)',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    color: 'rgba(232,160,48,0.55)', fontSize: '0.68rem', fontWeight: 700, letterSpacing: '1px',
+                                }}>STEER</div>
+                            )}
                             {joyView.active && (
                                 <div style={{ position: 'absolute', inset: 0, zIndex: 5, pointerEvents: 'none' }}>
                                     <div style={{
@@ -464,12 +492,10 @@ export default function Game({ room, player, onBack }) {
                     ) : (
                         /* Directional button pad (left side) */
                         <div style={{
-                            position: 'absolute',
-                            left: 'max(20px, env(safe-area-inset-left))',
-                            bottom: 'max(24px, env(safe-area-inset-bottom))',
+                            position: 'absolute', left: EDGE_LEFT, bottom: EDGE_BOTTOM,
                             zIndex: 6, pointerEvents: 'auto', display: 'grid',
-                            gridTemplateColumns: 'repeat(3, clamp(44px,13vw,60px))',
-                            gridTemplateRows: 'repeat(2, clamp(44px,13vw,60px))', gap: '8px',
+                            gridTemplateColumns: 'repeat(3, clamp(44px, 13vmin, 58px))',
+                            gridTemplateRows: 'repeat(2, clamp(44px, 13vmin, 58px))', gap: '6px',
                         }}>
                             <DirButton label="▲" action="up" grid="1 / 2 / 2 / 3" onAction={handleBtn} />
                             <DirButton label="◀" action="left" grid="2 / 1 / 3 / 2" onAction={handleBtn} />
@@ -478,31 +504,41 @@ export default function Game({ room, player, onBack }) {
                         </div>
                     )}
 
-                    {/* Action buttons: right side, responsive sizing */}
+                    {/* Right-thumb cluster: NITRO in the corner, SHOOT arcs up-left, DROP above */}
                     <div style={{
-                        position: 'absolute',
-                        bottom: 'max(24px, env(safe-area-inset-bottom))',
-                        right: 'max(18px, env(safe-area-inset-right))',
-                        pointerEvents: 'auto', display: 'flex', gap: '14px', alignItems: 'flex-end', zIndex: 6,
+                        position: 'absolute', inset: 0, zIndex: 6, pointerEvents: 'none',
+                        '--n': 'clamp(68px, 21vmin, 96px)',
+                        '--s': 'clamp(54px, 16vmin, 74px)',
+                        '--d': 'clamp(46px, 13vmin, 62px)',
                     }}>
+                        <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
+                            cooldown={me?.dashCooldown} maxCooldown={1.5} size="var(--n)" fontSize="0.9rem"
+                            style={{ right: EDGE_RIGHT, bottom: EDGE_BOTTOM }} />
+                        <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
+                            cooldown={me?.shootCooldown} maxCooldown={0.8} size="var(--s)"
+                            style={{
+                                right: `calc(${EDGE_RIGHT} + var(--n) + 10px)`,
+                                bottom: `calc(${EDGE_BOTTOM} + var(--n) * 0.32)`,
+                            }} />
                         {me?.weapon && (
                             <ActionButton label={me.weapon === 'oil' ? 'OIL' : 'FLIP'} color="#b24aff"
-                                action="drop" onAction={handleBtn} size="clamp(52px,14vw,72px)" />
+                                action="drop" onAction={handleBtn} size="var(--d)" fontSize="0.72rem"
+                                style={{
+                                    right: `calc(${EDGE_RIGHT} + var(--n) * 0.35)`,
+                                    bottom: `calc(${EDGE_BOTTOM} + var(--n) + 12px)`,
+                                }} />
                         )}
-                        <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
-                            cooldown={me?.shootCooldown} maxCooldown={0.8} size="clamp(56px,15vw,78px)" />
-                        <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
-                            cooldown={me?.dashCooldown} maxCooldown={1.5} size="clamp(66px,18vw,94px)" />
                     </div>
 
-                    {/* Control-scheme toggle */}
+                    {/* Control-scheme toggle (under the minimap) */}
                     <button
                         onClick={switchCtrl}
                         style={{
-                            position: 'absolute', top: 136, left: 12, zIndex: 7, pointerEvents: 'auto',
+                            position: 'absolute', top: `calc(${EDGE_TOP} + 92px)`, left: EDGE_LEFT,
+                            zIndex: 7, pointerEvents: 'auto',
                             background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(232,160,48,0.5)',
-                            color: '#e8a030', borderRadius: 18, padding: '6px 12px',
-                            fontSize: '0.7rem', fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
+                            color: '#e8a030', borderRadius: 16, padding: '5px 10px',
+                            fontSize: '0.66rem', fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
                         }}
                     >
                         {ctrlMode === 'joystick' ? '⇄ Buttons' : '⇄ Joystick'}
@@ -539,13 +575,13 @@ export default function Game({ room, player, onBack }) {
 }
 
 // ─── Sub-components ─────────────────────────────────────────────────────
-function Minimap({ snapshot, localId }) {
+function Minimap({ snapshot, localId, size = 116 }) {
     const ref = useRef(null);
     useEffect(() => {
         const cv = ref.current;
         if (!cv) return;
         const ctx = cv.getContext('2d');
-        const S = 116, dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const S = size, dpr = Math.min(window.devicePixelRatio || 1, 2);
         if (cv.width !== S * dpr) { cv.width = S * dpr; cv.height = S * dpr; }
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, S, S);
@@ -570,15 +606,15 @@ function Minimap({ snapshot, localId }) {
                 ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke();
             }
         }
-    }, [snapshot, localId]);
+    }, [snapshot, localId, size]);
 
     return (
         <div style={{
-            position: 'absolute', top: 12, left: 12, width: 116, height: 116,
+            position: 'absolute', top: EDGE_TOP, left: EDGE_LEFT, width: size, height: size,
             borderRadius: '50%', overflow: 'hidden',
             background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.1)',
         }}>
-            <canvas ref={ref} style={{ width: 116, height: 116 }} />
+            <canvas ref={ref} style={{ width: size, height: size }} />
         </div>
     );
 }
@@ -613,7 +649,7 @@ function DirButton({ label, action, onAction, grid }) {
     );
 }
 
-function ActionButton({ label, color, action, onAction, cooldown = 0, maxCooldown = 1, size = 75 }) {
+function ActionButton({ label, color, action, onAction, cooldown = 0, maxCooldown = 1, size = 75, fontSize = '0.8rem', style }) {
     const ready = !cooldown || cooldown <= 0;
     const pct = ready ? 0 : (cooldown / maxCooldown) * 100;
 
@@ -622,18 +658,21 @@ function ActionButton({ label, color, action, onAction, cooldown = 0, maxCooldow
             onPointerDown={e => { e.preventDefault(); onAction(action, true); }}
             onPointerUp={e => { e.preventDefault(); onAction(action, false); }}
             onPointerLeave={e => { e.preventDefault(); onAction(action, false); }}
+            onPointerCancel={e => { e.preventDefault(); onAction(action, false); }}
             style={{
+                position: 'absolute', pointerEvents: 'auto',
                 width: size, height: size,
                 borderRadius: '50%',
-                background: `${color}22`,
+                background: `radial-gradient(circle at 50% 35%, ${color}40, ${color}14)`,
                 border: `2px solid ${ready ? color : '#444'}`,
                 color: ready ? color : '#555',
-                fontSize: '0.8rem', fontWeight: 'bold',
+                fontSize, fontWeight: 'bold', letterSpacing: '0.5px',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                userSelect: 'none', touchAction: 'none',
-                position: 'relative', overflow: 'hidden',
+                userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none',
+                overflow: 'hidden',
                 transition: 'border-color 0.2s, color 0.2s',
-                boxShadow: ready ? `0 0 15px ${color}33` : 'none'
+                boxShadow: ready ? `0 0 16px ${color}40, inset 0 0 12px ${color}22` : 'none',
+                ...style,
             }}
         >
             {label}
