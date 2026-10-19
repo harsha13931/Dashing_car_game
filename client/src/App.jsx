@@ -8,10 +8,12 @@ export default function App() {
     const [room, setRoom] = useState(null);
     const [player, setPlayer] = useState(null);
     const [connected, setConnected] = useState(socket.connected);
+    const [connError, setConnError] = useState('');
 
     useEffect(() => {
-        socket.on('connect', () => setConnected(true));
+        socket.on('connect', () => { setConnected(true); setConnError(''); });
         socket.on('disconnect', () => setConnected(false));
+        socket.on('connect_error', (e) => setConnError(e?.message || 'connection failed'));
 
         socket.on('roomUpdate', r => {
             setRoom(r);
@@ -44,6 +46,7 @@ export default function App() {
                     setPlayer={setPlayer}
                     player={player}
                     connected={connected}
+                    connError={connError}
                 />
             )}
 
