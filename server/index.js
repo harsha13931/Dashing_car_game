@@ -118,7 +118,7 @@ function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 's
         id,
         token,                 // lets the same browser reclaim this seat after a reconnect
         connected: true,
-        name: name || `Player_${id.slice(0, 4)}`,
+        name: (typeof name === 'string' && name.trim().slice(0, 16)) || `Player_${id.slice(0, 4)}`,
         carType: validCar,
         carStats: CAR_TYPES[validCar],
         cosmetics: { ...(sanitizeCosmetics(cosmetics) || {}), number: raceNumber(name || id) },
