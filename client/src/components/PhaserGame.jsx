@@ -3,6 +3,7 @@ import Phaser from 'phaser';
 import { socket } from '../net/socket';
 import { paintColor, trailColor, drawTopper, TOPPERS } from '../cosmetics';
 import { CAR_COLOR } from '../carArt';
+import { net, PLANE_SPEED, DROP_FALL_MS } from '../net/netcode';
 
 function hexToInt(hex) {
     if (!hex || hex[0] !== '#') return 0xffffff;
@@ -97,6 +98,84 @@ function makeAsphaltCanvas() {
         ctx.arc(Math.random() * size, Math.random() * size, 0.5 + Math.random() * 1.3, 0, Math.PI * 2);
         ctx.fill();
     }
+    return c;
+}
+
+// ─── Air-drop art: cargo plane (faces +x), wooden crate, parachute ────────
+function makePlaneCanvas() {
+    const W = 240, H = 230;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    g.translate(W / 2, H / 2);
+    const body = '#dfe3e8', dark = '#8d96a3', accent = '#d6312f';
+    // Main wings
+    g.fillStyle = body;
+    g.beginPath();
+    g.moveTo(18, -6); g.lineTo(-6, -108); g.lineTo(-30, -108); g.lineTo(-22, -6);
+    g.lineTo(-22, 6); g.lineTo(-30, 108); g.lineTo(-6, 108); g.lineTo(18, 6);
+    g.closePath(); g.fill();
+    g.strokeStyle = dark; g.lineWidth = 2; g.stroke();
+    // Wing stripes
+    g.fillStyle = accent;
+    g.fillRect(-26, -104, 18, 10); g.fillRect(-26, 94, 18, 10);
+    // Engines + props
+    for (const y of [-58, 58]) {
+        g.fillStyle = '#5a6270';
+        g.beginPath(); g.ellipse(14, y, 20, 8, 0, 0, Math.PI * 2); g.fill();
+        g.fillStyle = 'rgba(30,30,30,0.35)';
+        g.beginPath(); g.ellipse(36, y, 3, 22, 0, 0, Math.PI * 2); g.fill();
+    }
+    // Tail
+    g.fillStyle = body;
+    g.beginPath();
+    g.moveTo(-82, -4); g.lineTo(-100, -40); g.lineTo(-112, -40); g.lineTo(-104, -4);
+    g.lineTo(-104, 4); g.lineTo(-112, 40); g.lineTo(-100, 40); g.lineTo(-82, 4);
+    g.closePath(); g.fill(); g.stroke();
+    // Fuselage
+    const fg = g.createLinearGradient(0, -16, 0, 16);
+    fg.addColorStop(0, '#f4f6f8'); fg.addColorStop(0.5, '#d2d7de'); fg.addColorStop(1, '#a8b0bb');
+    g.fillStyle = fg;
+    g.beginPath();
+    g.moveTo(64, 0); g.quadraticCurveTo(58, -15, 30, -15); g.lineTo(-96, -9); g.quadraticCurveTo(-112, 0, -96, 9);
+    g.lineTo(30, 15); g.quadraticCurveTo(58, 15, 64, 0);
+    g.closePath(); g.fill(); g.stroke();
+    // Cockpit + stripe
+    g.fillStyle = '#2b4a6b';
+    g.beginPath(); g.ellipse(44, 0, 11, 8, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = accent; g.fillRect(-60, -2, 70, 4);
+    return c;
+}
+
+function makeCrateCanvas() {
+    const S = 64;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    g.fillStyle = '#8a5a2b'; g.fillRect(4, 4, S - 8, S - 8);
+    g.strokeStyle = '#5a3816'; g.lineWidth = 4; g.strokeRect(4, 4, S - 8, S - 8);
+    g.strokeStyle = '#6e4520'; g.lineWidth = 3;
+    for (const y of [20, 32, 44]) { g.beginPath(); g.moveTo(6, y); g.lineTo(S - 6, y); g.stroke(); }
+    g.strokeStyle = '#c8933f'; g.lineWidth = 5;
+    g.beginPath(); g.moveTo(8, 8); g.lineTo(S - 8, S - 8); g.moveTo(S - 8, 8); g.lineTo(8, S - 8); g.stroke();
+    return c;
+}
+
+function makeChuteCanvas() {
+    const S = 140;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    const r = S / 2 - 4, n = 8;
+    for (let i = 0; i < n; i++) {
+        g.fillStyle = i % 2 ? '#f2f2f2' : '#e0482f';
+        g.beginPath(); g.moveTo(S / 2, S / 2);
+        g.arc(S / 2, S / 2, r, (i / n) * Math.PI * 2, ((i + 1) / n) * Math.PI * 2);
+        g.closePath(); g.fill();
+    }
+    const sh = g.createRadialGradient(S / 2 - 12, S / 2 - 12, 4, S / 2, S / 2, r);
+    sh.addColorStop(0, 'rgba(255,255,255,0.35)'); sh.addColorStop(1, 'rgba(0,0,0,0.25)');
+    g.fillStyle = sh; g.beginPath(); g.arc(S / 2, S / 2, r, 0, Math.PI * 2); g.fill();
     return c;
 }
 
@@ -240,6 +319,10 @@ class ArenaScene extends Phaser.Scene {
             this.textures.addCanvas(`pu_${type}`, makePowerupCanvas(type));
         }
         this.puSprites = new Map();
+        this.textures.addCanvas('plane', makePlaneCanvas());
+        this.textures.addCanvas('crate', makeCrateCanvas());
+        this.textures.addCanvas('chute', makeChuteCanvas());
+        this.planeSprites = new Map();
 
         // Asphalt ground as a large tiled sprite centered on the world origin
         this.textures.addCanvas('asphalt', makeAsphaltCanvas());
@@ -412,7 +495,8 @@ class ArenaScene extends Phaser.Scene {
     }
 
     update(time, delta) {
-        const snap = this.store.snapshot;
+        net.step(delta);                          // advance your predicted car
+        const snap = net.snap || this.store.snapshot;
         if (!snap || !snap.players) return;
 
         const arenaR = snap.arenaRadius || 1000;
@@ -428,15 +512,17 @@ class ArenaScene extends Phaser.Scene {
             seen.add(p.id);
             const e = this.ensureSprite(p);
 
-            // Smooth position
-            e.x += (p.x - e.x) * k;
-            e.y += (p.y - e.y) * k;
-
-            // Smooth angle (shortest path)
-            let da = p.angle - e.a;
-            while (da > Math.PI) da -= Math.PI * 2;
-            while (da < -Math.PI) da += Math.PI * 2;
-            e.a += da * k;
+            // Your car: predicted locally; others: extrapolated + smoothed
+            const rs = net.renderState(p.id, delta);
+            if (rs) { e.x = rs.x; e.y = rs.y; e.a = rs.angle; }
+            else {
+                e.x += (p.x - e.x) * k;
+                e.y += (p.y - e.y) * k;
+                e.a = p.angle;
+            }
+            const isLocal = p.id === this.store.localId && net.local;
+            const dashing = isLocal ? net.local.nitro > 0 : p.isDashing;
+            const skidding = isLocal ? net.local.skid : p.skid;
 
             const sizeMult = (TYPE_SIZE[p.carType] || 1) * (p.scale || 1);
             const scale = BASE_SPRITE_SCALE * sizeMult;
@@ -490,7 +576,7 @@ class ArenaScene extends Phaser.Scene {
                 const ry = e.y - Math.sin(e.a) * rearLen;
 
                 const trailFlame = this.getFlame(cssToInt(trailColor(cos ? cos.trail : 'classic', time)));
-                if (p.isDashing) {
+                if (dashing) {
                     trailFlame.emitParticleAt(rx, ry, 3);
                     if (this._tick % 2 === 0) this.smoke.emitParticleAt(rx, ry, 1);
                 } else if (p.speedMult > 1 && this._tick % 2 === 0) {
@@ -498,7 +584,7 @@ class ArenaScene extends Phaser.Scene {
                 }
 
                 // Skid marks: continuous streaks from both rear tyres
-                if (p.skid || p.isDashing || p.slip > 0) {
+                if (skidding || dashing || p.slip > 0) {
                     const ax = e.x - Math.cos(e.a) * 28 * sizeMult, ay = e.y - Math.sin(e.a) * 28 * sizeMult;
                     const px = -Math.sin(e.a) * 17 * sizeMult, py = Math.cos(e.a) * 17 * sizeMult;
                     const L = [ax + px, ay + py], R = [ax - px, ay - py];
@@ -507,7 +593,7 @@ class ArenaScene extends Phaser.Scene {
                         this.tireMarks.push({ x1: e.skidR[0], y1: e.skidR[1], x2: R[0], y2: R[1], life: 1 });
                     }
                     e.skidL = L; e.skidR = R;
-                    if (p.skid && this._tick % 4 === 0) this.smoke.emitParticleAt(ax, ay, 1);
+                    if (skidding && this._tick % 4 === 0) this.smoke.emitParticleAt(ax, ay, 1);
                 } else {
                     e.skidL = e.skidR = null;
                 }
@@ -625,29 +711,71 @@ class ArenaScene extends Phaser.Scene {
             }
         }
 
-        // Powerups (distinct icon sprites with a gentle pulse)
+        const sNow = net.serverNow();
+
+        // Power-ups: crates parachuting down from the cargo plane, then landed
         const puSeen = new Set();
         for (const pu of (snap.powerups || [])) {
             puSeen.add(pu.id);
-            let sp = this.puSprites.get(pu.id);
-            if (!sp) {
-                sp = this.add.image(pu.x, pu.y, `pu_${pu.type}`).setDepth(1);
-                this.puSprites.set(pu.id, sp);
+            let d = this.puSprites.get(pu.id);
+            if (!d) {
+                d = {
+                    shadow: this.add.ellipse(pu.x, pu.y, 52, 30, 0x000000, 0.3).setDepth(0.5),
+                    crate: this.add.image(pu.x, pu.y, 'crate').setDepth(1),
+                    icon: this.add.image(pu.x, pu.y, `pu_${pu.type}`).setDepth(1.2),
+                    chute: this.add.image(pu.x, pu.y, 'chute').setDepth(45),
+                    landed: false,
+                };
+                this.puSprites.set(pu.id, d);
             }
-            const pulse = 0.5 + 0.045 * Math.sin(time * 0.005 + pu.x);
-            sp.setScale(pulse);
-            sp.setPosition(pu.x, pu.y);
+            const f = Math.max(0, Math.min(1, (pu.landAt - sNow) / DROP_FALL_MS));   // 1 = just dropped
+            const sway = Math.sin(time * 0.004 + pu.id) * 10 * f;
+            const lift = 1 + 0.7 * f;
+            d.crate.setPosition(pu.x + sway, pu.y).setScale(0.75 * lift);
+            const pulse = f > 0 ? 1 : 1 + 0.06 * Math.sin(time * 0.006 + pu.id);
+            d.icon.setPosition(pu.x + sway, pu.y).setScale(0.44 * lift * pulse);
+            d.shadow.setPosition(pu.x + 50 * f, pu.y + 70 * f).setScale(1 - 0.35 * f).setAlpha(0.32 - 0.15 * f);
+            d.chute.setVisible(f > 0).setPosition(pu.x + sway, pu.y - 34 * f).setScale(0.75 + 0.35 * f).setAlpha(0.95);
+            if (f === 0 && !d.landed) {
+                d.landed = true;
+                this.smoke.emitParticleAt(pu.x, pu.y, 8);   // dust as it touches down
+            }
         }
-        for (const [id, sp] of this.puSprites) {
-            if (!puSeen.has(id)) { sp.destroy(); this.puSprites.delete(id); }
+        for (const [id, d] of this.puSprites) {
+            if (!puSeen.has(id)) {
+                d.shadow.destroy(); d.crate.destroy(); d.icon.destroy(); d.chute.destroy();
+                this.puSprites.delete(id);
+            }
         }
 
-        // Projectiles
+        // Cargo planes (fly high above everything; shadow on the ground)
+        const plSeen = new Set();
+        const sinceSnap = Math.max(0, Math.min(0.3, (sNow - snap.timestamp) / 1000));
+        for (const pl of (snap.planes || [])) {
+            plSeen.add(pl.id);
+            let d = this.planeSprites.get(pl.id);
+            if (!d) {
+                d = {
+                    shadow: this.add.image(pl.x, pl.y, 'plane').setDepth(2).setTint(0x000000).setAlpha(0.22),
+                    plane: this.add.image(pl.x, pl.y, 'plane').setDepth(50),
+                };
+                this.planeSprites.set(pl.id, d);
+            }
+            const x = pl.x + Math.cos(pl.angle) * PLANE_SPEED * sinceSnap;
+            const y = pl.y + Math.sin(pl.angle) * PLANE_SPEED * sinceSnap;
+            d.plane.setPosition(x, y).setRotation(pl.angle).setScale(1.25);
+            d.shadow.setPosition(x + 140, y + 190).setRotation(pl.angle).setScale(1.0);
+        }
+        for (const [id, d] of this.planeSprites) {
+            if (!plSeen.has(id)) { d.plane.destroy(); d.shadow.destroy(); this.planeSprites.delete(id); }
+        }
+
+        // Projectiles (moved forward from the last snapshot)
         const jg = this.projectileGfx;
         jg.clear();
         for (const pr of (snap.projectiles || [])) {
             jg.fillStyle(0xffcc33, 1);
-            jg.fillCircle(pr.x, pr.y, 5);
+            jg.fillCircle(pr.x + pr.vx * sinceSnap, pr.y + pr.vy * sinceSnap, 5);
         }
     }
 
