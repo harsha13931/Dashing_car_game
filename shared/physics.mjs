@@ -18,7 +18,7 @@ export const SUBSTEPS = 4;
 export const CAR_TYPES = {
     sports:   { name: 'Venom GT',      role: 'All-rounder', maxSpeed: 1.2,  accel: 1.15, turn: 1.15, mass: 1.0,  dashForce: 1.0,  size: 0.9,  hp: 105, stability: 1.15, desc: 'Good at everything' },
     muscle:   { name: 'Thunder V8',    role: 'Bruiser',     maxSpeed: 1.12, accel: 1.05, turn: 0.9,  mass: 1.3,  dashForce: 1.3,  size: 1.1,  hp: 115, stability: 1.15, desc: 'Brutal rams, wide turns' },
-    truck:    { name: 'War Rig',       role: 'Tank',        maxSpeed: 0.82, accel: 0.8,  turn: 0.78, mass: 1.55, dashForce: 1.45, size: 1.35, hp: 125, stability: 1.35, desc: 'Nearly impossible to push' },
+    truck:    { name: 'War Rig',       role: 'Tank',        maxSpeed: 0.82, accel: 0.8,  turn: 0.78, mass: 1.55, dashForce: 1.45, size: 1.35, hp: 120, stability: 1.35, desc: 'Nearly impossible to push' },
     rally:    { name: 'Dust Devil',    role: 'Grip King',   maxSpeed: 1.1,  accel: 1.15, turn: 1.3,  mass: 1.05, dashForce: 1.0,  size: 0.95, hp: 105, stability: 1.45, desc: 'Shakes off hits instantly' },
     kart:     { name: 'Pocket Rocket', role: 'Dodger',      maxSpeed: 1.25, accel: 1.45, turn: 1.4,  mass: 0.88, dashForce: 0.9,  size: 0.75, hp: 105, stability: 1.4,  desc: 'Tiny, quick, hard to catch' },
     suv:      { name: 'Iron Shield',   role: 'Defender',    maxSpeed: 0.95, accel: 0.9,  turn: 0.92, mass: 1.45, dashForce: 1.2,  size: 1.2,  hp: 120, stability: 1.25, desc: 'Heavy armour, slow start' },
