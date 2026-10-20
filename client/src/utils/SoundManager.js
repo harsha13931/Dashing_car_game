@@ -218,6 +218,17 @@ class SoundManager {
     playCrash(impact = 100, type = 'car') {
         if (!this.ctx) return;
         this.resume();
+        if (type === 'balloon') {     // rubbery boing instead of a crash
+            const ctx = this.ctx, t = ctx.currentTime;
+            const o = ctx.createOscillator(), gn = ctx.createGain();
+            o.type = 'sine';
+            o.frequency.setValueAtTime(180, t); o.frequency.exponentialRampToValueAtTime(520, t + 0.08);
+            o.frequency.exponentialRampToValueAtTime(240, t + 0.32);
+            gn.gain.setValueAtTime(0.0001, t); gn.gain.exponentialRampToValueAtTime(0.35, t + 0.02);
+            gn.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+            o.connect(gn); gn.connect(this.sfx); o.start(t); o.stop(t + 0.45);
+            return;
+        }
         const k = Math.min(1, impact / 600);
         // Body thump
         this._tone(95, { type: 'sine', dur: 0.28, vol: 0.35 + k * 0.5, glide: 38 });
