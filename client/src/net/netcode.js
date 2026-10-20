@@ -109,7 +109,7 @@ class NetClient {
                 id: r.id, name: r.name, isBot: r.isBot, carType: r.carType, cosmetics: r.cosmetics,
                 x: a[1], y: a[2], angle: a[3], vx: a[4], vy: a[5], av: a[6],
                 alive: !!(a[7] & 1), shield: !!(a[7] & 2), isDashing: !!(a[7] & 4),
-                skid: !!(a[7] & 8), magnetTimer: (a[7] & 16) ? 1 : 0, blades: !!(a[7] & 32),
+                skid: !!(a[7] & 8), magnetTimer: (a[7] & 16) ? 1 : 0, blades: !!(a[7] & 32), braking: !!(a[7] & 64),
                 dashCooldown: a[8], shootCooldown: a[9], nitro: a[10], slip: a[11], stun: a[12],
                 speedMult: a[13] / 100, scale: a[14] / 100, weapon: WEAPONS[a[15]] || null, kills: a[16], hp: a[17] ?? 100, bladeLeft: a[18] || 0,
             });

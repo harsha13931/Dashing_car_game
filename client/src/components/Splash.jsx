@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
-import { preloadCarArt } from '../carArt';
+import { renderCar } from '../carRender';
 
 // ─── Loading / title screen ────────────────────────────────────────────────
 // Loads the car art and wakes the server while a car drifts around the logo,
@@ -16,8 +16,7 @@ function DriftCanvas() {
         const cv = ref.current;
         if (!cv) return;
         const ctx = cv.getContext('2d');
-        const img = new Image();
-        img.src = '/assets/game/cars/car_red_3.png';
+        const img = renderCar('sports', { paint: 'red', finish: 'metallic', decal: 'stripes', decalColor: 'white', spoiler: 'wing' }, { res: 0.6 });
         const trail = [];
         let raf, t = 0, last = performance.now();
 
@@ -63,8 +62,8 @@ function DriftCanvas() {
                 ctx.fill();
             }
 
-            if (img.complete && img.naturalWidth) {
-                const L = 66, Wd = L * img.naturalWidth / img.naturalHeight;
+            {
+                const L = 70, Wd = L * img.width / img.height;
                 ctx.save();
                 ctx.translate(x + 4, y + 6);
                 ctx.rotate(body + Math.PI / 2);
@@ -91,7 +90,7 @@ export default function Splash({ connected, onDone }) {
     const [elapsed, setElapsed] = useState(0);
     const [shown, setShown] = useState(0);   // displayed progress, eased
 
-    useEffect(() => { preloadCarArt(() => setArtReady(true)); }, []);
+    useEffect(() => { setArtReady(true); }, []);   // cars are drawn in code — nothing to download
     useEffect(() => {
         const start = Date.now();
         const id = setInterval(() => setElapsed(Date.now() - start), 100);
@@ -177,7 +176,7 @@ export default function Splash({ connected, onDone }) {
             <div style={{
                 position: 'absolute', bottom: 'max(10px, env(safe-area-inset-bottom))', left: 0, right: 0,
                 textAlign: 'center', fontSize: '0.65rem', color: '#556', pointerEvents: 'none',
-            }}>Landscape game · Car art by Kenney (CC0)</div>
+            }}>Landscape game · Best with sound on</div>
         </div>
     );
 }

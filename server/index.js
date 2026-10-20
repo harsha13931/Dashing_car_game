@@ -69,10 +69,42 @@ function sanitizeCosmetics(c) {
     const pick = (v) => (typeof v === 'string' && v.length <= 24 ? v : undefined);
     return {
         paint: pick(c.paint) || 'factory',
+        finish: pick(c.finish) || 'gloss',
+        decal: pick(c.decal) || 'stock',
+        decalColor: pick(c.decalColor) || 'white',
+        spoiler: pick(c.spoiler) || 'stock',
+        hood: pick(c.hood) || 'stock',
         wheel: pick(c.wheel) || 'stock',
+        underglow: pick(c.underglow) || 'none',
+        tint: pick(c.tint) || 'stock',
         topper: pick(c.topper) || 'none',
         trail: pick(c.trail) || 'classic',
     };
+}
+
+// Bots get their own random custom builds so the grid looks varied
+const BOT_LOOK = {
+    paint: ['blue', 'red', 'orange', 'green', 'purple', 'gold', 'teal', 'pink', 'white', 'black', 'lime'],
+    finish: ['gloss', 'gloss', 'metallic', 'metallic', 'matte', 'chrome'],
+    decal: ['stock', 'stock', 'none', 'stripes', 'side', 'flames', 'number', 'checker'],
+    decalColor: ['white', 'black', 'red', 'yellow', 'blue', 'orange', 'lime'],
+    spoiler: ['stock', 'stock', 'none', 'lip', 'wing', 'gt'],
+    hood: ['stock', 'stock', 'bulge', 'scoop', 'vents', 'carbon'],
+    wheel: ['stock', 'gold', 'chrome', 'red', 'neon', 'blue'],
+    underglow: ['none', 'none', 'none', 'cyan', 'pink', 'green', 'purple', 'orange'],
+    tint: ['stock', 'stock', 'dark', 'mirror'],
+};
+function randomBotLook() {
+    const r = (a) => a[Math.floor(Math.random() * a.length)];
+    const look = {};
+    for (const k in BOT_LOOK) look[k] = r(BOT_LOOK[k]);
+    return { ...look, topper: 'none', trail: 'classic' };
+}
+
+function raceNumber(name) {
+    let h = 7;
+    for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return 1 + (h % 98);
 }
 
 function sanitizeToken(t) {
@@ -89,7 +121,7 @@ function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 's
         name: name || `Player_${id.slice(0, 4)}`,
         carType: validCar,
         carStats: CAR_TYPES[validCar],
-        cosmetics: sanitizeCosmetics(cosmetics),
+        cosmetics: { ...(sanitizeCosmetics(cosmetics) || {}), number: raceNumber(name || id) },
         x: 0, y: 0,
         angle: 0,
         vx: 0, vy: 0,
@@ -676,7 +708,7 @@ io.on('connection', socket => {
                 ? availableNames.splice(Math.floor(Math.random() * availableNames.length), 1)[0]
                 : `Bot_${i + 1}`;
             const botCar = botCarTypes[Math.floor(Math.random() * botCarTypes.length)];
-            addPlayer(room, makePlayer(botId, botName, true, room.settings.botDifficulty, botCar));
+            addPlayer(room, makePlayer(botId, botName, true, room.settings.botDifficulty, botCar, randomBotLook()));
         }
 
         if (room.round >= room.maxRounds) { room.round = 0; room.scores = {}; }
@@ -917,7 +949,7 @@ function sendSnapshot(room, now) {
         p: Object.values(room.players).map(p => [
             p.num, r1(p.x), r1(p.y), Math.round(p.angle * 1000) / 1000,
             Math.round(p.vx), Math.round(p.vy), r2(p.av),
-            (p.alive ? 1 : 0) | (p.shield ? 2 : 0) | (p.nitro > 0 ? 4 : 0) | (p.skid ? 8 : 0) | (p.magnetTimer > 0 ? 16 : 0) | (p.bladeTimer > 0 ? 32 : 0),
+            (p.alive ? 1 : 0) | (p.shield ? 2 : 0) | (p.nitro > 0 ? 4 : 0) | (p.skid ? 8 : 0) | (p.magnetTimer > 0 ? 16 : 0) | (p.bladeTimer > 0 ? 32 : 0) | (p.inputs.forward < -0.05 ? 64 : 0),
             r2(p.dashCooldown), r1(p.shootCooldown), r2(p.nitro), r2(p.slip), r2(p.stun),
             Math.round(p.speedMult * 100), Math.round(p.scale * 100), WEAPON_CODE[p.weapon] || 0, p.kills, Math.ceil(p.hp), r1(Math.max(0, p.bladeTimer)),
         ]),

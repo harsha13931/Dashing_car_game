@@ -1,8 +1,9 @@
 import React, { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
 import { socket } from '../net/socket';
-import { paintColor, trailColor, drawTopper, TOPPERS } from '../cosmetics';
-import { CAR_COLOR } from '../carArt';
+import { trailColor, drawTopper, TOPPERS } from '../cosmetics';
+import { renderCar, renderShadow, renderBrakeGlow, lookKey, resolveLook, CAR_TEX_H } from '../carRender';
+import { PAINTS, underglowColor } from '../cosmetics';
 import { net, PLANE_SPEED, DROP_FALL_MS } from '../net/netcode';
 
 function hexToInt(hex) {
@@ -31,49 +32,53 @@ function cssToInt(col) {
     }
     return 0xffa000;
 }
-// Representative tint per player color slot (used when paint = factory)
-const SLOT_HEX = { blue: '#2f9fe6', red: '#e04a4a', green: '#37c06a', yellow: '#e8c233', black: '#5a616c' };
-
-// Desaturate a car image so it can be tinted to any paint color.
-function makeNeutralCanvas(srcImage) {
-    const w = srcImage.width, h = srcImage.height;
-    const c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    const ctx = c.getContext('2d');
-    ctx.drawImage(srcImage, 0, 0);
-    const id = ctx.getImageData(0, 0, w, h);
-    const d = id.data;
-    for (let i = 0; i < d.length; i += 4) {
-        if (d[i + 3] === 0) continue;
-        const luma = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        const v = Math.max(0, Math.min(255, luma * 1.25 + 60)); // lift to light gray
-        d[i] = d[i + 1] = d[i + 2] = v;
-    }
-    ctx.putImageData(id, 0, 0);
-    return c;
-}
-
-// ─── Art mapping ───────────────────────────────────────────────────────────
-const CAR_COLORS = ['blue', 'red', 'green', 'yellow', 'black'];
-const CAR_VARIANT = {           // car type → Kenney body style (1-5)
-    sports: 3, muscle: 1, truck: 4, rally: 5,
-    kart: 2, suv: 4, drift: 3, supercar: 2,
-};
+// ─── Car art ───────────────────────────────────────────────────────────────
 const TYPE_SIZE = {             // matches server carStats.size for hitbox accuracy
     sports: 0.9, muscle: 1.1, truck: 1.4, rally: 0.95,
     kart: 0.7, suv: 1.2, drift: 0.95, supercar: 0.85,
 };
-// Server hitbox is a 88×46 box × size; the Kenney car (131×71px) at 0.7 scale
-// is 92×50 — so what you see is what you hit.
-const BASE_SPRITE_SCALE = 0.7;
+// The physics box is 88×46 world px × size; the drawn car is 264×144 px,
+// so this scale makes what you see match what you hit.
+const CAR_SCALE = 92.4 / CAR_TEX_H;
+const TOPPER_SCALE = 0.7;
 
 function hashId(id) {
     let h = 0;
     for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
     return Math.abs(h);
 }
-function colorForId(id) {
-    return CAR_COLORS[hashId(id) % CAR_COLORS.length];
+// Anyone without a saved look (shouldn't happen any more) still gets a distinct paint
+function fallbackLook(id) {
+    const paints = PAINTS.filter(p => p.color);
+    return { paint: paints[hashId(id) % paints.length].key };
+}
+
+// Headlight cone (points up, drawn additively)
+function makeBeamCanvas() {
+    const W = 220, H = 300;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    for (const x of [W / 2 - 34, W / 2 + 34]) {
+        const grd = g.createLinearGradient(0, H, 0, 0);
+        grd.addColorStop(0, 'rgba(255,250,225,0.9)'); grd.addColorStop(1, 'rgba(255,250,225,0)');
+        g.fillStyle = grd;
+        g.beginPath(); g.moveTo(x - 8, H); g.lineTo(x - 70, 0); g.lineTo(x + 70, 0); g.lineTo(x + 8, H); g.closePath(); g.fill();
+    }
+    return c;
+}
+
+// Soft oval of light under the car (tinted per underglow colour)
+function makeUnderglowCanvas() {
+    const W = 200, H = 320;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    g.translate(W / 2, H / 2); g.scale(1, H / W);
+    const grd = g.createRadialGradient(0, 0, 10, 0, 0, W / 2);
+    grd.addColorStop(0, 'rgba(255,255,255,0.9)'); grd.addColorStop(0.55, 'rgba(255,255,255,0.45)'); grd.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grd; g.beginPath(); g.arc(0, 0, W / 2, 0, Math.PI * 2); g.fill();
+    return c;
 }
 
 // ─── Procedural asphalt tile (offscreen canvas → Phaser texture) ────────────
@@ -393,20 +398,20 @@ class ArenaScene extends Phaser.Scene {
         this.carSprites = new Map();     // id → { sprite, label }
     }
 
-    preload() {
-        for (const col of CAR_COLORS) {
-            for (let n = 1; n <= 5; n++) {
-                this.load.image(`car_${col}_${n}`, `/assets/game/cars/car_${col}_${n}.png`);
-            }
-        }
+    // Car texture for a model + build + damage stage (drawn once, then reused)
+    carTexture(type, cos, stage) {
+        const key = lookKey(type, cos, stage);
+        if (!this.textures.exists(key)) this.textures.addCanvas(key, renderCar(type, cos, { stage }));
+        return key;
     }
 
     create() {
-        // Neutral (tintable) car textures, one per body variant
-        for (let v = 1; v <= 5; v++) {
-            const src = this.textures.get(`car_blue_${v}`).getSourceImage();
-            this.textures.addCanvas(`car_neutral_${v}`, makeNeutralCanvas(src));
+        for (const t of Object.keys(TYPE_SIZE)) {
+            this.textures.addCanvas(`sh_${t}`, renderShadow(t));
+            this.textures.addCanvas(`brk_${t}`, renderBrakeGlow(t));
         }
+        this.textures.addCanvas('beam', makeBeamCanvas());
+        this.textures.addCanvas('uglow', makeUnderglowCanvas());
         // Topper textures (hats) drawn from the shared cosmetics art
         for (const t of TOPPERS) {
             if (t.key === 'none') continue;
@@ -565,7 +570,7 @@ class ArenaScene extends Phaser.Scene {
     // Zoom so a phone sees a useful slice of the arena (not just its own car)
     baseZoom() {
         const m = Math.min(this.scale.width, this.scale.height);
-        return Math.max(0.55, Math.min(0.95, m / 640));
+        return Math.max(0.62, Math.min(1.0, m / 560));
     }
 
     drawArena(radius, base, electric, time) {
@@ -613,11 +618,14 @@ class ArenaScene extends Phaser.Scene {
     ensureSprite(p) {
         let entry = this.carSprites.get(p.id);
         if (!entry) {
-            const variant = CAR_VARIANT[p.carType] || 1;
-            const shadow = this.add.sprite(p.x, p.y, `car_neutral_${variant}`)
-                .setDepth(4).setTint(0x000000).setAlpha(0.38);
-            const sprite = this.add.sprite(p.x, p.y, `car_neutral_${variant}`);
+            const type = TYPE_SIZE[p.carType] ? p.carType : 'sports';
+            const glow = this.add.image(p.x, p.y, 'uglow').setDepth(3.5).setBlendMode('ADD').setVisible(false);
+            const shadow = this.add.image(p.x, p.y, `sh_${type}`).setDepth(4).setAlpha(0.45);
+            const beam = this.add.image(p.x, p.y, 'beam').setDepth(4.5).setBlendMode('ADD').setAlpha(0.13).setOrigin(0.5, 1);
+            const sprite = this.add.sprite(p.x, p.y, this.carTexture(type, p.cosmetics || fallbackLook(p.id), 0));
             sprite.setDepth(5);
+            const brake = this.add.image(p.x, p.y, `brk_${type}`).setDepth(5.1).setBlendMode('ADD')
+                .setOrigin(0.5, (CAR_TEX_H / 2) / (CAR_TEX_H + 40)).setVisible(false);
             const topper = this.add.sprite(p.x, p.y, 'top_crown').setDepth(6).setVisible(false);
             const label = this.add.text(p.x, p.y, p.name || '', {
                 fontFamily: 'Arial, sans-serif', fontSize: '15px', color: '#fff',
@@ -625,7 +633,7 @@ class ArenaScene extends Phaser.Scene {
             }).setOrigin(0.5, 1).setDepth(7);
             const saws = [0, 1].map(() => this.add.image(p.x, p.y, 'saw').setDepth(5.2).setVisible(false));
             const sawBlurs = [0, 1].map(() => this.add.image(p.x, p.y, 'sawBlur').setDepth(5.15).setVisible(false));
-            entry = { sprite, shadow, topper, label, saws, sawBlurs, x: p.x, y: p.y, a: p.angle, topperKey: null, skidL: null, skidR: null };
+            entry = { sprite, shadow, glow, beam, brake, type, topper, label, saws, sawBlurs, texKey: null, x: p.x, y: p.y, a: p.angle, topperKey: null, skidL: null, skidR: null };
             this.carSprites.set(p.id, entry);
         }
         return entry;
@@ -677,28 +685,38 @@ class ArenaScene extends Phaser.Scene {
             const skidding = isLocal ? net.local.skid : p.skid;
 
             const sizeMult = (TYPE_SIZE[p.carType] || 1) * (p.scale || 1);
-            const scale = BASE_SPRITE_SCALE * sizeMult;
+            const scale = CAR_SCALE * sizeMult;
             const rot = e.a + Math.PI / 2;   // sprite faces up; angle 0 = +x
-            e.sprite.setScale(scale);
-            e.sprite.setPosition(e.x, e.y);
-            e.sprite.setRotation(rot);
             const hp = p.hp ?? 100;
             const wrecked = !p.alive && hp <= 0;          // blown up, not pushed out
-            e.sprite.setAlpha(p.alive || wrecked ? 1 : 0.35);
-            e.shadow.setScale(scale);
-            e.shadow.setPosition(e.x + 5, e.y + 8);
-            e.shadow.setRotation(rot);
-            e.shadow.setVisible(p.alive || wrecked);
+            const cos = p.cosmetics || fallbackLook(p.id);
 
-            // Paint: custom color, else slot color (tinted neutral car)
-            const cos = p.cosmetics || null;
-            // Custom paint → that; a player's factory paint → the car's showroom color;
-            // bots (no cosmetics) → a slot color so they're easy to tell apart
-            const paintHex = (cos && (paintColor(cos.paint) || CAR_COLOR[p.carType])) || SLOT_HEX[colorForId(p.id)];
-            e.tintInt = hexToInt(paintHex);
-            // Damage shows on the body: paint darkens and burns as health drops
+            // Body: the car's own build, redrawn with dents / cracks / scorch as it takes damage
+            const stage = wrecked || hp < 22 ? 3 : hp < 45 ? 2 : hp < 70 ? 1 : 0;
+            const texKey = this.carTexture(e.type, cos, stage);
+            if (texKey !== e.texKey) { e.sprite.setTexture(texKey); e.texKey = texKey; }
+            e.sprite.setScale(scale).setPosition(e.x, e.y).setRotation(rot);
+            e.sprite.setAlpha(p.alive || wrecked ? 1 : 0.35);
             const dmg = 1 - Math.max(0, Math.min(100, hp)) / 100;
-            e.sprite.setTint(wrecked ? 0x2a2522 : p.alive ? mixColor(e.tintInt, 0x1d1b1a, dmg * 0.55) : 0x777777);
+            e.sprite.setTint(wrecked ? 0x4a4440 : p.alive ? mixColor(0xffffff, 0x9a9590, dmg * 0.5) : 0x888888);
+            e.shadow.setScale(scale).setPosition(e.x + 5, e.y + 8).setRotation(rot).setVisible(p.alive || wrecked);
+            e.tintInt = hexToInt(resolveLook(e.type, cos).paint);
+
+            // Brake lights glow when braking; headlights throw a beam ahead
+            const isMeNow = p.id === this.store.localId;
+            const braking = p.alive && (isMeNow && net.local ? net.cur.forward < -0.05 : p.braking);
+            e.brake.setVisible(braking).setScale(scale).setPosition(e.x, e.y).setRotation(rot);
+            const fx = Math.cos(e.a), fy = Math.sin(e.a);
+            e.beam.setVisible(p.alive).setScale(0.55 * sizeMult).setRotation(rot)
+                .setPosition(e.x + fx * 44 * sizeMult, e.y + fy * 44 * sizeMult)
+                .setAlpha(stage >= 2 ? 0.06 : 0.13);
+            // Neon underglow
+            const ug = underglowColor(cos.underglow);
+            e.glow.setVisible(!!ug && p.alive);
+            if (ug && p.alive) {
+                e.glow.setTint(hexToInt(ug)).setScale(0.5 * sizeMult).setRotation(rot).setPosition(e.x, e.y)
+                    .setAlpha(0.5 + 0.15 * Math.sin(time * 0.006 + hashId(p.id)));
+            }
             e.hp = hp; e.wrecked = wrecked;
             e.alive = p.alive;
             e.isMe = p.id === this.store.localId;
@@ -714,7 +732,7 @@ class ArenaScene extends Phaser.Scene {
             if (topKey) {
                 e.topper.setPosition(e.x, e.y);
                 e.topper.setRotation(rot);
-                e.topper.setScale(scale);
+                e.topper.setScale(TOPPER_SCALE * sizeMult);
                 e.topper.setVisible(p.alive);
             }
 
@@ -820,6 +838,7 @@ class ArenaScene extends Phaser.Scene {
         for (const [id, e] of this.carSprites) {
             if (!seen.has(id)) {
                 e.sprite.destroy(); e.shadow.destroy(); e.label.destroy(); e.topper && e.topper.destroy();
+                e.glow.destroy(); e.beam.destroy(); e.brake.destroy();
                 e.saws.forEach(sw => sw.destroy());
                 e.sawBlurs.forEach(sw => sw.destroy());
                 this.carSprites.delete(id);
