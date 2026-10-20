@@ -1,13 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
-import { drawCarBody, drawWheels, drawHeadlights } from './CanvasRenderer';
 import {
-    PAINTS, TOPPERS, TRAILS,
-    loadGarage, saveGarage, cosmeticsFor,
-    paintColor, drawTopper,
+    PAINTS, TOPPERS, TRAILS, WHEELS, FINISHES, DECALS, DECAL_COLORS, SPOILERS, HOODS, UNDERGLOWS, TINTS,
+    loadGarage, saveGarage, cosmeticsFor, drawTopper, underglowColor,
 } from '../cosmetics';
-import { CAR_VARIANT, tintedCar, preloadCarArt } from '../carArt';
+import { renderCar, lookKey } from '../carRender';
 import { getToken, saveRoom, clearRoom } from '../net/session';
 
 // ─── Menus: home (car stage), garage, play sheets, settings, room ─────────
@@ -91,17 +89,11 @@ function SlotCar({ carType, cos, h = 52 }) {
         const H = h, W = Math.round(h * 0.62);
         cv.width = W * dpr; cv.height = H * dpr;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        const car = CAR_TYPES.find(c => c.key === carType) || CAR_TYPES[0];
-        const draw = () => {
-            ctx.clearRect(0, 0, W, H);
-            const sprite = tintedCar(CAR_VARIANT[carType] || 1, (cos && paintColor(cos.paint)) || car.color);
-            if (!sprite) return;
-            const sh = H - 4, sw = sh * sprite.width / sprite.height;
-            ctx.drawImage(sprite, W / 2 - sw / 2, 2, sw, sh);
-        };
-        draw();
-        preloadCarArt(draw);
-    }, [carType, cos && cos.paint, h]);
+        ctx.clearRect(0, 0, W, H);
+        const sprite = carCanvas(carType, cos, 0.5);
+        const sh = H - 4, sw = sh * sprite.width / sprite.height;
+        ctx.drawImage(sprite, W / 2 - sw / 2, 2, sw, sh);
+    }, [carType, JSON.stringify(cos || {}), h]);
     return <canvas ref={ref} style={{ width: Math.round(h * 0.62), height: h }} />;
 }
 
@@ -175,31 +167,36 @@ const Label = ({ children }) => (
 // Draws a single car (wheels → body → headlights → topper) centered at the
 // current transform origin, pointing right (+x), matching the in-game look.
 // `cos` (optional) applies equipped cosmetics.
+// Rendered cars are cached per model + build + resolution
+const carCanvasCache = new Map();
+function carCanvas(type, cos, res) {
+    const key = `${lookKey(type, cos, 0)}@${res}`;
+    let c = carCanvasCache.get(key);
+    if (!c) { c = renderCar(type, cos, { res }); carCanvasCache.set(key, c); }
+    if (carCanvasCache.size > 80) carCanvasCache.delete(carCanvasCache.keys().next().value);
+    return c;
+}
+
+// Draws the car centred at the origin with its nose pointing +x (46 units long)
 function paintCar(ctx, carKey, baseColor, cos) {
-    const color = (cos && paintColor(cos.paint)) || baseColor;
-    const variant = CAR_VARIANT[carKey] || 1;
-    const sprite = tintedCar(variant, color);
-
-    // Drop shadow under the car
-    ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    ctx.beginPath();
-    ctx.ellipse(1, 3, 17, 9, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-
-    if (sprite) {
-        // Kenney sprite faces up; our local space has the nose at +x → rotate 90°
-        const L = 46, W = L * sprite.width / sprite.height;
-        ctx.save();
-        ctx.rotate(Math.PI / 2);
-        ctx.drawImage(sprite, -W / 2, -L / 2, W, L);
+    const L = 46, W = L * 144 / 264;
+    const ug = cos && underglowColor(cos.underglow);
+    if (ug) {   // neon underglow
+        const grd = ctx.createRadialGradient(0, 0, 4, 0, 0, 34);
+        grd.addColorStop(0, ug); grd.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.save(); ctx.scale(1, 0.62); ctx.globalAlpha = 0.75;
+        ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(0, 0, 34, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
-    } else {
-        drawWheels(ctx, carKey);
-        drawCarBody(ctx, carKey, color, false);
-        drawHeadlights(ctx, carKey);
     }
+    // Drop shadow
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath(); ctx.ellipse(1.5, 2, 21, 11, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    ctx.save();
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(carCanvas(carKey, cos, 1.6), -W / 2, -L / 2, W, L);
+    ctx.restore();
     if (cos && cos.topper && cos.topper !== 'none') drawTopper(ctx, cos.topper);
 }
 
@@ -283,7 +280,7 @@ function CarShowroom({ car, cos, height = 215, scale = 2.8, showName = true, fra
         }
         frame();
         return () => { running = false; cancelAnimationFrame(raf); };
-    }, [car.key, car.color, cos && cos.paint, cos && cos.wheel, cos && cos.topper, height, scale, showName]);
+    }, [car.key, car.color, JSON.stringify(cos || {}), height, scale, showName]);
 
     return (
         <div style={{
@@ -339,10 +336,40 @@ function TopperThumb({ topperKey }) {
 }
 
 const CUSTOMIZE_TABS = [
-    { key: 'paint', label: 'Paint' },
+    { key: 'paint',  label: 'Paint' },
+    { key: 'decal',  label: 'Decals' },
+    { key: 'parts',  label: 'Parts' },
+    { key: 'wheels', label: 'Wheels' },
+    { key: 'glow',   label: 'Neon' },
     { key: 'topper', label: 'Hat' },
-    { key: 'trail', label: 'Trail' },
+    { key: 'trail',  label: 'Trail' },
 ];
+
+// Little glyphs for the body-shop options
+const PART_ICON = {
+    stock: '🏭', none: '⨯', lip: '▁', wing: '⊓', gt: '╦',
+    bulge: '◒', scoop: '⊡', vents: '≡', carbon: '▦',
+    stripes: '‖', side: '⫴', flames: '🔥', number: '#', checker: '🏁',
+};
+
+function ChipGrid({ items, value, onPick }) {
+    return (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(76px, 1fr))', gap: 8 }}>
+            {items.map(it => (
+                <Swatch key={it.key} active={value === it.key} title={it.name} onClick={() => onPick(it.key)}>
+                    <div style={{ height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.3rem', color: '#e6edf5' }}>
+                        {it.color ? <div style={{ width: 26, height: 26, borderRadius: '50%', background: it.color, boxShadow: `0 0 10px ${it.color}` }} />
+                            : (PART_ICON[it.key] || '•')}
+                    </div>
+                </Swatch>
+            ))}
+        </div>
+    );
+}
+
+const Section = ({ children }) => (
+    <div className="gtitle" style={{ fontSize: '0.62rem', color: '#8fa1b8', margin: '10px 0 6px' }}>{children}</div>
+);
 
 function Swatch({ active, onClick, title, children }) {
     return (
@@ -392,7 +419,9 @@ function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
     const stageH = vp.landscape ? Math.max(180, vp.h - 120) : Math.max(170, Math.min(300, vp.h - 520));
 
     const items = (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+        <div>
+        {tab === 'paint' && <Section>Colour</Section>}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(64px, 1fr))', gap: 8 }}>
             {tab === 'paint' && PAINTS.map(p => (
                 <Swatch key={p.key} active={cos.paint === p.key} title={p.name} onClick={() => set('paint', p.key)}>
                     <div style={{
@@ -420,6 +449,44 @@ function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
                 </Swatch>
             ))}
         </div>
+        {tab === 'paint' && <>
+            <Section>Finish</Section>
+            <div style={{ display: 'flex', gap: 6 }}>
+                {FINISHES.map(f => <Pill key={f.key} active={(cos.finish || 'gloss') === f.key} onClick={() => set('finish', f.key)}>{f.name}</Pill>)}
+            </div>
+        </>}
+        {tab === 'decal' && <>
+            <Section>Livery</Section>
+            <ChipGrid items={DECALS} value={cos.decal || 'stock'} onPick={k => set('decal', k)} />
+            <Section>Decal colour</Section>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {DECAL_COLORS.map(d => (
+                    <button key={d.key} onClick={() => set('decalColor', d.key)} aria-label={d.key} style={{
+                        width: 34, height: 34, borderRadius: '50%', background: d.color, cursor: 'pointer',
+                        border: `3px solid ${(cos.decalColor || 'white') === d.key ? '#ffd84d' : 'rgba(255,255,255,0.15)'}`,
+                    }} />
+                ))}
+            </div>
+        </>}
+        {tab === 'parts' && <>
+            <Section>Spoiler</Section>
+            <ChipGrid items={SPOILERS} value={cos.spoiler || 'stock'} onPick={k => set('spoiler', k)} />
+            <Section>Bonnet</Section>
+            <ChipGrid items={HOODS} value={cos.hood || 'stock'} onPick={k => set('hood', k)} />
+        </>}
+        {tab === 'wheels' && <>
+            <Section>Rims</Section>
+            <ChipGrid items={WHEELS.map(w => ({ ...w, color: w.rim }))} value={cos.wheel || 'stock'} onPick={k => set('wheel', k)} />
+            <Section>Window tint</Section>
+            <div style={{ display: 'flex', gap: 6 }}>
+                {TINTS.map(t => <Pill key={t.key} active={(cos.tint || 'stock') === t.key} onClick={() => set('tint', t.key)}>{t.name}</Pill>)}
+            </div>
+        </>}
+        {tab === 'glow' && <>
+            <Section>Neon underglow</Section>
+            <ChipGrid items={UNDERGLOWS.map(u => ({ ...u, color: u.color || undefined }))} value={cos.underglow || 'none'} onPick={k => set('underglow', k)} />
+        </>}
+        </div>
     );
 
     return (
@@ -430,7 +497,7 @@ function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
             <div style={{ flex: vp.landscape ? 1.1 : 'none', position: 'relative', minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <TopButton onClick={onBack} label="Back">‹ BACK</TopButton>
-                    <div className="gtitle" style={{ fontSize: '1.2rem', color: '#ffd84d' }}>GARAGE</div>
+                    <div className="gtitle" style={{ fontSize: '1.2rem', color: '#ffd84d' }}>BODY SHOP</div>
                 </div>
                 <div style={{ position: 'relative', marginTop: 6 }}>
                     <CarShowroom car={car} cos={cos} height={stageH} scale={Math.min(3.2, stageH / 80)} showName={false} framed={false} />
@@ -443,9 +510,11 @@ function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
             <div className="gpanel" style={{
                 flex: vp.landscape ? 1 : 1, minHeight: 0, padding: 14, display: 'flex', flexDirection: 'column', gap: 12,
             }}>
-                <div style={{ display: 'flex', gap: 6 }}>
+                <div style={{ display: 'flex', gap: 6, overflowX: 'auto', flexShrink: 0, paddingBottom: 2 }}>
                     {CUSTOMIZE_TABS.map(t => (
-                        <Pill key={t.key} active={tab === t.key} onClick={() => { setTab(t.key); click(); }}>{t.label}</Pill>
+                        <div key={t.key} style={{ flex: '0 0 auto', minWidth: 72, display: 'flex' }}>
+                            <Pill active={tab === t.key} onClick={() => { setTab(t.key); click(); }}>{t.label}</Pill>
+                        </div>
                     ))}
                 </div>
                 <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>{items}</div>
@@ -592,7 +661,6 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
     const car = CAR_TYPES.find(c => c.key === carType) || CAR_TYPES[0];
     const carIdx = CAR_TYPES.indexOf(car);
 
-    useEffect(() => { preloadCarArt(); }, []);
     useEffect(() => {
         try { localStorage.setItem('dasharena.name', name); } catch (_) { /* ignore */ }
     }, [name]);

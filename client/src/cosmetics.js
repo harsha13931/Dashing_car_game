@@ -46,12 +46,87 @@ export const TRAILS = [
     { key: 'rainbow', name: 'Rainbow', rainbow: true },
 ];
 
+// ─── Body shop: real parts, not just colours ─────────────────────────────
+// 'stock' means "what this car comes with from the factory" (see carRender.js)
+export const FINISHES = [
+    { key: 'gloss',    name: 'Gloss' },
+    { key: 'metallic', name: 'Metallic' },
+    { key: 'matte',    name: 'Matte' },
+    { key: 'chrome',   name: 'Chrome' },
+];
+
+export const DECALS = [
+    { key: 'stock',   name: 'Factory' },
+    { key: 'none',    name: 'Clean' },
+    { key: 'stripes', name: 'Racing Stripes' },
+    { key: 'side',    name: 'Side Stripes' },
+    { key: 'flames',  name: 'Flames' },
+    { key: 'number',  name: 'Race Number' },
+    { key: 'checker', name: 'Checkered' },
+];
+
+export const DECAL_COLORS = [
+    { key: 'white',  color: '#f4f4f4' },
+    { key: 'black',  color: '#16181c' },
+    { key: 'red',    color: '#d92b2b' },
+    { key: 'yellow', color: '#ffd23a' },
+    { key: 'blue',   color: '#2b7fff' },
+    { key: 'orange', color: '#ff7a1a' },
+    { key: 'lime',   color: '#9be22b' },
+];
+
+export const SPOILERS = [
+    { key: 'stock', name: 'Factory' },
+    { key: 'none',  name: 'None' },
+    { key: 'lip',   name: 'Lip' },
+    { key: 'wing',  name: 'Wing' },
+    { key: 'gt',    name: 'GT Wing' },
+];
+
+export const HOODS = [
+    { key: 'stock',  name: 'Factory' },
+    { key: 'bulge',  name: 'Power Bulge' },
+    { key: 'scoop',  name: 'Air Scoop' },
+    { key: 'vents',  name: 'Vents' },
+    { key: 'carbon', name: 'Carbon' },
+];
+
+export const UNDERGLOWS = [
+    { key: 'none',   name: 'Off',    color: null },
+    { key: 'cyan',   name: 'Cyan',   color: '#22e4ff' },
+    { key: 'pink',   name: 'Pink',   color: '#ff3fd2' },
+    { key: 'green',  name: 'Green',  color: '#3dff6e' },
+    { key: 'purple', name: 'Purple', color: '#9b4dff' },
+    { key: 'orange', name: 'Orange', color: '#ff8a1f' },
+    { key: 'red',    name: 'Red',    color: '#ff2d3d' },
+];
+
+export const TINTS = [
+    { key: 'stock',  name: 'Clear' },
+    { key: 'dark',   name: 'Limo' },
+    { key: 'mirror', name: 'Mirror' },
+];
+
 export const DEFAULT_COSMETICS = {
     paint: 'factory',
+    finish: 'gloss',
+    decal: 'stock',
+    decalColor: 'white',
+    spoiler: 'stock',
+    hood: 'stock',
     wheel: 'stock',
+    underglow: 'none',
+    tint: 'stock',
     topper: 'none',
     trail: 'classic',
 };
+
+export function decalColor(key) {
+    return (DECAL_COLORS.find(d => d.key === key) || DECAL_COLORS[0]).color;
+}
+export function underglowColor(key) {
+    return (UNDERGLOWS.find(u => u.key === key) || UNDERGLOWS[0]).color;
+}
 
 const STORAGE_KEY = 'dasharena.cosmetics';
 
