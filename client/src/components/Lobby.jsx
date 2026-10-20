@@ -36,9 +36,9 @@ const CAR_TYPES = CAR_LOOK.map(l => {
         ...l, name: s.name, role: s.role, desc: s.desc,
         speed: bar(s.maxSpeed, 0.8, 1.45),
         handling: bar(s.turn, 0.78, 1.55),
-        power: bar(s.dashForce * s.mass, 0.75, 2.3),
-        armor: bar(s.hp * s.stability, 95, 182),
-        weight: bar(s.mass, 0.8, 1.6),
+        power: bar(s.dashForce * s.mass * s.maxSpeed, 0.95, 1.9),   // ram hit = weight × nitro × speed
+        armor: bar(s.hp * s.stability, 100, 170),
+        weight: bar(s.mass, 0.85, 1.6),
     };
 });
 

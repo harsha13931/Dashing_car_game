@@ -1139,7 +1139,7 @@ function tickRoom(room, roomId, now) {
             if (r.impact > 160) {
                 const base = Math.min(16, (r.impact - 160) * 0.022);
                 const mA = PHYS.carMass(a), mB = PHYS.carMass(b);
-                let dA = base * Math.min(1.6, mB / mA), dB = base * Math.min(1.6, mA / mB);
+                let dA = base * Math.min(1.3, Math.sqrt(mB / mA)), dB = base * Math.min(1.3, Math.sqrt(mA / mB));
                 if (r.aPushesB && !r.bPushesA) dA *= 0.4;
                 else if (r.bPushesA && !r.aPushesB) dB *= 0.4;
                 damage(room, b, dB, r.aPushesB ? a : null, now);
@@ -1149,10 +1149,12 @@ function tickRoom(room, roomId, now) {
         onFence: (B, c) => {
             const p = B.p;
             // The fence holds unless you're shoved into it — or it's electric (sudden death)
-            const pushed = now - (p.lastHitAt || 0) < HIT_WINDOW_MS;
-            // For the first seconds of a round the fence is locked: nobody goes out at the start.
+            // For the first seconds of a round the fence is locked: nobody goes out at the start,
+            // and a car already pinned there when it unlocks needs a fresh shove to go through.
             // Stable cars need a harder shove to break through.
-            const locked = now - room.matchStartTime < FENCE_LOCK_MS;
+            const unlockAt = room.matchStartTime + FENCE_LOCK_MS;
+            const locked = now < unlockAt;
+            const pushed = now - (p.lastHitAt || 0) < HIT_WINDOW_MS && p.lastHitAt > unlockAt;
             const lethal = !locked && ((room.suddenDeath && c.vn > 80) || (c.vn > FENCE_BREAK_SPEED * (p.carStats.stability || 1) && pushed));
             if (lethal) {
                 if (p.shield) { p.shield = false; p.shieldTimer = 0; }    // shield absorbs it once
