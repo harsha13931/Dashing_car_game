@@ -2,6 +2,8 @@ import React, { useEffect, useState, useRef } from 'react';
 import PhaserGame from './PhaserGame';
 import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
+import { net } from '../net/netcode';
+import { NITRO_COOLDOWN } from '../../../shared/physics.mjs';
 
 // Screen-edge offsets that respect phone notches / home indicators
 const EDGE_TOP = 'max(10px, env(safe-area-inset-top))';
@@ -65,21 +67,23 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     useEffect(() => {
         soundManager.playMusic('race');
 
-        // Engine + tyre audio follow your own car's measured speed
-        const prev = { x: 0, y: 0, t: 0, v: 0 };
-        socket.on('snapshot', snap => {
-            setSnapshot(snap);
-            const me = snap.players?.find(p => p.id === socket.id);
-            if (!me || !me.alive) { soundManager.stopEngine(); prev.t = 0; return; }
+        net.reset();
+        // HUD state comes from the netcode module (20 updates/s)
+        const unsub = net.subscribe(snap => setSnapshot(snap));
+        if (net.snap) setSnapshot(net.snap);
+
+        // Engine + tyre audio follow your own (predicted) car every 50 ms
+        const audioTimer = setInterval(() => {
+            const me = net.snap?.players?.find(p => p.id === socket.id);
+            const local = net.local;
+            if (!me || !me.alive || !local) { soundManager.stopEngine(); return; }
             soundManager.startEngine(me.carType);
-            if (prev.t && snap.timestamp > prev.t) {
-                const v = Math.hypot(me.x - prev.x, me.y - prev.y) / ((snap.timestamp - prev.t) / 1000);
-                if (v < 3000) prev.v += (v - prev.v) * 0.3;
-            }
-            prev.x = me.x; prev.y = me.y; prev.t = snap.timestamp;
-            soundManager.updateEngine(prev.v, inputRef.current.forward, me.isDashing || me.speedMult > 1);
-            soundManager.setSkid(me.skid ? Math.min(1, 0.35 + prev.v / 500) : 0);
-        });
+            const v = net.localSpeed();
+            soundManager.updateEngine(v, inputRef.current.forward, local.nitro > 0 || me.speedMult > 1);
+            soundManager.setSkid(local.skid ? Math.min(1, 0.35 + v / 500) : 0);
+        }, 50);
+
+        socket.on('airdrop', () => soundManager.playPlane());
 
         socket.on('collision', ({ impact, ids, type }) => {
             // Only your own car's hits (or the car you're watching) make noise
@@ -130,6 +134,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
         socket.on('matchStart', ({ count, round: r, maxRounds: mr }) => {
             setRankings([]);
+            net.reset();
             setMatchData(null);
             setCountdown(count);
             setRound(r);
@@ -157,7 +162,9 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         });
 
         return () => {
-            socket.off('snapshot');
+            unsub();
+            clearInterval(audioTimer);
+            socket.off('airdrop');
             socket.off('collision');
             socket.off('powerupCollected');
             socket.off('playerEliminated');
@@ -213,6 +220,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             if (dash && !inputRef.current.dash) soundManager.playDash();
             inputRef.current = { forward, steer, dash, shoot, drop };
             seqRef.current++;
+            net.setInput(inputRef.current);         // your car reacts right away (prediction)
             socket.emit('input', { roomId: room?.id, input: { ...inputRef.current }, seq: seqRef.current });
         }
     }
@@ -742,7 +750,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         <Pedal label="BRAKE" color="#ff4d5e" action="brake" onAction={handleBtn}
                             style={{ right: `calc(${EDGE_RIGHT} + var(--pw) + var(--g))`, bottom: EDGE_BOTTOM, height: 'calc(var(--pw) * 1.1)' }} />
                         <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
-                            cooldown={me?.dashCooldown} maxCooldown={2} size="var(--pw)" fontSize="0.8rem"
+                            cooldown={net.local ? net.local.dashCooldown : me?.dashCooldown} maxCooldown={NITRO_COOLDOWN} size="var(--pw)" fontSize="0.8rem"
                             style={{ right: EDGE_RIGHT, bottom: `calc(${EDGE_BOTTOM} + var(--ph) + var(--g))` }} />
                         <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
                             cooldown={me?.shootCooldown} maxCooldown={0.8} size="var(--s)" fontSize="0.72rem"
@@ -768,7 +776,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         '--g': 'clamp(18px, 6vmin, 30px)',
                     }}>
                         <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
-                            cooldown={me?.dashCooldown} maxCooldown={2} size="var(--n)" fontSize="0.9rem"
+                            cooldown={net.local ? net.local.dashCooldown : me?.dashCooldown} maxCooldown={NITRO_COOLDOWN} size="var(--n)" fontSize="0.9rem"
                             style={{ right: EDGE_RIGHT, bottom: EDGE_BOTTOM }} />
                         <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
                             cooldown={me?.shootCooldown} maxCooldown={0.8} size="var(--s)"

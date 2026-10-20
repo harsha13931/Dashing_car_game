@@ -288,6 +288,32 @@ class SoundManager {
         this._tone(27 * v, { type: 'sawtooth', dur: 0.45, vol: 0.08, glide: 75 * v, attack: 0.02 });
     }
 
+    // Cargo plane passing over: propeller drone that swells, then fades with a doppler drop
+    playPlane() {
+        if (!this.ctx) return;
+        const ctx = this.ctx, t = ctx.currentTime, dur = 5;
+        const out = ctx.createGain();
+        out.gain.setValueAtTime(0.0001, t);
+        out.gain.exponentialRampToValueAtTime(0.11, t + 2.2);
+        out.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 650;
+        const am = ctx.createGain(); am.gain.value = 0.7;
+        const lfo = ctx.createOscillator(); lfo.type = 'square'; lfo.frequency.value = 26;
+        const depth = ctx.createGain(); depth.gain.value = 0.3;
+        lfo.connect(depth); depth.connect(am.gain);
+        lp.connect(am); am.connect(out); out.connect(this.sfx);
+        const oscs = [[96, 'sawtooth'], [99, 'sawtooth'], [48, 'triangle']].map(([f, type]) => {
+            const o = ctx.createOscillator(); o.type = type;
+            o.frequency.setValueAtTime(f, t);
+            o.frequency.linearRampToValueAtTime(f * 0.97, t + 2.2);
+            o.frequency.linearRampToValueAtTime(f * 0.8, t + dur);
+            o.connect(lp); o.start(t); o.stop(t + dur + 0.1);
+            return o;
+        });
+        lfo.start(t); lfo.stop(t + dur + 0.1);
+        oscs[0].onended = () => out.disconnect();
+    }
+
     playArenaWarning() {
         [0, 0.25].forEach(at => this._tone(660, { type: 'sawtooth', dur: 0.2, vol: 0.07, at, glide: 520 }));
     }
