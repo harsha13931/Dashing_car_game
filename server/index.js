@@ -18,6 +18,10 @@ const ROOM_CLEANUP_MS = 5 * 60 * 1000;   // clean empty rooms after 5 min
 const MAX_ROOMS = 50;
 const MAX_PLAYERS_PER_ROOM = 8;
 const MAX_PROJECTILES = 40;
+// Test hook: SIM_SPEED=10 runs the game clock 10× faster (for balance simulations)
+const SIM_SPEED = Number(process.env.SIM_SPEED) || 1;
+const CLOCK_T0 = Date.now();
+const clock = () => (SIM_SPEED === 1 ? Date.now() : CLOCK_T0 + (Date.now() - CLOCK_T0) * SIM_SPEED);
 const LOBBY_GRACE_MS = 10 * 60 * 1000;   // keep your seat this long if you leave the page
 const MATCH_GRACE_MS = 90 * 1000;        // …or this long if a match is running
 
@@ -139,7 +143,7 @@ function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 's
         shield: false,
         shieldTimer: 0,
         megaTimer: 0,
-        hp: 100,               // health — 0 = wrecked
+        hp: CAR_TYPES[validCar].hp || 100,   // health — 0 = wrecked (tougher cars have more)
         bladeTimer: 0,         // spinning saw blades power-up
         bladeHits: {},         // victim id → last blade hit time
         bumperTimer: 0,        // bouncy balloons power-up
@@ -246,7 +250,7 @@ function resetPlayers(room) {
         p.shield = false;
         p.shieldTimer = 0;
         p.megaTimer = 0;
-        p.hp = 100;
+        p.hp = p.carStats.hp || 100;
         p.bladeTimer = 0;
         p.bladeHits = {};
         p.bumperTimer = 0;
@@ -384,7 +388,7 @@ function updateBotAI(bot, room, now) {
 
     // Badly damaged: go for a repair kit first
     let repairKit = null, repairDist = Infinity;
-    if (bot.hp < 45) {
+    if (bot.hp < (bot.carStats.hp || 100) * 0.45) {
         for (const pu of powerups) {
             if (pu.type !== 'Repair' || pu.landAt > now + 600) continue;
             const d = Math.hypot(pu.x - bot.x, pu.y - bot.y);
@@ -542,7 +546,7 @@ function applyPowerup(type, player, room) {
             player.weapon = 'reverse';  // held trap; deploy with Drop
             break;
         case 'Repair':
-            player.hp = Math.min(100, player.hp + 40);   // health pack
+            player.hp = Math.min(player.carStats.hp || 100, player.hp + 40);   // health pack
             break;
         case 'Blades':
             player.bladeTimer = 8;                      // spinning saws for 8 s
@@ -565,12 +569,12 @@ function beginRound(room) {
     room.powerups = [];
     room.projectiles = [];
     room.hazards = [];
-    room.matchStartTime = Date.now() + 3000;
+    room.matchStartTime = clock() + 3000;
     room.eliminationOrder = [];
     room.arenaR = room.settings.arenaRadius;
     room.suddenDeath = false;
     room._shrinkAnnounced = false;
-    room._cdlast = Date.now();      // show "3" for a full second
+    room._cdlast = clock();         // show "3" for a full second
     room.planes = [];
     room._tick = 0;
     room._snapN = 0;
@@ -785,12 +789,16 @@ io.on('connection', socket => {
 
 // ─── Rules on top of the shared car physics (shared/physics.mjs) ──────────
 const FENCE_BREAK_SPEED = 270;      // fence gives way at this speed — only when someone is pushing you
+const FENCE_LOCK_MS = 8000;         // fence can't be broken for the first 8 s of a round
 const HIT_WINDOW_MS = 2000;         // how long after a shove you still count as "being pushed"
 const SHRINK_START = 25;            // s — arena starts closing in
 const SHRINK_END = 75;              // s — fully shrunk; fence turns electric (sudden death)
 const FINAL_END = 120;              // s — slow final squeeze
+const OVERTIME_END = 150;            // s — overtime: ring closes right in, so a round always ends
 const SHRINK_FRAC = 0.5;
 const FINAL_FRAC = 0.3;
+const OVERTIME_FRAC = 0.1;
+const ZAP_DPS = 20;                 // electric fence burns cars resting against it
 const SNAPSHOT_EVERY = 3;           // ticks → 20 snapshots a second (clients predict / smooth between)
 
 function markHit(victim, attacker, now) {
@@ -876,11 +884,27 @@ function updateArena(room, now) {
     const t = Math.max(0, (now - room.matchStartTime) / 1000);
     const R0 = room.settings.arenaRadius;
     let frac = 1;
-    if (t >= SHRINK_END) frac = SHRINK_FRAC + (FINAL_FRAC - SHRINK_FRAC) * Math.min(1, (t - SHRINK_END) / (FINAL_END - SHRINK_END));
+    if (t >= FINAL_END) frac = FINAL_FRAC + (OVERTIME_FRAC - FINAL_FRAC) * Math.min(1, (t - FINAL_END) / (OVERTIME_END - FINAL_END));
+    else if (t >= SHRINK_END) frac = SHRINK_FRAC + (FINAL_FRAC - SHRINK_FRAC) * Math.min(1, (t - SHRINK_END) / (FINAL_END - SHRINK_END));
     else if (t >= SHRINK_START) frac = 1 + (SHRINK_FRAC - 1) * (t - SHRINK_START) / (SHRINK_END - SHRINK_START);
     room.arenaR = R0 * frac;
     const wasSD = room.suddenDeath;
     room.suddenDeath = t >= SHRINK_END;
+    // Hiding against the electric fence isn't safe either — it slowly fries you
+    if (room.suddenDeath) {
+        for (const p of Object.values(room.players)) {
+            if (!p.alive) continue;
+            const reach = PHYS.CAR_HALF_WID * p.carStats.size * p.scale + 4;
+            if (Math.hypot(p.x, p.y) + reach < room.arenaR) continue;
+            const pushed = now - (p.lastHitAt || 0) < HIT_WINDOW_MS;
+            damage(room, p, ZAP_DPS * DT, pushed ? room.players[p.lastHitBy] : null, now);
+            if (!p._zapFx || now - p._zapFx > 400) {
+                p._zapFx = now;
+                const a = Math.atan2(p.y, p.x);
+                io.to(room.id).emit('collision', { impact: 150, x: Math.cos(a) * room.arenaR, y: Math.sin(a) * room.arenaR, type: 'wall', ids: [p.id] });
+            }
+        }
+    }
     if (room.suddenDeath && !wasSD) io.to(room.id).emit('arenaEvent', { type: 'suddenDeath' });
     if (t >= SHRINK_START && !room._shrinkAnnounced) {
         room._shrinkAnnounced = true;
@@ -960,7 +984,8 @@ function sendSnapshot(room, now) {
         sd: room.suddenDeath ? 1 : 0,
         si: room.countdown > 0 ? SHRINK_START : r1(Math.max(0, SHRINK_START - t)),
         rd: room.round, mr: room.maxRounds,
-        lv: room.countdown > 0 ? 0 : 1,          // cars can move (clients only predict while live)
+        lv: room.countdown > 0 ? 0 : 1,
+        fl: room.countdown > 0 ? FENCE_LOCK_MS / 1000 : r1(Math.max(0, FENCE_LOCK_MS - (now - room.matchStartTime)) / 1000),   // fence-lock seconds left          // cars can move (clients only predict while live)
         p: Object.values(room.players).map(p => [
             p.num, r1(p.x), r1(p.y), Math.round(p.angle * 1000) / 1000,
             Math.round(p.vx), Math.round(p.vy), r2(p.av),
@@ -1114,7 +1139,7 @@ function tickRoom(room, roomId, now) {
             if (r.impact > 160) {
                 const base = Math.min(16, (r.impact - 160) * 0.022);
                 const mA = PHYS.carMass(a), mB = PHYS.carMass(b);
-                let dA = base * Math.min(1.6, mB / mA), dB = base * Math.min(1.6, mA / mB);
+                let dA = base * Math.min(1.3, Math.sqrt(mB / mA)), dB = base * Math.min(1.3, Math.sqrt(mA / mB));
                 if (r.aPushesB && !r.bPushesA) dA *= 0.4;
                 else if (r.bPushesA && !r.aPushesB) dB *= 0.4;
                 damage(room, b, dB, r.aPushesB ? a : null, now);
@@ -1124,8 +1149,13 @@ function tickRoom(room, roomId, now) {
         onFence: (B, c) => {
             const p = B.p;
             // The fence holds unless you're shoved into it — or it's electric (sudden death)
-            const pushed = now - (p.lastHitAt || 0) < HIT_WINDOW_MS;
-            const lethal = (room.suddenDeath && c.vn > 80) || (c.vn > FENCE_BREAK_SPEED && pushed);
+            // For the first seconds of a round the fence is locked: nobody goes out at the start,
+            // and a car already pinned there when it unlocks needs a fresh shove to go through.
+            // Stable cars need a harder shove to break through.
+            const unlockAt = room.matchStartTime + FENCE_LOCK_MS;
+            const locked = now < unlockAt;
+            const pushed = now - (p.lastHitAt || 0) < HIT_WINDOW_MS && p.lastHitAt > unlockAt;
+            const lethal = !locked && ((room.suddenDeath && c.vn > 80) || (c.vn > FENCE_BREAK_SPEED * (p.carStats.stability || 1) && pushed));
             if (lethal) {
                 if (p.shield) { p.shield = false; p.shieldTimer = 0; }    // shield absorbs it once
                 else { eliminate(p, room, now, room.suddenDeath ? 'electric' : 'fence'); return false; }
@@ -1325,7 +1355,7 @@ function tickRoom(room, roomId, now) {
                 if (!r || r.running) return;
                 r.round++;
                 beginRound(r);
-            }, 6000);
+            }, 6000 / SIM_SPEED);
         }
     }
 }
@@ -1333,11 +1363,11 @@ function tickRoom(room, roomId, now) {
 // ─── Game loop: fixed 60 Hz steps driven by the real clock ───────────────
 // (setInterval alone drifts to ~49 Hz on some hosts, which made the whole
 // game run slow — and client prediction needs the server at exactly 60 Hz)
-let simTime = Date.now();
+let simTime = clock();
 setInterval(() => {
     if (!PHYS) return;
-    const real = Date.now();
-    if (real - simTime > 250) simTime = real - 250;        // after a stall, don't fast-forward forever
+    const real = clock();
+    if (real - simTime > 250 * SIM_SPEED) simTime = real - 250 * SIM_SPEED;   // after a stall, don't fast-forward forever
     while (real - simTime >= 1000 / TICK_RATE) {
         simTime += 1000 / TICK_RATE;
         for (const roomId in rooms) {

@@ -3,7 +3,7 @@ import PhaserGame from './PhaserGame';
 import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
 import { net } from '../net/netcode';
-import { NITRO_COOLDOWN } from '../../../shared/physics.mjs';
+import { NITRO_COOLDOWN, CAR_TYPES } from '../../../shared/physics.mjs';
 
 // Screen-edge offsets that respect phone notches / home indicators
 const EDGE_TOP = 'max(10px, env(safe-area-inset-top))';
@@ -132,7 +132,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
         socket.on('arenaEvent', ({ type }) => {
             const b = type === 'suddenDeath'
-                ? { title: 'SUDDEN DEATH', sub: 'The fence is electric — touch it and you\'re out!', color: '#4fd8ff' }
+                ? { title: 'SUDDEN DEATH', sub: 'The fence is electric — hit it and you\'re out, lean on it and it burns', color: '#4fd8ff' }
                 : { title: 'ARENA SHRINKING', sub: 'Stay inside the fence', color: '#ffb347' };
             setBanner(b);
             soundManager.playArenaWarning();
@@ -400,7 +400,16 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                 </div>
 
                 {/* Arena phase: shrink warning / sudden death */}
-                {countdown <= 0 && !matchData && (snapshot.suddenDeath || (snapshot.shrinkIn > 0 && snapshot.shrinkIn <= 10)) && (
+                {countdown <= 0 && !matchData && snapshot.fenceLock > 0 && (
+                    <div style={{
+                        position: 'absolute', top: `calc(${EDGE_TOP} + ${touchUI ? 70 : 88}px)`,
+                        left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap',
+                        padding: '4px 12px', borderRadius: 14, fontWeight: 800, letterSpacing: 1,
+                        fontSize: touchUI ? '0.7rem' : '0.8rem', color: '#7dffb0',
+                        background: 'rgba(0,0,0,0.6)', border: '1px solid #3ddc8488',
+                    }}>🔒 FENCE LOCKED {Math.ceil(snapshot.fenceLock)}s — nobody can be knocked out yet</div>
+                )}
+                {countdown <= 0 && !matchData && !(snapshot.fenceLock > 0) && (snapshot.suddenDeath || (snapshot.shrinkIn > 0 && snapshot.shrinkIn <= 10)) && (
                     <div style={{
                         position: 'absolute', top: `calc(${EDGE_TOP} + ${touchUI ? 70 : 88}px)`,
                         left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap',
@@ -855,7 +864,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             )}
 
             {/* ─── Your health ──────────────────────────────────────────── */}
-            {me && meAlive && !matchData && <HealthHud hp={me.hp ?? 100} touchUI={touchUI} />}
+            {me && meAlive && !matchData && <HealthHud hp={me.hp ?? 100} max={(CAR_TYPES[me.carType] || {}).hp || 100} touchUI={touchUI} />}
 
             {/* Desktop keyboard hint */}
             {!touchUI && (
@@ -1065,8 +1074,8 @@ function PowerButton({ kind, action, onAction, cooldown = 0, maxCooldown = 1, ac
 }
 
 // Your health bar (bottom centre, between the thumbs)
-function HealthHud({ hp, touchUI }) {
-    const v = Math.max(0, Math.min(100, hp));
+function HealthHud({ hp, max = 100, touchUI }) {
+    const v = Math.max(0, Math.min(100, (hp / max) * 100));
     const col = v > 60 ? '#3ddc84' : v > 30 ? '#ffc93d' : '#ff4d4d';
     return (
         <div style={{
@@ -1083,7 +1092,7 @@ function HealthHud({ hp, touchUI }) {
                     background: `linear-gradient(180deg, ${col}, ${col}aa)`, boxShadow: `0 0 10px ${col}`,
                 }} />
             </div>
-            <span className="gtitle" style={{ color: '#fff', fontSize: '0.8rem', minWidth: 28, textAlign: 'right' }}>{Math.ceil(v)}</span>
+            <span className="gtitle" style={{ color: '#fff', fontSize: '0.8rem', minWidth: 28, textAlign: 'right' }}>{Math.max(0, Math.ceil(hp))}</span>
         </div>
     );
 }
