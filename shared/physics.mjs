@@ -41,8 +41,8 @@ export function carSpec(p) {
     return {
         top: 330 + 230 * (s.maxSpeed - 0.75) / 0.75,   // 330 (truck) … 560 (supercar) px/s
         accel: 560 * s.accel,
-        turn: 2.5 * s.turn,
-        grip: s.turn > 1.25 ? 950 : 1500,              // drifters let go of the rear sooner
+        turn: 3.8 * s.turn,                            // max yaw rate (rad/s) — quick, accurate steering
+        grip: s.turn > 1.25 ? 1600 : 2300,             // drifters let go of the rear sooner
     };
 }
 
@@ -210,13 +210,17 @@ export function driveCar(p, inp) {
     const accel = spec.accel * p.speedMult * (p.nitro > 0 ? 2.2 : 1) * (stunned ? 0.35 : 1);
     const throttle = p.nitro > 0 ? Math.max(thr, 0.8) : thr;   // nitro keeps pulling
 
+    // Handbrake turn: brake + steer while moving → rear steps out, car whips round
+    const handbrake = throttle < -0.05 && Math.hypot(fwd, lat) > 50 && fwd > -30 && Math.abs(inp.steer) > 0.3 && !stunned;
+    p.handbrake = handbrake;
+
     // Engine / brakes
     if (throttle > 0.05) {
         if (fwd < -15) fwd = Math.min(0, fwd + 1100 * throttle * DT);       // braking out of reverse
         else fwd += accel * throttle * (1 - fwd / top) * DT;                 // also drags back above top speed
     } else if (throttle < -0.05) {
         const rTop = top * 0.45;
-        if (fwd > 15) fwd = Math.max(0, fwd + 1100 * throttle * DT);       // brake
+        if (fwd > 15) fwd = Math.max(0, fwd + (handbrake ? 300 : 1100) * throttle * DT);   // brake (handbrake bleeds speed slower)
         else fwd += accel * 0.6 * throttle * (1 + fwd / rTop) * DT;         // reverse gear
     } else {
         const roll = (160 + 0.9 * Math.abs(fwd)) * DT * (stunned ? 0.4 : 1); // rolling resistance
@@ -226,16 +230,20 @@ export function driveCar(p, inp) {
     // Tyre grip: scrub sideways velocity, but only so fast — hits make you slide
     let grip = p.slip > 0 ? 220 : spec.grip;
     if (stunned) grip *= 0.25;
+    if (handbrake) grip *= 0.4;
     const scrub = grip * DT;
-    p.skid = Math.abs(lat) > 150 || p.slip > 0;
+    p.skid = Math.abs(lat) > 150 || p.slip > 0 || handbrake;
     lat = Math.abs(lat) <= scrub ? 0 : lat - Math.sign(lat) * scrub;
 
-    // Steering: yaw rate grows with speed, flips in reverse, tyres fight any spin
+    // Steering: full authority from walking pace, a little less at top speed,
+    // flips in reverse; pulling away you can already turn. Tyres fight any spin.
     const spd = Math.abs(fwd);
-    const steerScale = Math.min(1, spd / 120) * (1 - 0.25 * Math.min(1, spd / top));
+    let steerScale = Math.min(1, spd / 70) * (1 - 0.15 * Math.min(1, spd / top));
+    if (Math.abs(throttle) > 0.1) steerScale = Math.max(steerScale, 0.45);
     const dir = fwd < -5 ? -1 : 1;
-    const targetYaw = inp.steer * spec.turn * steerScale * dir;
-    const yawResponse = p.slip > 0 ? 2.5 : stunned ? 2 : 10;
+    // (while handbraking the car pivots on its sliding rear, whatever the forward speed)
+    const targetYaw = handbrake ? inp.steer * spec.turn * 1.7 : inp.steer * spec.turn * steerScale * dir;
+    const yawResponse = p.slip > 0 ? 2.5 : stunned ? 2 : handbrake ? 22 : 18;
     p.av += (targetYaw - p.av) * Math.min(1, yawResponse * DT);
 
     p.vx = fx * fwd - fy * lat;

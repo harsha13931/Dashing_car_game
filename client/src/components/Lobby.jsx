@@ -701,7 +701,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
     const [copied, setCopied] = useState(false);
     const [settings, setSettings] = useState(soundManager.settings);
     const [ctrlMode, setCtrlMode] = useState(() => {
-        try { return localStorage.getItem('dasharena.ctrlmode') || 'buttons'; } catch (_) { return 'buttons'; }
+        try { return localStorage.getItem('dasharena.ctrlmode') || 'joystick'; } catch (_) { return 'joystick'; }
     });
 
     const cosmetics = cosmeticsFor(garage, carType);

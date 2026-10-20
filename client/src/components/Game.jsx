@@ -33,7 +33,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     const seqRef = useRef(0);
     const activeKeys = useRef(new Set());
     const activeButtons = useRef(new Set());
-    const joystickInput = useRef({ forward: 0, steer: 0 });
+    const joystickInput = useRef({ dx: 0, dy: 0, mag: 0 });   // stick direction on screen
 
     const joyRef = useRef({ active: false, bx: 0, by: 0, maxR: 55 });
     const [joyView, setJoyView] = useState({ active: false, bx: 0, by: 0, kx: 0, ky: 0 });
@@ -48,7 +48,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
     // Control scheme: 'joystick' or 'buttons'
     const [ctrlMode, setCtrlMode] = useState(() => {
-        try { return localStorage.getItem('dasharena.ctrlmode') || 'buttons'; } catch (_) { return 'buttons'; }
+        try { return localStorage.getItem('dasharena.ctrlmode') || 'joystick'; } catch (_) { return 'joystick'; }
     });
     const switchCtrl = () => {
         setCtrlMode(m => {
@@ -56,7 +56,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             try { localStorage.setItem('dasharena.ctrlmode', next); } catch (_) { /* ignore */ }
             return next;
         });
-        joystickInput.current = { forward: 0, steer: 0 };
+        joystickInput.current = { dx: 0, dy: 0, mag: 0 };
         ['gas', 'brake', 'left', 'right'].forEach(a => activeButtons.current.delete(a));
         setJoyView({ active: false, bx: 0, by: 0, kx: 0, ky: 0 });
         resolveInput();
@@ -162,7 +162,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             setSpectateId(null);
             // Controls were hidden while out — make sure nothing is stuck "held"
             activeButtons.current.clear();
-            joystickInput.current = { forward: 0, steer: 0 };
+            joystickInput.current = { dx: 0, dy: 0, mag: 0 };
             resolveInput();
         });
 
@@ -210,16 +210,31 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
         // Keyboard
         if (activeKeys.current.has('ArrowUp') || activeKeys.current.has('KeyW')) forward += 1;
-        if (activeKeys.current.has('ArrowDown') || activeKeys.current.has('KeyS')) forward -= 0.4;
+        if (activeKeys.current.has('ArrowDown') || activeKeys.current.has('KeyS')) forward -= 1;
         if (activeKeys.current.has('ArrowLeft') || activeKeys.current.has('KeyA')) steer -= 1;
         if (activeKeys.current.has('ArrowRight') || activeKeys.current.has('KeyD')) steer += 1;
         if (activeKeys.current.has('Space')) dash = true;
         if (activeKeys.current.has('ShiftLeft') || activeKeys.current.has('ShiftRight') || activeKeys.current.has('KeyF')) shoot = true;
         if (activeKeys.current.has('KeyQ') || activeKeys.current.has('KeyE')) drop = true;
 
-        // Joystick
-        forward += joystickInput.current.forward;
-        steer += joystickInput.current.steer;
+        // Joystick = point-to-drive: push the stick where you want to go on screen and
+        // the car steers itself there; point behind you at speed and it handbrakes round
+        const js = joystickInput.current;
+        if (js.mag > 0.18) {
+            const carA = net.local ? net.local.angle : (net.snap?.players?.find(p => p.id === socket.id)?.angle || 0);
+            let diff = Math.atan2(js.dy, js.dx) - carA;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            const speed = net.localSpeed();
+            const throttle = Math.min(1, (js.mag - 0.18) / 0.55);
+            if (Math.abs(diff) > 2.2 && speed > 160) {           // way behind you: handbrake turn
+                forward = -1; steer = Math.sign(diff);
+            } else {
+                steer += Math.max(-1, Math.min(1, diff * 2.4));
+                forward += throttle * (Math.abs(diff) > 1.6 ? 0.6 : 1);
+            }
+            steer = Math.round(steer * 10) / 10;                    // fewer tiny updates over the network
+        }
 
         // Buttons
         if (activeButtons.current.has('nitro')) dash = true;
@@ -261,13 +276,17 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         if (!zone) return;
         const computeMaxR = () => Math.max(42, Math.min(70, window.innerWidth * 0.11));
 
+        // While the stick is held the car keeps turning, so re-aim it ~25×/s
+        let aimTimer = null;
         const onDown = (e) => {
             e.preventDefault();
             try { zone.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+            clearInterval(aimTimer);
+            aimTimer = setInterval(resolveInput, 40);
             const maxR = computeMaxR();
             joyRef.current = { active: true, bx: e.clientX, by: e.clientY, maxR };
             setJoyView({ active: true, bx: e.clientX, by: e.clientY, kx: e.clientX, ky: e.clientY });
-            joystickInput.current = { forward: 0, steer: 0 };
+            joystickInput.current = { dx: 0, dy: 0, mag: 0 };
             resolveInput();
         };
         const onMove = (e) => {
@@ -277,16 +296,17 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             let dx = e.clientX - j.bx, dy = e.clientY - j.by;
             const mag = Math.hypot(dx, dy);
             if (mag > j.maxR) { dx = (dx / mag) * j.maxR; dy = (dy / mag) * j.maxR; }
-            joystickInput.current = { forward: -dy / j.maxR, steer: dx / j.maxR };
+            joystickInput.current = { dx, dy, mag: Math.hypot(dx, dy) / j.maxR };
             setJoyView({ active: true, bx: j.bx, by: j.by, kx: j.bx + dx, ky: j.by + dy });
             resolveInput();
         };
         const onUp = (e) => {
             if (!joyRef.current.active) return;
             e.preventDefault();
+            clearInterval(aimTimer);
             joyRef.current = { active: false, bx: 0, by: 0, maxR: computeMaxR() };
             setJoyView({ active: false, bx: 0, by: 0, kx: 0, ky: 0 });
-            joystickInput.current = { forward: 0, steer: 0 };
+            joystickInput.current = { dx: 0, dy: 0, mag: 0 };
             resolveInput();
         };
         zone.addEventListener('pointerdown', onDown);
@@ -294,6 +314,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         zone.addEventListener('pointerup', onUp);
         zone.addEventListener('pointercancel', onUp);
         return () => {
+            clearInterval(aimTimer);
             zone.removeEventListener('pointerdown', onDown);
             zone.removeEventListener('pointermove', onMove);
             zone.removeEventListener('pointerup', onUp);
@@ -729,8 +750,8 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                                     width: 'clamp(96px, 28vmin, 120px)', height: 'clamp(96px, 28vmin, 120px)',
                                     borderRadius: '50%', border: '2px dashed rgba(232,160,48,0.3)',
                                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    color: 'rgba(232,160,48,0.55)', fontSize: '0.68rem', fontWeight: 700, letterSpacing: '1px',
-                                }}>STEER</div>
+                                    color: 'rgba(232,160,48,0.55)', fontSize: '0.62rem', fontWeight: 700, letterSpacing: '1px', textAlign: 'center', lineHeight: 1.3,
+                                }}>POINT<br />TO DRIVE</div>
                             )}
                             {joyView.active && (
                                 <div style={{ position: 'absolute', inset: 0, zIndex: 5, pointerEvents: 'none' }}>

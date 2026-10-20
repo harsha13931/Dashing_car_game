@@ -477,6 +477,8 @@ function updateBotAI(bot, room, now) {
 
     steer = Math.max(-1, Math.min(1, angleDiff * 2.5));
     forward = 1;
+    // Target behind us at speed: handbrake turn like a player would
+    if (Math.abs(angleDiff) > 2.2 && speed > 180) { forward = -1; steer = Math.sign(angleDiff); }
 
     // Slow down if very close to powerup (precision collection)
     if (targetType === 'powerup' && nearestPUDist < 50) forward = 0.5;
