@@ -169,30 +169,68 @@ function makeRocketCanvas() {
     return c;
 }
 
+// Industrial circular saw: dark steel, hooked teeth, cut-outs, bolted hub
 function makeSawCanvas() {
-    const S = 64;
+    const S = 128;
     const c = document.createElement('canvas');
     c.width = c.height = S;
     const g = c.getContext('2d');
     g.translate(S / 2, S / 2);
-    const teeth = 18;
+    const R = 60, r = 50, teeth = 28;
+    // Hooked teeth
     g.beginPath();
     for (let i = 0; i < teeth; i++) {
-        const a0 = (i / teeth) * Math.PI * 2, a1 = ((i + 0.6) / teeth) * Math.PI * 2;
-        g.lineTo(Math.cos(a0) * 24, Math.sin(a0) * 24);
-        g.lineTo(Math.cos(a1) * 31, Math.sin(a1) * 31);
+        const a0 = (i / teeth) * Math.PI * 2, a1 = ((i + 0.72) / teeth) * Math.PI * 2, a2 = ((i + 0.78) / teeth) * Math.PI * 2;
+        g.lineTo(Math.cos(a0) * r, Math.sin(a0) * r);
+        g.lineTo(Math.cos(a1) * R, Math.sin(a1) * R);          // sharp tip
+        g.lineTo(Math.cos(a2) * (r + 2), Math.sin(a2) * (r + 2));
     }
     g.closePath();
-    const sg = g.createRadialGradient(-6, -6, 2, 0, 0, 31);
-    sg.addColorStop(0, '#f4f6f9'); sg.addColorStop(0.6, '#aab3bf'); sg.addColorStop(1, '#6b7480');
-    g.fillStyle = sg; g.fill();
-    g.strokeStyle = '#4b525c'; g.lineWidth = 1.5; g.stroke();
-    g.fillStyle = '#d6312f'; g.beginPath(); g.arc(0, 0, 8, 0, Math.PI * 2); g.fill();
-    g.fillStyle = '#3a3f47';
-    for (let i = 0; i < 3; i++) {
-        const a = (i / 3) * Math.PI * 2;
-        g.beginPath(); g.arc(Math.cos(a) * 15, Math.sin(a) * 15, 3.5, 0, Math.PI * 2); g.fill();
+    const steel = g.createLinearGradient(-R, -R, R, R);
+    steel.addColorStop(0, '#e9edf2'); steel.addColorStop(0.35, '#8d96a2'); steel.addColorStop(0.55, '#c7ced7');
+    steel.addColorStop(0.8, '#5d6570'); steel.addColorStop(1, '#a8b0ba');
+    g.fillStyle = steel; g.fill();
+    g.strokeStyle = '#2c3138'; g.lineWidth = 1.2; g.stroke();
+    // Bright honed edge on the tips
+    g.strokeStyle = 'rgba(255,255,255,0.55)'; g.lineWidth = 1;
+    g.beginPath(); g.arc(0, 0, R - 3, 0, Math.PI * 2); g.stroke();
+    // Darker blued body with grinding marks
+    const body = g.createRadialGradient(-10, -10, 4, 0, 0, r);
+    body.addColorStop(0, '#6a737f'); body.addColorStop(0.7, '#3d434c'); body.addColorStop(1, '#2a2e35');
+    g.fillStyle = body; g.beginPath(); g.arc(0, 0, r - 6, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = 'rgba(255,255,255,0.07)';
+    for (let k = 14; k < r - 8; k += 4) { g.beginPath(); g.arc(0, 0, k, 0, Math.PI * 2); g.stroke(); }
+    // Curved expansion slots
+    g.strokeStyle = '#14171b'; g.lineWidth = 3; g.lineCap = 'round';
+    for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2;
+        g.beginPath(); g.arc(0, 0, r - 16, a, a + 0.55); g.stroke();
     }
+    // Hub + bolts
+    const hub = g.createRadialGradient(-3, -3, 1, 0, 0, 13);
+    hub.addColorStop(0, '#d9dee5'); hub.addColorStop(1, '#4b525c');
+    g.fillStyle = hub; g.beginPath(); g.arc(0, 0, 13, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#1a1d21';
+    for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + 0.4;
+        g.beginPath(); g.arc(Math.cos(a) * 8, Math.sin(a) * 8, 2, 0, Math.PI * 2); g.fill();
+    }
+    g.beginPath(); g.arc(0, 0, 3.5, 0, Math.PI * 2); g.fill();
+    return c;
+}
+
+// Motion-blur halo drawn under a spinning saw
+function makeSawBlurCanvas() {
+    const S = 128;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    const grd = g.createRadialGradient(S / 2, S / 2, 40, S / 2, S / 2, 63);
+    grd.addColorStop(0, 'rgba(200,210,220,0)');
+    grd.addColorStop(0.6, 'rgba(220,228,236,0.45)');
+    grd.addColorStop(0.85, 'rgba(255,255,255,0.25)');
+    grd.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grd; g.beginPath(); g.arc(S / 2, S / 2, 63, 0, Math.PI * 2); g.fill();
     return c;
 }
 
@@ -394,6 +432,8 @@ class ArenaScene extends Phaser.Scene {
         this.planeSprites = new Map();
         this.textures.addCanvas('rocket', makeRocketCanvas());
         this.textures.addCanvas('saw', makeSawCanvas());
+        this.textures.addCanvas('sawBlur', makeSawBlurCanvas());
+        this.bladeGfx = this.add.graphics().setDepth(5.05);
         this.rocketSprites = new Map();
 
         // Asphalt ground as a large tiled sprite centered on the world origin
@@ -584,7 +624,8 @@ class ArenaScene extends Phaser.Scene {
                 stroke: '#000', strokeThickness: 3,
             }).setOrigin(0.5, 1).setDepth(7);
             const saws = [0, 1].map(() => this.add.image(p.x, p.y, 'saw').setDepth(5.2).setVisible(false));
-            entry = { sprite, shadow, topper, label, saws, x: p.x, y: p.y, a: p.angle, topperKey: null, skidL: null, skidR: null };
+            const sawBlurs = [0, 1].map(() => this.add.image(p.x, p.y, 'sawBlur').setDepth(5.15).setVisible(false));
+            entry = { sprite, shadow, topper, label, saws, sawBlurs, x: p.x, y: p.y, a: p.angle, topperKey: null, skidL: null, skidR: null };
             this.carSprites.set(p.id, entry);
         }
         return entry;
@@ -704,19 +745,31 @@ class ArenaScene extends Phaser.Scene {
                 }
             }
 
-            // ─── Spinning saw blades (power-up) on both sides ──────────
-            const bladesOn = p.alive && p.blades;
+            // ─── Spinning saw blades (power-up) on steel arms, both sides ─
+            // (they flicker in the last 1.5 s so you know they're running out)
+            const bladeLeft = p.bladeLeft || 0;
+            const bladesOn = p.alive && p.blades && !(bladeLeft < 1.5 && Math.floor(time / 110) % 2 === 0);
+            e.bladeArms = null;
             for (let i = 0; i < 2; i++) {
-                const saw = e.saws[i];
-                saw.setVisible(bladesOn);
+                const saw = e.saws[i], blur = e.sawBlurs[i];
+                saw.setVisible(bladesOn); blur.setVisible(bladesOn);
                 if (!bladesOn) continue;
-                const side = i ? 1 : -1, off = 42 * sizeMult;
-                const fwd = 10 * sizeMult;
-                saw.setPosition(
-                    e.x + Math.cos(e.a) * fwd - Math.sin(e.a) * off * side,
-                    e.y + Math.sin(e.a) * fwd + Math.cos(e.a) * off * side);
-                saw.setScale(0.85 * sizeMult);
-                saw.rotation += (side * delta) / 1000 * 22;
+                const side = i ? 1 : -1, off = 44 * sizeMult;
+                const fwd = 12 * sizeMult;
+                const sx = e.x + Math.cos(e.a) * fwd - Math.sin(e.a) * off * side;
+                const sy = e.y + Math.sin(e.a) * fwd + Math.cos(e.a) * off * side;
+                saw.setPosition(sx, sy).setScale(0.5 * sizeMult);
+                blur.setPosition(sx, sy).setScale(0.52 * sizeMult).setAlpha(0.7 + 0.3 * Math.random());
+                saw.rotation += (side * delta) / 1000 * 30;
+                // arm from the car's side to the blade hub
+                const ax0 = e.x + Math.cos(e.a) * fwd - Math.sin(e.a) * 18 * sizeMult * side;
+                const ay0 = e.y + Math.sin(e.a) * fwd + Math.cos(e.a) * 18 * sizeMult * side;
+                (e.bladeArms = e.bladeArms || []).push([ax0, ay0, sx, sy]);
+                // shower of sparks off the spinning teeth
+                if (((this._tick || 0) + i) % 5 === 0) {
+                    const ta = Math.random() * Math.PI * 2;
+                    this.spark.emitParticleAt(sx + Math.cos(ta) * 28 * sizeMult, sy + Math.sin(ta) * 28 * sizeMult, 1);
+                }
             }
 
             // ─── Exhaust / smoke / tire marks ───────────────────────────
@@ -768,6 +821,7 @@ class ArenaScene extends Phaser.Scene {
             if (!seen.has(id)) {
                 e.sprite.destroy(); e.shadow.destroy(); e.label.destroy(); e.topper && e.topper.destroy();
                 e.saws.forEach(sw => sw.destroy());
+                e.sawBlurs.forEach(sw => sw.destroy());
                 this.carSprites.delete(id);
             }
         }
@@ -815,6 +869,17 @@ class ArenaScene extends Phaser.Scene {
             rg.fillCircle(e.x, e.y, r);
             rg.lineStyle(3 / this.zoom, col, e.isMe ? 0.75 : 0.55);
             rg.strokeCircle(e.x, e.y, r);
+        }
+
+        // Steel arms holding the saw blades
+        const bgx = this.bladeGfx;
+        bgx.clear();
+        for (const [, e] of this.carSprites) {
+            if (!e.bladeArms) continue;
+            for (const [x0, y0, x1, y1] of e.bladeArms) {
+                bgx.lineStyle(9 * (e.sizeMult || 1), 0x1d2127, 1); bgx.lineBetween(x0, y0, x1, y1);
+                bgx.lineStyle(4 * (e.sizeMult || 1), 0x7d8794, 1); bgx.lineBetween(x0, y0, x1, y1);
+            }
         }
 
         // Health bars above every car

@@ -791,7 +791,7 @@ const ROCKET_LIFE_MS = 1400;
 const BLAST_RADIUS = 120;
 const ROCKET_DIRECT_DMG = 15;
 const ROCKET_SPLASH_DMG = 9;
-const BLADE_DMG = 7;
+const BLADE_DMG = 10;              // saws are a real weapon, not a toy
 const BLADE_HIT_EVERY_MS = 350;
 
 function damage(room, p, amount, attacker, now) {
@@ -919,7 +919,7 @@ function sendSnapshot(room, now) {
             Math.round(p.vx), Math.round(p.vy), r2(p.av),
             (p.alive ? 1 : 0) | (p.shield ? 2 : 0) | (p.nitro > 0 ? 4 : 0) | (p.skid ? 8 : 0) | (p.magnetTimer > 0 ? 16 : 0) | (p.bladeTimer > 0 ? 32 : 0),
             r2(p.dashCooldown), r1(p.shootCooldown), r2(p.nitro), r2(p.slip), r2(p.stun),
-            Math.round(p.speedMult * 100), Math.round(p.scale * 100), WEAPON_CODE[p.weapon] || 0, p.kills, Math.ceil(p.hp),
+            Math.round(p.speedMult * 100), Math.round(p.scale * 100), WEAPON_CODE[p.weapon] || 0, p.kills, Math.ceil(p.hp), r1(Math.max(0, p.bladeTimer)),
         ]),
         u: room.powerups.map(pu => [pu.id, PU_TYPES.indexOf(pu.type), Math.round(pu.x), Math.round(pu.y), Math.max(0, Math.round(pu.landAt - now))]),
         j: room.projectiles.map(pr => [pr.id, Math.round(pr.x), Math.round(pr.y), Math.round(pr.vx), Math.round(pr.vy)]),

@@ -76,11 +76,12 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         const audioTimer = setInterval(() => {
             const me = net.snap?.players?.find(p => p.id === socket.id);
             const local = net.local;
-            if (!me || !me.alive || !local) { soundManager.stopEngine(); return; }
+            if (!me || !me.alive || !local) { soundManager.stopEngine(); soundManager.setBladeWhine(false); return; }
             soundManager.startEngine(me.carType);
             const v = net.localSpeed();
             soundManager.updateEngine(v, inputRef.current.forward, local.nitro > 0 || me.speedMult > 1);
             soundManager.setSkid(local.skid ? Math.min(1, 0.35 + v / 500) : 0);
+            soundManager.setBladeWhine(!!me.blades);
         }, 50);
 
         socket.on('airdrop', () => soundManager.playPlane());
@@ -192,6 +193,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             socket.off('matchStart');
             socket.off('matchEnd');
             soundManager.stopEngine();
+            soundManager.setBladeWhine(false);
         };
     }, []);
 
@@ -481,7 +483,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         {me.scale > 1.1 && <StatusPill label="MEGA" color="#ff3366" />}
                         {me.slip > 0 && <StatusPill label="OIL!" color="#ff8800" />}
                         {me.magnetTimer > 0 && <StatusPill label="MAGNET" color="#ffaa00" />}
-                        {me.blades && <StatusPill label="BLADES" color="#c9d2dd" />}
+                        {me.blades && <StatusPill label={`⚙ BLADES ${Math.ceil(me.bladeLeft || 0)}s`} color="#ff6a3d" />}
                     </div>
                 )}
 

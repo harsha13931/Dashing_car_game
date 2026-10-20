@@ -318,6 +318,28 @@ class SoundManager {
         oscs[0].onended = () => out.disconnect();
     }
 
+    // High-pitched saw whine while your blades are spinning
+    setBladeWhine(on) {
+        if (!this.ctx) return;
+        if (on && !this.blade) {
+            const ctx = this.ctx;
+            const out = ctx.createGain(); out.gain.value = 0;
+            const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 2600; bp.Q.value = 3;
+            const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = 410;
+            const o2 = ctx.createOscillator(); o2.type = 'sawtooth'; o2.frequency.value = 823;
+            const n = ctx.createBufferSource(); n.buffer = this.noiseBuf; n.loop = true;
+            const ng = ctx.createGain(); ng.gain.value = 0.5;
+            o.connect(bp); o2.connect(bp); n.connect(ng); ng.connect(bp); bp.connect(out); out.connect(this.sfx);
+            o.start(); o2.start(); n.start();
+            out.gain.setTargetAtTime(0.07, ctx.currentTime, 0.08);
+            this.blade = { out, nodes: [o, o2, n] };
+        } else if (!on && this.blade) {
+            const b = this.blade; this.blade = null;
+            b.out.gain.setTargetAtTime(0, this.ctx.currentTime, 0.08);
+            setTimeout(() => { b.nodes.forEach(x => { try { x.stop(); } catch (_) { /* ignore */ } }); b.out.disconnect(); }, 600);
+        }
+    }
+
     // Rocket launch: ignition pop + rushing whoosh
     playRocket(vol = 1) {
         this._tone(160, { type: 'square', dur: 0.08, vol: 0.12 * vol, glide: 60 });

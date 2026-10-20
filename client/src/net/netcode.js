@@ -111,7 +111,7 @@ class NetClient {
                 alive: !!(a[7] & 1), shield: !!(a[7] & 2), isDashing: !!(a[7] & 4),
                 skid: !!(a[7] & 8), magnetTimer: (a[7] & 16) ? 1 : 0, blades: !!(a[7] & 32),
                 dashCooldown: a[8], shootCooldown: a[9], nitro: a[10], slip: a[11], stun: a[12],
-                speedMult: a[13] / 100, scale: a[14] / 100, weapon: WEAPONS[a[15]] || null, kills: a[16], hp: a[17] ?? 100,
+                speedMult: a[13] / 100, scale: a[14] / 100, weapon: WEAPONS[a[15]] || null, kills: a[16], hp: a[17] ?? 100, bladeLeft: a[18] || 0,
             });
         }
         const snap = {
