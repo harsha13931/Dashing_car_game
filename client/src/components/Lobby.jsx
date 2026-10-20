@@ -6,6 +6,7 @@ import {
     loadGarage, saveGarage, cosmeticsFor, drawTopper, underglowColor,
 } from '../cosmetics';
 import { renderCar, lookKey } from '../carRender';
+import { CAR_TYPES as PHYS_CARS } from '../../../shared/physics.mjs';
 import { getToken, saveRoom, clearRoom } from '../net/session';
 
 // ─── Menus: home (car stage), garage, play sheets, settings, room ─────────
@@ -17,16 +18,29 @@ const DIFFICULTIES = [
     { key: 'insane', label: 'Insane', color: '#ef4444' },
 ];
 
-const CAR_TYPES = [
-    { key: 'sports',   name: 'Venom GT',      emoji: '🏎️', color: '#1199dd', speed: 4, handling: 3, power: 2, weight: 2, desc: 'Fast and agile' },
-    { key: 'muscle',   name: 'Thunder V8',    emoji: '💪', color: '#cc2244', speed: 3, handling: 2, power: 4, weight: 3, desc: 'Heavy hitter' },
-    { key: 'truck',    name: 'War Rig',       emoji: '🛻', color: '#dd8800', speed: 1, handling: 1, power: 5, weight: 5, desc: 'Unstoppable force' },
-    { key: 'rally',    name: 'Dust Devil',    emoji: '🏁', color: '#22aa44', speed: 3, handling: 5, power: 2, weight: 2, desc: 'Best handling' },
-    { key: 'kart',     name: 'Pocket Rocket', emoji: '🎮', color: '#ccaa00', speed: 5, handling: 4, power: 1, weight: 1, desc: 'Tiny but fast' },
-    { key: 'suv',      name: 'Iron Shield',   emoji: '🛡️', color: '#00aaaa', speed: 2, handling: 2, power: 3, weight: 4, desc: 'Tank with style' },
-    { key: 'drift',    name: 'Sidewinder',    emoji: '💨', color: '#9944cc', speed: 3, handling: 5, power: 2, weight: 2, desc: 'Drift king' },
-    { key: 'supercar', name: 'Phantom X',     emoji: '⚡', color: '#cc5522', speed: 5, handling: 3, power: 1, weight: 1, desc: 'Pure speed' },
+// Menu cards: look + 1–5 bars worked out from the real physics numbers
+const CAR_LOOK = [
+    { key: 'sports',   emoji: '🏎️', color: '#1199dd' },
+    { key: 'muscle',   emoji: '💪', color: '#cc2244' },
+    { key: 'truck',    emoji: '🛻', color: '#dd8800' },
+    { key: 'rally',    emoji: '🏁', color: '#22aa44' },
+    { key: 'kart',     emoji: '🎮', color: '#ccaa00' },
+    { key: 'suv',      emoji: '🛡️', color: '#00aaaa' },
+    { key: 'drift',    emoji: '💨', color: '#9944cc' },
+    { key: 'supercar', emoji: '⚡', color: '#cc5522' },
 ];
+const bar = (v, lo, hi) => Math.max(1, Math.min(5, Math.round(1 + 4 * (v - lo) / (hi - lo))));
+const CAR_TYPES = CAR_LOOK.map(l => {
+    const s = PHYS_CARS[l.key];
+    return {
+        ...l, name: s.name, role: s.role, desc: s.desc,
+        speed: bar(s.maxSpeed, 0.8, 1.45),
+        handling: bar(s.turn, 0.78, 1.55),
+        power: bar(s.dashForce * s.mass, 0.75, 2.3),
+        armor: bar(s.hp * s.stability, 95, 182),
+        weight: bar(s.mass, 0.8, 1.6),
+    };
+});
 
 const INVITE_CODE = (new URLSearchParams(window.location.search).get('room') || '').toUpperCase();
 const SAFE_TOP = 'max(12px, env(safe-area-inset-top))';
@@ -65,7 +79,7 @@ function StatBar({ value, max = 5, color }) {
 function CarStats({ carKey }) {
     const car = CAR_TYPES.find(c => c.key === carKey);
     if (!car) return null;
-    const rows = [['SPEED', car.speed, '#33cc77'], ['HANDLING', car.handling, '#33a6ff'], ['POWER', car.power, '#ff4d5e'], ['WEIGHT', car.weight, '#ffaa22']];
+    const rows = [['SPEED', car.speed, '#33cc77'], ['HANDLING', car.handling, '#33a6ff'], ['POWER', car.power, '#ff4d5e'], ['ARMOR', car.armor, '#c08bff'], ['WEIGHT', car.weight, '#ffaa22']];
     return (
         <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '5px 12px', alignItems: 'center' }}>
             {rows.map(([label, v, c]) => (
@@ -820,7 +834,10 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
         const carInfo = (
             <div style={{ textAlign: 'center' }}>
                 <div className="gtitle" style={{ fontSize: L ? '1.3rem' : '1.6rem', color: '#fff', textShadow: '0 3px 0 rgba(0,0,0,0.5)' }}>{car.name}</div>
-                <div style={{ fontSize: '0.78rem', color: car.color, fontStyle: 'italic', marginTop: 2 }}>{car.desc}</div>
+                <div style={{ fontSize: '0.78rem', color: car.color, marginTop: 2 }}>
+                    <span className="gtitle" style={{ fontSize: '0.66rem', letterSpacing: 1, padding: '1px 7px', borderRadius: 8, background: `${car.color}33`, marginRight: 6 }}>{car.role}</span>
+                    <span style={{ fontStyle: 'italic' }}>{car.desc}</span>
+                </div>
                 <div style={{ display: 'flex', gap: 5, justifyContent: 'center', marginTop: 8 }}>
                     {CAR_TYPES.map((c, i) => (
                         <div key={c.key} onClick={() => { click(); setCarType(c.key); soundManager.playRev(c.key); }} style={{

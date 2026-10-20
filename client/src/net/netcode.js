@@ -128,6 +128,7 @@ class NetClient {
             shrinkIn: m.si,
             round: m.rd, maxRounds: m.mr,
             live: !!m.lv,
+            fenceLock: m.fl || 0,
         };
         this.snap = snap;
 

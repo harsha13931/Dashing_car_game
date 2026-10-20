@@ -11,15 +11,19 @@ export const TICK_RATE = 60;
 export const DT = 1 / TICK_RATE;
 export const SUBSTEPS = 4;
 
+// Every car has a real strength and a real weakness. The mass spread is kept
+// narrow (0.8–1.6) so a light car isn't sent flying by every touch.
+//   hp        — health (heavier cars are tougher)
+//   stability — shrugs off hits: shorter loss of grip and harder to shove through the fence
 export const CAR_TYPES = {
-    sports:   { name: 'Venom GT',      maxSpeed: 1.3,  accel: 1.2,  turn: 1.1,  mass: 0.8,  dashForce: 1.0,  size: 0.9,  desc: 'Fast and agile' },
-    muscle:   { name: 'Thunder V8',    maxSpeed: 1.15, accel: 1.0,  turn: 0.85, mass: 1.3,  dashForce: 1.3,  size: 1.1,  desc: 'Heavy hitter' },
-    truck:    { name: 'War Rig',       maxSpeed: 0.75, accel: 0.7,  turn: 0.65, mass: 2.0,  dashForce: 1.6,  size: 1.4,  desc: 'Unstoppable force' },
-    rally:    { name: 'Dust Devil',    maxSpeed: 1.1,  accel: 1.1,  turn: 1.3,  mass: 0.9,  dashForce: 0.9,  size: 0.95, desc: 'Best handling' },
-    kart:     { name: 'Pocket Rocket', maxSpeed: 1.4,  accel: 1.4,  turn: 1.2,  mass: 0.5,  dashForce: 0.7,  size: 0.7,  desc: 'Tiny but fast' },
-    suv:      { name: 'Iron Shield',   maxSpeed: 0.9,  accel: 0.85, turn: 0.9,  mass: 1.5,  dashForce: 1.2,  size: 1.2,  desc: 'Tank with style' },
-    drift:    { name: 'Sidewinder',    maxSpeed: 1.05, accel: 1.0,  turn: 1.5,  mass: 0.85, dashForce: 0.85, size: 0.95, desc: 'Drift king' },
-    supercar: { name: 'Phantom X',     maxSpeed: 1.5,  accel: 1.3,  turn: 0.95, mass: 0.7,  dashForce: 0.8,  size: 0.85, desc: 'Pure speed' },
+    sports:   { name: 'Venom GT',      role: 'All-rounder', maxSpeed: 1.2,  accel: 1.15, turn: 1.15, mass: 1.0,  dashForce: 1.0,  size: 0.9,  hp: 100, stability: 1.1,  desc: 'Good at everything' },
+    muscle:   { name: 'Thunder V8',    role: 'Bruiser',     maxSpeed: 1.12, accel: 1.05, turn: 0.9,  mass: 1.3,  dashForce: 1.3,  size: 1.1,  hp: 115, stability: 1.15, desc: 'Brutal rams, wide turns' },
+    truck:    { name: 'War Rig',       role: 'Tank',        maxSpeed: 0.82, accel: 0.8,  turn: 0.78, mass: 1.6,  dashForce: 1.45, size: 1.35, hp: 135, stability: 1.35, desc: 'Nearly impossible to push' },
+    rally:    { name: 'Dust Devil',    role: 'Grip King',   maxSpeed: 1.1,  accel: 1.15, turn: 1.3,  mass: 1.05, dashForce: 1.0,  size: 0.95, hp: 105, stability: 1.45, desc: 'Shakes off hits instantly' },
+    kart:     { name: 'Pocket Rocket', role: 'Dodger',      maxSpeed: 1.25, accel: 1.45, turn: 1.4,  mass: 0.8,  dashForce: 0.9,  size: 0.75, hp: 90,  stability: 1.3,  desc: 'Tiny, quick, hard to catch' },
+    suv:      { name: 'Iron Shield',   role: 'Defender',    maxSpeed: 0.95, accel: 0.9,  turn: 0.92, mass: 1.45, dashForce: 1.2,  size: 1.2,  hp: 125, stability: 1.25, desc: 'Heavy armour, slow start' },
+    drift:    { name: 'Sidewinder',    role: 'Drifter',     maxSpeed: 1.1,  accel: 1.1,  turn: 1.55, mass: 1.0,  dashForce: 1.05, size: 0.95, hp: 100, stability: 1.0,  desc: 'Fastest turns, likes to slide' },
+    supercar: { name: 'Phantom X',     role: 'Rocket',      maxSpeed: 1.45, accel: 1.3,  turn: 1.05, mass: 0.92, dashForce: 1.25, size: 0.85, hp: 95,  stability: 1.05, desc: 'Top speed + the hardest nitro ram' },
 };
 
 export const CAR_HALF_LEN = 44;     // px at size 1 (sprite 131px × 0.7 scale)
@@ -154,8 +158,8 @@ export function collideCars(A, B) {
     if (res.impact > 110) {
         // Tyres lose their bite for a moment — the lighter car stays loose longer
         const stun = Math.min(STUN_MAX, res.impact / 1400);
-        a.stun = Math.max(a.stun || 0, stun * Math.min(1.5, B.m / A.m));
-        b.stun = Math.max(b.stun || 0, stun * Math.min(1.5, A.m / B.m));
+        a.stun = Math.max(a.stun || 0, stun * Math.min(1.5, B.m / A.m) / (a.carStats.stability || 1));
+        b.stun = Math.max(b.stun || 0, stun * Math.min(1.5, A.m / B.m) / (b.carStats.stability || 1));
     }
     return res;
 }

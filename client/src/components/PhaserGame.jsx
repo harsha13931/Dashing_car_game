@@ -5,7 +5,7 @@ import { trailColor, drawTopper, TOPPERS } from '../cosmetics';
 import { renderCar, renderShadow, renderBrakeGlow, lookKey, resolveLook, CAR_TEX_H } from '../carRender';
 import { PAINTS, underglowColor } from '../cosmetics';
 import { net, PLANE_SPEED, DROP_FALL_MS } from '../net/netcode';
-import { pickRocketTarget } from '../../../shared/physics.mjs';
+import { pickRocketTarget, CAR_TYPES } from '../../../shared/physics.mjs';
 
 function hexToInt(hex) {
     if (!hex || hex[0] !== '#') return 0xffffff;
@@ -614,7 +614,7 @@ class ArenaScene extends Phaser.Scene {
         return Math.max(0.62, Math.min(1.0, m / 560));
     }
 
-    drawArena(radius, base, electric, time) {
+    drawArena(radius, base, electric, time, locked = false) {
         const g = this.arenaGfx;
         g.clear();
         // Closed-off ground outside the fence
@@ -647,6 +647,13 @@ class ArenaScene extends Phaser.Scene {
         g.strokeCircle(0, 0, radius + 9);
         g.lineStyle(3, electric ? 0x9fe9ff : 0xa9b0bb, 1);
         g.strokeCircle(0, 0, radius + 4);
+        if (locked) {          // start of round: fence locked — glows green
+            const pulse = 0.5 + 0.3 * Math.sin(time * 0.008);
+            g.lineStyle(20, 0x3ddc84, 0.2 * pulse);
+            g.strokeCircle(0, 0, radius + 6);
+            g.lineStyle(4, 0x9dffc4, pulse);
+            g.strokeCircle(0, 0, radius + 4);
+        }
         if (electric) {
             const pulse = 0.45 + 0.35 * Math.sin(time * 0.012);
             g.lineStyle(22, 0x4fd8ff, 0.18 * pulse);
@@ -702,8 +709,9 @@ class ArenaScene extends Phaser.Scene {
         if (!snap || !snap.players) return;
 
         const arenaR = snap.arenaRadius || 1000;
-        if (Math.abs(arenaR - this.lastArenaR) > 0.5 || snap.suddenDeath) {
-            this.drawArena(arenaR, snap.arenaBase || arenaR, !!snap.suddenDeath, time);
+        if (Math.abs(arenaR - this.lastArenaR) > 0.5 || snap.suddenDeath || snap.fenceLock > 0 || this.wasLocked) {
+            this.wasLocked = snap.fenceLock > 0;
+            this.drawArena(arenaR, snap.arenaBase || arenaR, !!snap.suddenDeath, time, snap.fenceLock > 0);
             this.lastArenaR = arenaR;
         }
 
@@ -729,7 +737,9 @@ class ArenaScene extends Phaser.Scene {
             const sizeMult = (TYPE_SIZE[p.carType] || 1) * (p.scale || 1);
             const scale = CAR_SCALE * sizeMult;
             const rot = e.a + Math.PI / 2;   // sprite faces up; angle 0 = +x
-            const hp = p.hp ?? 100;
+            // health as a % of this car's own maximum (tough cars have more)
+            const maxHp = (CAR_TYPES[p.carType] || {}).hp || 100;
+            const hp = ((p.hp ?? maxHp) / maxHp) * 100;
             const wrecked = !p.alive && hp <= 0;          // blown up, not pushed out
             const cos = p.cosmetics || fallbackLook(p.id);
 
