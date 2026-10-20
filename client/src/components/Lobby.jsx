@@ -633,11 +633,58 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
 }
 
 // ─── Main menu ────────────────────────────────────────────────────────────
+// Names: 2–16 letters / numbers (any language), spaces, _ . -
+const cleanName = (n) => String(n || '').replace(/[^\p{L}\p{N} _.-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 16);
+const NAME_OK = (n) => cleanName(n).length >= 2;
+
+// Full-screen "what's your name?" — shown on first launch and whenever you change it
+function NameScreen({ initial, canClose, onSave, onClose }) {
+    const [val, setVal] = useState(initial || '');
+    const ok = NAME_OK(val);
+    const submit = () => { if (ok) { click(); onSave(cleanName(val)); } };
+    return (
+        <div style={{
+            position: 'fixed', inset: 0, zIndex: 35, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(5,8,13,0.82)', padding: 16, boxSizing: 'border-box', animation: 'fadeIn 0.15s ease-out',
+        }}>
+            <div className="gpanel" style={{
+                width: 'min(440px, 100%)', padding: '20px 22px', textAlign: 'center', position: 'relative',
+                background: 'linear-gradient(180deg, #1f2a3d, #121927)',
+            }}>
+                {canClose && (
+                    <button onClick={() => { click(); onClose(); }} aria-label="Close" style={{
+                        position: 'absolute', top: 12, right: 12, width: 34, height: 34, borderRadius: '50%',
+                        border: '2px solid rgba(255,255,255,0.15)', background: 'rgba(0,0,0,0.3)', color: '#cdd6e2', cursor: 'pointer',
+                    }}>✕</button>
+                )}
+                <div className="gtitle" style={{ fontSize: '1.45rem', color: '#ffd84d' }}>WHAT'S YOUR NAME?</div>
+                <div style={{ color: '#9fb0c3', fontSize: '0.85rem', margin: '6px 0 14px' }}>
+                    Other players will see it above your car and in the kill feed.
+                </div>
+                <input value={val} autoFocus maxLength={20} placeholder="Type your name"
+                    onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()}
+                    className="gtitle" style={{
+                        width: '100%', boxSizing: 'border-box', background: 'rgba(0,0,0,0.4)', textAlign: 'center',
+                        border: `2px solid ${val && !ok ? '#ff5d73' : 'rgba(255,216,77,0.5)'}`, borderRadius: 14,
+                        color: '#fff', fontSize: '1.3rem', padding: '12px 14px', outline: 'none', letterSpacing: 1,
+                    }} />
+                <div style={{ height: 18, marginTop: 6, fontSize: '0.75rem', color: val && !ok ? '#ff8a9a' : '#6f7f93' }}>
+                    {val && !ok ? 'At least 2 letters or numbers' : `${cleanName(val).length}/16`}
+                </div>
+                <button className="gbtn yellow" disabled={!ok} onClick={submit}
+                    style={{ width: '100%', fontSize: '1.15rem', padding: 13, marginTop: 8 }}>LET'S GO ▶</button>
+            </div>
+        </div>
+    );
+}
+
 export default function Lobby({ room, setRoom, setPlayer, connected, connError }) {
     const vp = useViewport();
     const [name, setName] = useState(() => {
-        try { return localStorage.getItem('dasharena.name') || 'Player'; } catch (_) { return 'Player'; }
+        try { return cleanName(localStorage.getItem('dasharena.name')); } catch (_) { return ''; }
     });
+    // Ask for a name before anything else if we don't have one yet
+    const [askName, setAskName] = useState(() => (NAME_OK(name) ? null : { then: INVITE_CODE ? 'online' : null, first: true }));
     const [carType, setCarTypeRaw] = useState(() => {
         try {
             const k = localStorage.getItem('dasharena.car');
@@ -646,7 +693,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
     });
     const [garage, setGarage] = useState(loadGarage);
     const [screen, setScreen] = useState('home');
-    const [sheet, setSheet] = useState(INVITE_CODE ? 'online' : null);
+    const [sheet, setSheet] = useState(INVITE_CODE && NAME_OK(name) ? 'online' : null);
     const [rid, setRid] = useState(INVITE_CODE);
     const [botCount, setBotCount] = useState(3);
     const [botDifficulty, setBotDifficulty] = useState('medium');
@@ -661,9 +708,19 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
     const car = CAR_TYPES.find(c => c.key === carType) || CAR_TYPES[0];
     const carIdx = CAR_TYPES.indexOf(car);
 
-    useEffect(() => {
-        try { localStorage.setItem('dasharena.name', name); } catch (_) { /* ignore */ }
-    }, [name]);
+    const saveName = (n) => {
+        setName(n);
+        try { localStorage.setItem('dasharena.name', n); } catch (_) { /* ignore */ }
+        const then = askName && askName.then;
+        setAskName(null);
+        if (then) { setError(''); setSheet(then); }
+    };
+    // Play buttons: make sure we know who you are first
+    const openPlay = (which) => {
+        click(); setError('');
+        if (NAME_OK(name)) setSheet(which);
+        else setAskName({ then: which });
+    };
 
     const setCarType = (k) => {
         setCarTypeRaw(k);
@@ -680,7 +737,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
         saveGarage(g);
     };
     const setSetting = (k, v) => { soundManager.setSetting(k, v); setSettings({ ...soundManager.settings }); };
-    const playerName = () => (name.trim() || 'Player').slice(0, 16);
+    const playerName = () => cleanName(name) || 'Player';
 
     function createRoom(mode) {
         click();
@@ -776,10 +833,10 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
         );
         const buttons = (
             <div style={{ display: 'flex', flexDirection: 'column', gap: L ? 12 : 14, width: '100%' }}>
-                <button className="gbtn yellow" onClick={() => { click(); setError(''); setSheet('online'); }}
+                <button className="gbtn yellow" onClick={() => openPlay('online')}
                     style={{ fontSize: L ? '1.15rem' : '1.4rem', padding: L ? '12px' : '16px' }}>▶ PLAY ONLINE</button>
                 <div style={{ display: 'flex', gap: 12 }}>
-                    <button className="gbtn blue" onClick={() => { click(); setError(''); setSheet('bots'); }}
+                    <button className="gbtn blue" onClick={() => openPlay('bots')}
                         style={{ flex: 1, fontSize: '0.95rem', padding: L ? '10px 6px' : '13px 6px' }}>🤖 VS BOTS</button>
                     <button className="gbtn purple" onClick={() => { click(); setScreen('garage'); }}
                         style={{ flex: 1, fontSize: '0.95rem', padding: L ? '10px 6px' : '13px 6px' }}>🎨 GARAGE</button>
@@ -791,7 +848,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
         );
         const topBar = (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                <button onClick={() => { click(); setSheet('settings'); }} style={{
+                <button onClick={() => { click(); setAskName({ then: null }); }} aria-label="Change your name" style={{
                     display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(0,0,0,0.35)',
                     border: '2px solid rgba(255,255,255,0.1)', borderRadius: 24, padding: '4px 14px 4px 4px', cursor: 'pointer',
                     maxWidth: '55vw',
@@ -890,13 +947,23 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
                 </Sheet>
             )}
 
+            {askName && !room && (
+                <NameScreen initial={NAME_OK(name) ? name : ''} canClose={!askName.first && NAME_OK(name)}
+                    onSave={saveName} onClose={() => setAskName(null)} />
+            )}
+
             {sheet === 'settings' && (
                 <Sheet title="Settings" onClose={() => setSheet(null)}>
                     <Label>Your name</Label>
-                    <input value={name} onChange={e => setName(e.target.value.slice(0, 16))} maxLength={16} placeholder="Player" style={{
-                        width: '100%', boxSizing: 'border-box', background: 'rgba(0,0,0,0.35)', border: '2px solid rgba(255,255,255,0.12)',
-                        borderRadius: 12, color: '#fff', fontSize: '1rem', padding: '10px 12px', outline: 'none', fontFamily: 'inherit',
-                    }} />
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                        <div className="gtitle" style={{
+                            flex: 1, minWidth: 0, background: 'rgba(0,0,0,0.35)', border: '2px solid rgba(255,255,255,0.12)',
+                            borderRadius: 12, color: '#fff', fontSize: '1rem', padding: '10px 12px',
+                            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        }}>{playerName()}</div>
+                        <button className="gbtn dark" onClick={() => { click(); setSheet(null); setAskName({ then: null }); }}
+                            style={{ fontSize: '0.8rem', padding: '10px 14px' }}>CHANGE</button>
+                    </div>
                     <Label>Audio</Label>
                     <Toggle label="🔊 Sound effects" on={settings.sound} onChange={v => setSetting('sound', v)} />
                     <Toggle label="🎵 Music" on={settings.music} onChange={v => setSetting('music', v)} />
