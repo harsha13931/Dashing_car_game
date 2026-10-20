@@ -17,7 +17,7 @@ const MAX_POWERUPS = 12;
 const ROOM_CLEANUP_MS = 5 * 60 * 1000;   // clean empty rooms after 5 min
 const MAX_ROOMS = 50;
 const MAX_PLAYERS_PER_ROOM = 8;
-const MAX_PROJECTILES = 30;
+const MAX_PROJECTILES = 40;
 const LOBBY_GRACE_MS = 10 * 60 * 1000;   // keep your seat this long if you leave the page
 const MATCH_GRACE_MS = 90 * 1000;        // …or this long if a match is running
 
@@ -142,6 +142,8 @@ function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 's
         hp: 100,               // health — 0 = wrecked
         bladeTimer: 0,         // spinning saw blades power-up
         bladeHits: {},         // victim id → last blade hit time
+        bumperTimer: 0,        // bouncy balloons power-up
+        bumperHits: {},
         speedTimer: 0,
         inputs: { forward: 0, steer: 0, dash: false, shoot: false, drop: false },
         lastProcessedInput: 0,
@@ -247,6 +249,8 @@ function resetPlayers(room) {
         p.hp = 100;
         p.bladeTimer = 0;
         p.bladeHits = {};
+        p.bumperTimer = 0;
+        p.bumperHits = {};
         p.speedTimer = 0;
         p.slip = 0;
         p.scale = 1;
@@ -502,7 +506,7 @@ function updateBotAI(bot, room, now) {
         while (shootDiff < -Math.PI) shootDiff += Math.PI * 2;
 
         if (Math.abs(shootDiff) < 0.3 && nearestEnemyDist < 500 && nearestEnemyDist > 80) {
-            if (Math.random() < bs.shootSkill) shoot = true;
+            if (Math.random() < bs.shootSkill * 0.45) shoot = true;   // rockets home in now — bots fire less often
         }
     }
 
@@ -542,6 +546,10 @@ function applyPowerup(type, player, room) {
             player.bladeTimer = 8;                      // spinning saws for 8 s
             player.bladeHits = {};
             break;
+        case 'Bumper':
+            player.bumperTimer = 10;                    // bouncy balloons for 10 s
+            player.bumperHits = {};
+            break;
         case 'Magnet':
             // Pull nearby powerups toward player for 3 seconds (handled in tick)
             player.magnetTimer = 3;
@@ -566,6 +574,8 @@ function beginRound(room) {
     room._snapN = 0;
     room.rosterDirty = true;
     resetPlayers(room);
+    // Test hook: SIM_GIVE=Bumper hands the host a power-up at the start of each round
+    if (process.env.SIM_GIVE && room.players[room.hostId]) applyPowerup(process.env.SIM_GIVE, room.players[room.hostId], room);
     io.to(room.id).emit('matchStart', { count: room.countdown, round: room.round, maxRounds: room.maxRounds });
 }
 
@@ -575,6 +585,7 @@ function tickTimers(p) {
     if (p.speedTimer > 0) { p.speedTimer -= DT; if (p.speedTimer <= 0 && p.megaTimer <= 0) p.speedMult = 1; }
     if (p.magnetTimer > 0) p.magnetTimer -= DT;
     if (p.bladeTimer > 0) p.bladeTimer -= DT;
+    if (p.bumperTimer > 0) p.bumperTimer = Math.max(0, p.bumperTimer - DT);
 }
 
 function addPlayer(room, p) {
@@ -818,11 +829,13 @@ function addFx(fx, key, ev) {
 }
 
 // ─── Health, rockets, blades ──────────────────────────────────────────────
-const ROCKET_SPEED = 900;           // px/s
-const ROCKET_LIFE_MS = 1400;
+const ROCKET_SPEED = 640;           // px/s — slow enough to see and to steer onto a target
+const ROCKET_LIFE_MS = 2000;
+const ROCKET_TURN = 2.4;            // rad/s homing toward the locked target
+const ROCKET_COOLDOWN = 1.4;
 const BLAST_RADIUS = 120;
-const ROCKET_DIRECT_DMG = 15;
-const ROCKET_SPLASH_DMG = 9;
+const ROCKET_DIRECT_DMG = 10;       // per rocket — a twin volley does 20
+const ROCKET_SPLASH_DMG = 6;
 const BLADE_DMG = 10;              // saws are a real weapon, not a toy
 const BLADE_HIT_EVERY_MS = 350;
 
@@ -875,8 +888,8 @@ function updateArena(room, now) {
 }
 
 // ─── Air drops: a cargo plane crosses the arena and drops crates ─────────
-const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades'];
-const PU_WEIGHTS = [20, 16, 12, 12, 8, 10, 20, 14];
+const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades', 'Bumper'];
+const PU_WEIGHTS = [18, 14, 11, 11, 7, 9, 19, 13, 13];
 const PLANE_SPEED = 560;            // px/s
 const PLANE_EVERY_MS = 8000;
 const PLANE_MARGIN = 750;           // start/end this far outside the fence
@@ -949,9 +962,9 @@ function sendSnapshot(room, now) {
         p: Object.values(room.players).map(p => [
             p.num, r1(p.x), r1(p.y), Math.round(p.angle * 1000) / 1000,
             Math.round(p.vx), Math.round(p.vy), r2(p.av),
-            (p.alive ? 1 : 0) | (p.shield ? 2 : 0) | (p.nitro > 0 ? 4 : 0) | (p.skid ? 8 : 0) | (p.magnetTimer > 0 ? 16 : 0) | (p.bladeTimer > 0 ? 32 : 0) | (p.inputs.forward < -0.05 ? 64 : 0),
+            (p.alive ? 1 : 0) | (p.shield ? 2 : 0) | (p.nitro > 0 ? 4 : 0) | (p.skid ? 8 : 0) | (p.magnetTimer > 0 ? 16 : 0) | (p.bladeTimer > 0 ? 32 : 0) | (p.inputs.forward < -0.05 ? 64 : 0) | (p.bumperTimer > 0 ? 128 : 0),
             r2(p.dashCooldown), r1(p.shootCooldown), r2(p.nitro), r2(p.slip), r2(p.stun),
-            Math.round(p.speedMult * 100), Math.round(p.scale * 100), WEAPON_CODE[p.weapon] || 0, p.kills, Math.ceil(p.hp), r1(Math.max(0, p.bladeTimer)),
+            Math.round(p.speedMult * 100), Math.round(p.scale * 100), WEAPON_CODE[p.weapon] || 0, p.kills, Math.ceil(p.hp), r1(Math.max(0, p.bladeTimer)), r1(p.bumperTimer || 0),
         ]),
         u: room.powerups.map(pu => [pu.id, PU_TYPES.indexOf(pu.type), Math.round(pu.x), Math.round(pu.y), Math.max(0, Math.round(pu.landAt - now))]),
         j: room.projectiles.map(pr => [pr.id, Math.round(pr.x), Math.round(pr.y), Math.round(pr.vx), Math.round(pr.vy)]),
@@ -1040,18 +1053,30 @@ function tickRoom(room, roomId, now) {
         }
 
         // Shoot
-        if (inp.shoot && p.shootCooldown <= 0 && room.projectiles.length < MAX_PROJECTILES) {
-            const speed = ROCKET_SPEED;
-            room.projectiles.push({
-                id: ++room._uid,
-                ownerId: p.id,
-                x: p.x + Math.cos(p.angle) * 50,
-                y: p.y + Math.sin(p.angle) * 50,
-                vx: Math.cos(p.angle) * speed + p.vx,
-                vy: Math.sin(p.angle) * speed + p.vy,
-                created: now
-            });
-            p.shootCooldown = 1.1;
+        if (inp.shoot && p.shootCooldown <= 0 && room.projectiles.length < MAX_PROJECTILES - 1) {
+            // Twin launchers: two rockets aimed at the rival in front of you
+            // (leading a moving target), which then home in gently
+            const target = PHYS.pickRocketTarget(p, Object.values(room.players));
+            const fx = Math.cos(p.angle), fy = Math.sin(p.angle);
+            const fwdSpeed = Math.max(0, p.vx * fx + p.vy * fy);
+            const speed = ROCKET_SPEED + fwdSpeed * 0.5;
+            for (const side of [-1, 1]) {
+                const ox = p.x + fx * 46 - fy * 16 * side, oy = p.y + fy * 46 + fx * 16 * side;
+                let ang = p.angle;
+                if (target) {
+                    const t = Math.hypot(target.x - ox, target.y - oy) / speed;
+                    ang = Math.atan2(target.y + target.vy * t * 0.8 - oy, target.x + target.vx * t * 0.8 - ox);
+                }
+                room.projectiles.push({
+                    id: ++room._uid,
+                    ownerId: p.id,
+                    targetId: target ? target.id : null,
+                    x: ox, y: oy,
+                    vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
+                    speed, created: now,
+                });
+            }
+            p.shootCooldown = ROCKET_COOLDOWN;
             p.shotsFired++;
             io.to(room.id).emit('rocketFired', { id: p.id });
         }
@@ -1134,6 +1159,19 @@ function tickRoom(room, roomId, now) {
     // ─── Projectile physics ────────────────────────────────────────────
     for (let i = room.projectiles.length - 1; i >= 0; i--) {
         const proj = room.projectiles[i];
+        // Gentle homing toward the locked target (gives up if it gets behind the rocket)
+        const tgt = proj.targetId && room.players[proj.targetId];
+        if (tgt && tgt.alive) {
+            const cur = Math.atan2(proj.vy, proj.vx);
+            let da = Math.atan2(tgt.y - proj.y, tgt.x - proj.x) - cur;
+            while (da > Math.PI) da -= Math.PI * 2;
+            while (da < -Math.PI) da += Math.PI * 2;
+            if (Math.abs(da) < 1.75) {
+                const turn = Math.max(-ROCKET_TURN * DT, Math.min(ROCKET_TURN * DT, da));
+                proj.vx = Math.cos(cur + turn) * proj.speed;
+                proj.vy = Math.sin(cur + turn) * proj.speed;
+            } else proj.targetId = null;
+        }
         proj.x += proj.vx * DT;
         proj.y += proj.vy * DT;
 
@@ -1155,6 +1193,33 @@ function tickRoom(room, roomId, now) {
         }
     }
     if (!room.running) return;
+
+    // ─── Balloons: bounce away anyone who runs into them (no damage) ───
+    {
+        const alive = Object.values(room.players).filter(p => p.alive);
+        for (const a of alive) {
+            if (!(a.bumperTimer > 0)) continue;
+            const ring = PHYS.CAR_HALF_LEN * a.carStats.size * a.scale + 30;
+            for (const b of alive) {
+                if (b === a || !b.alive) continue;
+                const d = Math.hypot(b.x - a.x, b.y - a.y);
+                const reach = ring + PHYS.CAR_HALF_WID * b.carStats.size * b.scale;
+                if (d > reach || d < 1) continue;
+                const nx = (b.x - a.x) / d, ny = (b.y - a.y) / d;
+                // Every tick a car is inside the balloons it's pushed back out, relative to the
+                // balloon car, so nothing gets through to its body — not even a nitro ram
+                const away = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+                const kick = Math.max(0, 470 - away);              // leave at ≥ 470 px/s
+                b.vx += nx * kick; b.vy += ny * kick;
+                b.x += nx * (reach - d); b.y += ny * (reach - d);  // out of the balloons
+                b.stun = Math.max(b.stun || 0, 0.35);
+                markHit(b, a, now);
+                if (now - (a.bumperHits[b.id] || 0) < 300) continue;   // sound + confetti at most every 0.3 s
+                a.bumperHits[b.id] = now;
+                io.to(room.id).emit('collision', { impact: 300, x: a.x + nx * ring, y: a.y + ny * ring, type: 'balloon', ids: [b.id, a.id] });
+            }
+        }
+    }
 
     // ─── Spinning blades: shred anyone who touches the sides ───────────
     {

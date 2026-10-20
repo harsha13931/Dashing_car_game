@@ -8,7 +8,7 @@
 import { DT, CAR_TYPES, driveCar, stepCars } from '../../../shared/physics.mjs';
 import { socket } from './socket';
 
-const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades'];
+const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades', 'Bumper'];
 const WEAPONS = [null, 'oil', 'reverse'];
 const HAZARDS = ['oil', 'reverse'];
 export const PLANE_SPEED = 560;     // must match the server
@@ -23,7 +23,7 @@ function carState(p) {
         carStats: CAR_TYPES[p.carType] || CAR_TYPES.sports,
         scale: p.scale, speedMult: p.speedMult, slip: p.slip, stun: p.stun,
         nitro: p.nitro, dashCooldown: p.dashCooldown,
-        megaTimer: p.scale > 1.1 ? 1 : 0, alive: true, skid: p.skid,
+        megaTimer: p.scale > 1.1 ? 1 : 0, alive: true, skid: p.skid, bumperTimer: p.bumperLeft,
     };
 }
 
@@ -109,9 +109,9 @@ class NetClient {
                 id: r.id, name: r.name, isBot: r.isBot, carType: r.carType, cosmetics: r.cosmetics,
                 x: a[1], y: a[2], angle: a[3], vx: a[4], vy: a[5], av: a[6],
                 alive: !!(a[7] & 1), shield: !!(a[7] & 2), isDashing: !!(a[7] & 4),
-                skid: !!(a[7] & 8), magnetTimer: (a[7] & 16) ? 1 : 0, blades: !!(a[7] & 32), braking: !!(a[7] & 64),
+                skid: !!(a[7] & 8), magnetTimer: (a[7] & 16) ? 1 : 0, blades: !!(a[7] & 32), braking: !!(a[7] & 64), bumper: !!(a[7] & 128),
                 dashCooldown: a[8], shootCooldown: a[9], nitro: a[10], slip: a[11], stun: a[12],
-                speedMult: a[13] / 100, scale: a[14] / 100, weapon: WEAPONS[a[15]] || null, kills: a[16], hp: a[17] ?? 100, bladeLeft: a[18] || 0,
+                speedMult: a[13] / 100, scale: a[14] / 100, weapon: WEAPONS[a[15]] || null, kills: a[16], hp: a[17] ?? 100, bladeLeft: a[18] || 0, bumperLeft: a[19] || 0,
             });
         }
         const snap = {
@@ -156,7 +156,7 @@ class NetClient {
             out.push({
                 x, y, angle: st.angle + st.av * dt, vx: st.vx, vy: st.vy, av: st.av,
                 carStats: CAR_TYPES[st.carType] || CAR_TYPES.sports, scale: st.scale,
-                nitro: st.nitro, megaTimer: st.scale > 1.1 ? 1 : 0, stun: 0, alive: true, frozen: true,
+                nitro: st.nitro, megaTimer: st.scale > 1.1 ? 1 : 0, stun: 0, alive: true, frozen: true, bumperTimer: st.bumperLeft,
             });
         }
         return out;

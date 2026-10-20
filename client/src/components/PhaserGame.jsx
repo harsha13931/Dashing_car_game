@@ -5,6 +5,7 @@ import { trailColor, drawTopper, TOPPERS } from '../cosmetics';
 import { renderCar, renderShadow, renderBrakeGlow, lookKey, resolveLook, CAR_TEX_H } from '../carRender';
 import { PAINTS, underglowColor } from '../cosmetics';
 import { net, PLANE_SPEED, DROP_FALL_MS } from '../net/netcode';
+import { pickRocketTarget } from '../../../shared/physics.mjs';
 
 function hexToInt(hex) {
     if (!hex || hex[0] !== '#') return 0xffffff;
@@ -239,6 +240,23 @@ function makeSawBlurCanvas() {
     return c;
 }
 
+// Glossy balloon (white, tinted per balloon)
+function makeBalloonCanvas() {
+    const S = 64;
+    const c = document.createElement('canvas');
+    c.width = S; c.height = S + 10;
+    const g = c.getContext('2d');
+    const grd = g.createRadialGradient(S * 0.38, S * 0.34, 3, S / 2, S / 2, S * 0.48);
+    grd.addColorStop(0, '#ffffff'); grd.addColorStop(0.25, '#f2f2f2'); grd.addColorStop(1, '#9a9a9a');
+    g.fillStyle = grd;
+    g.beginPath(); g.ellipse(S / 2, S / 2, S * 0.44, S * 0.48, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.moveTo(S / 2 - 5, S * 0.97); g.lineTo(S / 2 + 5, S * 0.97); g.lineTo(S / 2, S * 0.9); g.closePath(); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.85)';
+    g.beginPath(); g.ellipse(S * 0.36, S * 0.3, S * 0.09, S * 0.14, -0.5, 0, Math.PI * 2); g.fill();
+    return c;
+}
+const BALLOON_COLORS = [0xff4d6d, 0xffc93d, 0x3ddc84, 0x2fb6ff, 0xb46bff, 0xff8a3d];
+
 function mixColor(a, b, t) {
     const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
     const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
@@ -337,6 +355,14 @@ const POWERUP_META = {
         c.closePath(); c.fill();
         c.fillStyle = 'rgba(0,0,0,0.45)';
         c.beginPath(); c.arc(s * 0.5, s * 0.5, s * 0.07, 0, Math.PI * 2); c.fill();
+    } },
+    Bumper: { color: '#ff5fa2', label: 'BALLOONS!', icon: (c, s) => { // three balloons
+        for (const [x, y, r] of [[0.36, 0.4, 0.13], [0.62, 0.36, 0.14], [0.5, 0.56, 0.12]]) {
+            c.beginPath(); c.arc(s * x, s * y, s * r, 0, Math.PI * 2); c.fill();
+        }
+        c.lineWidth = s * 0.03; c.strokeStyle = c.fillStyle;
+        c.beginPath(); c.moveTo(s * 0.36, s * 0.53); c.lineTo(s * 0.5, s * 0.82); c.lineTo(s * 0.62, s * 0.5);
+        c.moveTo(s * 0.5, s * 0.68); c.lineTo(s * 0.5, s * 0.82); c.stroke();
     } },
     Reverse: { color: '#a24aff', label: 'REVERSE!', icon: (c, s) => { // circular arrows
         c.lineWidth = s * 0.1; c.strokeStyle = c.fillStyle;
@@ -438,6 +464,7 @@ class ArenaScene extends Phaser.Scene {
         this.textures.addCanvas('rocket', makeRocketCanvas());
         this.textures.addCanvas('saw', makeSawCanvas());
         this.textures.addCanvas('sawBlur', makeSawBlurCanvas());
+        this.textures.addCanvas('balloon', makeBalloonCanvas());
         this.bladeGfx = this.add.graphics().setDepth(5.05);
         this.rocketSprites = new Map();
 
@@ -506,7 +533,13 @@ class ArenaScene extends Phaser.Scene {
             scale: { start: 0.28, end: 0.9 }, alpha: { start: 0.45, end: 0 },
             lifespan: 700, tint: 0xcfcfcf, blendMode: 'NORMAL', emitting: false,
         }).setDepth(5.5);
+        this.confetti = this.add.particles(0, 0, 'spark', {
+            speed: { min: 80, max: 260 }, angle: { min: 0, max: 360 }, gravityY: 120,
+            scale: { start: 0.8, end: 0.2 }, alpha: { start: 1, end: 0 }, rotate: { min: 0, max: 360 },
+            lifespan: 700, tint: BALLOON_COLORS, blendMode: 'NORMAL', emitting: false,
+        }).setDepth(8);
         this.hpGfx = this.add.graphics().setDepth(8);
+        this.lockGfx = this.add.graphics().setDepth(8.5);
         this.boomGfx = this.add.graphics().setDepth(9.5);
         this.booms = [];
 
@@ -517,6 +550,14 @@ class ArenaScene extends Phaser.Scene {
 
         // ─── Event FX ────────────────────────────────────────────────────
         this._onCollision = (p) => {
+            if (p && p.type === 'balloon') {          // boing: wobble the balloons, puff of confetti, no sparks
+                const owner = p.ids && this.carSprites.get(p.ids[1]);
+                if (owner) owner.squishAt = this.time.now;
+                if (typeof p.x === 'number') this.confetti.emitParticleAt(p.x, p.y, 14);
+                const focus = this.store.followId || this.store.localId;
+                if (p.ids && p.ids[0] === focus) this.cameras.main.shake(140, 0.008);
+                return;
+            }
             // Shake only for hits on the car the camera is following
             const focus = this.store.followId || this.store.localId;
             if (p && Array.isArray(p.ids) && p.ids.includes(focus)) {
@@ -633,7 +674,8 @@ class ArenaScene extends Phaser.Scene {
             }).setOrigin(0.5, 1).setDepth(7);
             const saws = [0, 1].map(() => this.add.image(p.x, p.y, 'saw').setDepth(5.2).setVisible(false));
             const sawBlurs = [0, 1].map(() => this.add.image(p.x, p.y, 'sawBlur').setDepth(5.15).setVisible(false));
-            entry = { sprite, shadow, glow, beam, brake, type, topper, label, saws, sawBlurs, texKey: null, x: p.x, y: p.y, a: p.angle, topperKey: null, skidL: null, skidR: null };
+            const balloons = BALLOON_COLORS.map(col => this.add.image(p.x, p.y, 'balloon').setDepth(6.2).setTint(col).setVisible(false));
+            entry = { sprite, shadow, glow, beam, brake, type, topper, label, saws, sawBlurs, balloons, squishAt: -1e9, texKey: null, x: p.x, y: p.y, a: p.angle, topperKey: null, skidL: null, skidR: null };
             this.carSprites.set(p.id, entry);
         }
         return entry;
@@ -790,6 +832,23 @@ class ArenaScene extends Phaser.Scene {
                 }
             }
 
+            // ─── Bouncy balloons (power-up) floating on strings around the car
+            const bumperLeft = p.bumperLeft || 0;
+            const balloonsOn = p.alive && p.bumper && !(bumperLeft < 1.5 && Math.floor(time / 110) % 2 === 0);
+            e.balloonPts = null;
+            const squish = Math.max(0, 1 - (time - e.squishAt) / 260);       // wobble after a bounce
+            for (let i = 0; i < e.balloons.length; i++) {
+                const b = e.balloons[i];
+                b.setVisible(balloonsOn);
+                if (!balloonsOn) continue;
+                const a = time * 0.0009 + (i / e.balloons.length) * Math.PI * 2;
+                const rr = (62 + 3 * Math.sin(time * 0.004 + i)) * sizeMult;
+                const bx = e.x + Math.cos(a) * rr, by = e.y + Math.sin(a) * rr * 0.92;
+                const sc = 0.5 * sizeMult * (1 + 0.25 * squish * Math.sin(time * 0.05 + i));
+                b.setPosition(bx, by).setScale(sc, sc * (1 - 0.15 * squish)).setRotation(a + Math.PI / 2);
+                (e.balloonPts = e.balloonPts || []).push([bx, by]);
+            }
+
             // ─── Exhaust / smoke / tire marks ───────────────────────────
             if (p.alive) {
                 const rearLen = 24 * sizeMult;
@@ -840,6 +899,7 @@ class ArenaScene extends Phaser.Scene {
                 e.sprite.destroy(); e.shadow.destroy(); e.label.destroy(); e.topper && e.topper.destroy();
                 e.glow.destroy(); e.beam.destroy(); e.brake.destroy();
                 e.saws.forEach(sw => sw.destroy());
+                e.balloons.forEach(b => b.destroy());
                 e.sawBlurs.forEach(sw => sw.destroy());
                 this.carSprites.delete(id);
             }
@@ -890,9 +950,14 @@ class ArenaScene extends Phaser.Scene {
             rg.strokeCircle(e.x, e.y, r);
         }
 
-        // Steel arms holding the saw blades
+        // Steel arms holding the saw blades (+ strings for balloons)
         const bgx = this.bladeGfx;
         bgx.clear();
+        for (const [, e] of this.carSprites) {
+            if (!e.balloonPts) continue;
+            bgx.lineStyle(1.5 / this.zoom, 0xffffff, 0.55);
+            for (const [bx, by] of e.balloonPts) bgx.lineBetween(e.x, e.y, bx, by);
+        }
         for (const [, e] of this.carSprites) {
             if (!e.bladeArms) continue;
             for (const [x0, y0, x1, y1] of e.bladeArms) {
@@ -913,6 +978,33 @@ class ArenaScene extends Phaser.Scene {
             hg2.fillRect(bx - 1.5 / this.zoom, by - 1.5 / this.zoom, w + 3 / this.zoom, h + 3 / this.zoom);
             hg2.fillStyle(hp > 60 ? 0x3ddc84 : hp > 30 ? 0xffc93d : 0xff4d4d, 1);
             hg2.fillRect(bx, by, w * hp / 100, h);
+        }
+
+        // Rocket lock-on: the rival your next FIRE will aim at (same rule as the server)
+        const lg = this.lockGfx;
+        lg.clear();
+        const meCar = this.carSprites.get(this.store.localId);
+        const meSnap = snap.players.find(q => q.id === this.store.localId);
+        if (meCar && meSnap && meSnap.alive && snap.live) {
+            const cars = [];
+            for (const [id, e] of this.carSprites) cars.push({ id, x: e.x, y: e.y, alive: e.alive });
+            const tgt = pickRocketTarget({ id: this.store.localId, x: meCar.x, y: meCar.y, angle: meCar.a }, cars);
+            if (tgt) {
+                const ready = !(meSnap.shootCooldown > 0);
+                const col = ready ? 0xff3d5a : 0x9aa3ad;
+                const r = (58 + 4 * Math.sin(time * 0.012)) * ((this.carSprites.get(tgt.id) || {}).sizeMult || 1);
+                const spin = time * 0.003;
+                lg.lineStyle(3 / this.zoom, col, ready ? 0.95 : 0.5);
+                for (let k = 0; k < 4; k++) {            // four bracket arcs
+                    const a0 = spin + k * Math.PI / 2;
+                    lg.beginPath(); lg.arc(tgt.x, tgt.y, r, a0, a0 + 0.9); lg.strokePath();
+                }
+                lg.lineStyle(2 / this.zoom, col, ready ? 0.9 : 0.4);
+                for (let k = 0; k < 4; k++) {            // tick marks pointing in
+                    const a = k * Math.PI / 2 + Math.PI / 4;
+                    lg.lineBetween(tgt.x + Math.cos(a) * (r + 10), tgt.y + Math.sin(a) * (r + 10), tgt.x + Math.cos(a) * (r - 8), tgt.y + Math.sin(a) * (r - 8));
+                }
+            }
         }
 
         // Explosion flash + shockwave rings

@@ -483,6 +483,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         {me.scale > 1.1 && <StatusPill label="MEGA" color="#ff3366" />}
                         {me.slip > 0 && <StatusPill label="OIL!" color="#ff8800" />}
                         {me.magnetTimer > 0 && <StatusPill label="MAGNET" color="#ffaa00" />}
+                        {me.bumper && <StatusPill label={`🎈 BALLOONS ${Math.ceil(me.bumperLeft || 0)}s`} color="#ff5fa2" />}
                         {me.blades && <StatusPill label={`⚙ BLADES ${Math.ceil(me.bladeLeft || 0)}s`} color="#ff6a3d" />}
                     </div>
                 )}
@@ -781,7 +782,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                             active={net.local ? net.local.nitro > 0 : me?.isDashing}
                             style={{ right: 'calc(var(--R) - var(--pw) * 0.025)', bottom: 'calc(var(--B) + var(--ph) + var(--g))' }} />
                         <PowerButton kind="fire" action="shoot" onAction={handleBtn} size="calc(var(--pw) * 0.95)"
-                            cooldown={me?.shootCooldown} maxCooldown={1.1}
+                            cooldown={me?.shootCooldown} maxCooldown={1.4}
                             style={{
                                 right: 'calc(var(--R) + var(--pw) + var(--g) + var(--pw) * 0.025)',
                                 bottom: 'calc(var(--B) + var(--pw) * 1.12 + var(--g) * 1.3)',
@@ -807,7 +808,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                             active={net.local ? net.local.nitro > 0 : me?.isDashing}
                             style={{ right: 'var(--R)', bottom: 'var(--B)' }} />
                         <PowerButton kind="fire" action="shoot" onAction={handleBtn} size="calc(var(--n) * 0.82)"
-                            cooldown={me?.shootCooldown} maxCooldown={1.1}
+                            cooldown={me?.shootCooldown} maxCooldown={1.4}
                             style={{ right: 'calc(var(--R) + var(--n) + var(--g))', bottom: 'calc(var(--B) + var(--n) * 0.3)' }} />
                         {me?.weapon && (
                             <PowerButton kind={me.weapon === 'oil' ? 'oil' : 'flip'} action="drop" onAction={handleBtn} size="calc(var(--n) * 0.68)"

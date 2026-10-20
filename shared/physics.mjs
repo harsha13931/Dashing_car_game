@@ -46,7 +46,8 @@ export function carSpec(p) {
     };
 }
 
-export function carMass(p) { return p.carStats.mass * p.scale * p.scale; }
+// Balloons power-up: you become very hard to shove while it's on
+export function carMass(p) { return p.carStats.mass * p.scale * p.scale * (p.bumperTimer > 0 ? 4 : 1); }
 
 export function carBox(p) {
     const size = p.carStats.size * p.scale;
@@ -287,4 +288,27 @@ export function stepCars(cars, R, { onPair, onFence, collides } = {}) {
             bounceFence(B, c);
         }
     }
+}
+
+// ─── Rocket targeting (shared so the lock-on marker matches the server) ──
+export const ROCKET_RANGE = 950;            // px
+export const ROCKET_CONE = 0.62;            // rad either side of the nose
+
+// Best target in front of the shooter: close and near the centre line.
+// cars: [{ id, x, y, alive }]  → the chosen car or null
+export function pickRocketTarget(shooter, cars) {
+    let best = null, bestScore = Infinity;
+    for (const c of cars) {
+        if (!c.alive || c.id === shooter.id) continue;
+        const dx = c.x - shooter.x, dy = c.y - shooter.y;
+        const d = Math.hypot(dx, dy);
+        if (d > ROCKET_RANGE || d < 20) continue;
+        let da = Math.atan2(dy, dx) - shooter.angle;
+        while (da > Math.PI) da -= Math.PI * 2;
+        while (da < -Math.PI) da += Math.PI * 2;
+        if (Math.abs(da) > ROCKET_CONE) continue;
+        const score = d + Math.abs(da) * 500;
+        if (score < bestScore) { bestScore = score; best = c; }
+    }
+    return best;
 }
