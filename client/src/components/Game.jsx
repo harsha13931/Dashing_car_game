@@ -85,6 +85,22 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
         socket.on('airdrop', () => soundManager.playPlane());
 
+        // Rockets + explosions: full volume for yours, quieter the further away
+        const distToFocus = (x, y) => {
+            const f = net.snap?.players?.find(p => p.id === (followRef.current || socket.id));
+            return f ? Math.hypot(f.x - x, f.y - y) : 9999;
+        };
+        socket.on('rocketFired', ({ id }) => {
+            const p = net.snap?.players?.find(q => q.id === id);
+            soundManager.playRocket(id === socket.id ? 1 : p ? Math.max(0, 0.5 - distToFocus(p.x, p.y) / 2000) : 0);
+        });
+        socket.on('explosion', ({ x, y, big, ids }) => {
+            const focus = followRef.current || socket.id;
+            const vol = ids && ids.includes(focus) ? 1 : Math.max(0.1, 1 - distToFocus(x, y) / 1200);
+            soundManager.playExplosion(vol, !!big);
+            if (ids && ids.includes(socket.id)) soundManager.vibrate(big ? [120, 60, 220] : 140);
+        });
+
         socket.on('collision', ({ impact, ids, type }) => {
             // Only your own car's hits (or the car you're watching) make noise
             const focus = followRef.current || socket.id;
@@ -165,6 +181,8 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             unsub();
             clearInterval(audioTimer);
             socket.off('airdrop');
+            socket.off('rocketFired');
+            socket.off('explosion');
             socket.off('collision');
             socket.off('powerupCollected');
             socket.off('playerEliminated');
@@ -216,7 +234,6 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         if (inputRef.current.forward !== forward || inputRef.current.steer !== steer ||
             inputRef.current.dash !== dash || inputRef.current.shoot !== shoot ||
             inputRef.current.drop !== drop) {
-            if (shoot && !inputRef.current.shoot) soundManager.playShoot();
             if (dash && !inputRef.current.dash) soundManager.playDash();
             inputRef.current = { forward, steer, dash, shoot, drop };
             seqRef.current++;
@@ -386,9 +403,10 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                             borderLeft: `3px solid ${e.id === socket.id ? '#ff3344' : e.byId === socket.id ? '#4f4' : '#e8a030'}`,
                             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}>
-                            {e.by ? <><b style={{ color: e.byId === socket.id ? '#4f4' : '#fff' }}>{e.byId === socket.id ? 'You' : e.by}</b> knocked out </> : ''}
+                            {e.by ? <><b style={{ color: e.byId === socket.id ? '#4f4' : '#fff' }}>{e.byId === socket.id ? 'You' : e.by}</b>{e.reason === 'wrecked' ? ' wrecked ' : ' knocked out '}</> : ''}
                             <b style={{ color: e.id === socket.id ? '#ff5566' : '#fff' }}>{e.id === socket.id ? 'you' : e.name}</b>
-                            {!e.by && (e.reason === 'electric' ? ' got zapped ⚡' : ' crashed out')}
+                            {!e.by && (e.reason === 'electric' ? ' got zapped ⚡' : e.reason === 'wrecked' ? ' blew up' : ' crashed out')}
+                            {e.reason === 'wrecked' ? ' 💥' : ''}
                         </div>
                     ))}
                 </div>
@@ -463,6 +481,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         {me.scale > 1.1 && <StatusPill label="MEGA" color="#ff3366" />}
                         {me.slip > 0 && <StatusPill label="OIL!" color="#ff8800" />}
                         {me.magnetTimer > 0 && <StatusPill label="MAGNET" color="#ffaa00" />}
+                        {me.blades && <StatusPill label="BLADES" color="#c9d2dd" />}
                     </div>
                 )}
 
@@ -477,7 +496,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                     }}>
                         ELIMINATED
                         <div style={{ fontSize: '0.9rem', color: '#ccc', fontWeight: 600, textShadow: '0 2px 4px #000' }}>
-                            {myElim?.by ? `Knocked out by ${myElim.by}` : myElim?.reason === 'electric' ? 'Zapped by the electric fence' : 'You left the arena'}
+                            {outReason(myElim)}
 
                         </div>
                     </div>
@@ -651,7 +670,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                             You finished #{soloOut.rank} of {soloOut.total}
                         </div>
                         <div style={{ color: '#aab', fontSize: '0.85rem', marginTop: 4 }}>
-                            {soloOut.by ? `Knocked out by ${soloOut.by}` : soloOut.reason === 'electric' ? 'Zapped by the electric fence' : 'You left the arena'}
+                            {outReason(soloOut)}
                         </div>
                         <div style={{ color: '#e8a030', fontSize: '0.8rem', marginTop: 18, letterSpacing: 1 }}>Returning to lobby…</div>
                     </div>
@@ -685,7 +704,11 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
             {/* ─── Touch Controls (touch devices only, while you're driving) ─ */}
             {touchUI && (!me || meAlive) && !matchData && !soloOut && (
-                <>
+                <div style={{
+                    position: 'absolute', inset: 0, zIndex: 6, pointerEvents: 'none',
+                    '--lift': 'clamp(20px, 7vh, 40px)',      /* raised off the bottom edge */
+                    '--side': 'clamp(18px, 3.5vw, 40px)',    /* and in from the sides */
+                }}>
                     {ctrlMode === 'joystick' ? (
                         <>
                             {/* Dynamic joystick zone: left half of the screen */}
@@ -726,71 +749,67 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                             )}
                         </>
                     ) : (
-                        /* Steering buttons (left thumb) */
+                        /* Steering buttons (left thumb), lifted off the screen edge */
                         <div style={{
-                            position: 'absolute', left: EDGE_LEFT, bottom: EDGE_BOTTOM,
-                            zIndex: 6, pointerEvents: 'auto', display: 'flex', gap: 'clamp(18px, 6vmin, 30px)',
+                            position: 'absolute', zIndex: 6, pointerEvents: 'auto', display: 'flex',
+                            left: `calc(${EDGE_LEFT} + var(--side))`, bottom: `calc(${EDGE_BOTTOM} + var(--lift))`,
+                            gap: 'clamp(16px, 5vmin, 26px)',
                         }}>
-                            <DirButton label="◀" action="left" onAction={handleBtn} />
-                            <DirButton label="▶" action="right" onAction={handleBtn} />
+                            <SteerButton dir={-1} action="left" onAction={handleBtn} />
+                            <SteerButton dir={1} action="right" onAction={handleBtn} />
                         </div>
                     )}
 
-                    {/* Right thumb: GAS + BRAKE pedals, power buttons above them */}
+                    {/* Right thumb: GAS + BRAKE pedals, NITRO / FIRE / trap above them */}
                     {ctrlMode !== 'joystick' ? (
                     <div style={{
                         position: 'absolute', inset: 0, zIndex: 6, pointerEvents: 'none',
-                        '--pw': 'clamp(58px, 17vmin, 78px)',
+                        '--pw': 'clamp(62px, 18vmin, 84px)',
                         '--ph': 'calc(var(--pw) * 1.5)',
-                        '--s': 'clamp(50px, 14vmin, 64px)',
-                        '--g': 'clamp(18px, 6vmin, 30px)',          /* breathing room between buttons */
+                        '--g': 'clamp(14px, 4.5vmin, 24px)',
+                        '--R': `calc(${EDGE_RIGHT} + var(--side))`,
+                        '--B': `calc(${EDGE_BOTTOM} + var(--lift))`,
                     }}>
-                        <Pedal label="GAS" color="#37d67a" action="gas" onAction={handleBtn}
-                            style={{ right: EDGE_RIGHT, bottom: EDGE_BOTTOM, height: 'var(--ph)' }} />
-                        <Pedal label="BRAKE" color="#ff4d5e" action="brake" onAction={handleBtn}
-                            style={{ right: `calc(${EDGE_RIGHT} + var(--pw) + var(--g))`, bottom: EDGE_BOTTOM, height: 'calc(var(--pw) * 1.1)' }} />
-                        <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
-                            cooldown={net.local ? net.local.dashCooldown : me?.dashCooldown} maxCooldown={NITRO_COOLDOWN} size="var(--pw)" fontSize="0.8rem"
-                            style={{ right: EDGE_RIGHT, bottom: `calc(${EDGE_BOTTOM} + var(--ph) + var(--g))` }} />
-                        <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
-                            cooldown={me?.shootCooldown} maxCooldown={0.8} size="var(--s)" fontSize="0.72rem"
+                        <PedalButton kind="gas" action="gas" onAction={handleBtn}
+                            style={{ right: 'var(--R)', bottom: 'var(--B)', height: 'var(--ph)' }} />
+                        <PedalButton kind="brake" action="brake" onAction={handleBtn}
+                            style={{ right: 'calc(var(--R) + var(--pw) + var(--g))', bottom: 'var(--B)', height: 'calc(var(--pw) * 1.12)' }} />
+                        <PowerButton kind="nitro" action="nitro" onAction={handleBtn} size="calc(var(--pw) * 1.05)"
+                            cooldown={net.local ? net.local.dashCooldown : me?.dashCooldown} maxCooldown={NITRO_COOLDOWN}
+                            active={net.local ? net.local.nitro > 0 : me?.isDashing}
+                            style={{ right: 'calc(var(--R) - var(--pw) * 0.025)', bottom: 'calc(var(--B) + var(--ph) + var(--g))' }} />
+                        <PowerButton kind="fire" action="shoot" onAction={handleBtn} size="calc(var(--pw) * 0.95)"
+                            cooldown={me?.shootCooldown} maxCooldown={1.1}
                             style={{
-                                right: `calc(${EDGE_RIGHT} + var(--pw) + var(--g) * 1.5)`,
-                                bottom: `calc(${EDGE_BOTTOM} + var(--pw) * 1.1 + var(--g) * 1.5)`,
+                                right: 'calc(var(--R) + var(--pw) + var(--g) + var(--pw) * 0.025)',
+                                bottom: 'calc(var(--B) + var(--pw) * 1.12 + var(--g) * 1.3)',
                             }} />
                         {me?.weapon && (
-                            <ActionButton label={me.weapon === 'oil' ? 'OIL' : 'FLIP'} color="#b24aff"
-                                action="drop" onAction={handleBtn} size="var(--s)" fontSize="0.7rem"
+                            <PowerButton kind={me.weapon === 'oil' ? 'oil' : 'flip'} action="drop" onAction={handleBtn} size="calc(var(--pw) * 0.8)"
                                 style={{
-                                    right: `calc(${EDGE_RIGHT} + (var(--pw) - var(--s)) / 2)`,
-                                    bottom: `calc(${EDGE_BOTTOM} + var(--ph) + var(--pw) + var(--g) * 2)`,
+                                    right: 'calc(var(--R) + var(--pw) * 2 + var(--g) * 2.2)',
+                                    bottom: 'calc(var(--B) + var(--pw) * 0.2)',
                                 }} />
                         )}
                     </div>
                     ) : (
                     <div style={{
                         position: 'absolute', inset: 0, zIndex: 6, pointerEvents: 'none',
-                        '--n': 'clamp(68px, 21vmin, 96px)',
-                        '--s': 'clamp(54px, 16vmin, 74px)',
-                        '--d': 'clamp(46px, 13vmin, 62px)',
-                        '--g': 'clamp(18px, 6vmin, 30px)',
+                        '--n': 'clamp(70px, 21vmin, 96px)',
+                        '--g': 'clamp(16px, 5vmin, 26px)',
+                        '--R': `calc(${EDGE_RIGHT} + var(--side))`,
+                        '--B': `calc(${EDGE_BOTTOM} + var(--lift))`,
                     }}>
-                        <ActionButton label="NITRO" color="#00ccff" action="nitro" onAction={handleBtn}
-                            cooldown={net.local ? net.local.dashCooldown : me?.dashCooldown} maxCooldown={NITRO_COOLDOWN} size="var(--n)" fontSize="0.9rem"
-                            style={{ right: EDGE_RIGHT, bottom: EDGE_BOTTOM }} />
-                        <ActionButton label="SHOOT" color="#ff2255" action="shoot" onAction={handleBtn}
-                            cooldown={me?.shootCooldown} maxCooldown={0.8} size="var(--s)"
-                            style={{
-                                right: `calc(${EDGE_RIGHT} + var(--n) + var(--g))`,
-                                bottom: `calc(${EDGE_BOTTOM} + var(--n) * 0.32)`,
-                            }} />
+                        <PowerButton kind="nitro" action="nitro" onAction={handleBtn} size="var(--n)"
+                            cooldown={net.local ? net.local.dashCooldown : me?.dashCooldown} maxCooldown={NITRO_COOLDOWN}
+                            active={net.local ? net.local.nitro > 0 : me?.isDashing}
+                            style={{ right: 'var(--R)', bottom: 'var(--B)' }} />
+                        <PowerButton kind="fire" action="shoot" onAction={handleBtn} size="calc(var(--n) * 0.82)"
+                            cooldown={me?.shootCooldown} maxCooldown={1.1}
+                            style={{ right: 'calc(var(--R) + var(--n) + var(--g))', bottom: 'calc(var(--B) + var(--n) * 0.3)' }} />
                         {me?.weapon && (
-                            <ActionButton label={me.weapon === 'oil' ? 'OIL' : 'FLIP'} color="#b24aff"
-                                action="drop" onAction={handleBtn} size="var(--d)" fontSize="0.72rem"
-                                style={{
-                                    right: `calc(${EDGE_RIGHT} + var(--n) * 0.35)`,
-                                    bottom: `calc(${EDGE_BOTTOM} + var(--n) + var(--g))`,
-                                }} />
+                            <PowerButton kind={me.weapon === 'oil' ? 'oil' : 'flip'} action="drop" onAction={handleBtn} size="calc(var(--n) * 0.68)"
+                                style={{ right: 'calc(var(--R) + var(--n) * 0.16)', bottom: 'calc(var(--B) + var(--n) + var(--g))' }} />
                         )}
                     </div>
                     )}
@@ -808,8 +827,11 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                     >
                         {ctrlMode === 'joystick' ? '⇄ Pedals' : '⇄ Joystick'}
                     </button>
-                </>
+                </div>
             )}
+
+            {/* ─── Your health ──────────────────────────────────────────── */}
+            {me && meAlive && !matchData && <HealthHud hp={me.hp ?? 100} touchUI={touchUI} />}
 
             {/* Desktop keyboard hint */}
             {!touchUI && (
@@ -837,6 +859,13 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             )}
         </div>
     );
+}
+
+function outReason(e) {
+    if (!e) return 'You left the arena';
+    if (e.reason === 'wrecked') return e.by ? `Wrecked by ${e.by} 💥` : 'Your car blew up 💥';
+    if (e.by) return `Knocked out by ${e.by}`;
+    return e.reason === 'electric' ? 'Zapped by the electric fence' : 'You left the arena';
 }
 
 // ─── Sub-components ─────────────────────────────────────────────────────
@@ -909,36 +938,129 @@ function useHold(action, onAction) {
     }];
 }
 
-function DirButton({ label, action, onAction }) {
+function SteerButton({ dir, action, onAction }) {
     const [down, handlers] = useHold(action, onAction);
     return (
         <div {...handlers} style={{
-            width: 'clamp(62px, 18vmin, 84px)', height: 'clamp(62px, 18vmin, 84px)', borderRadius: 16,
-            background: down ? 'rgba(232,160,48,0.3)' : 'rgba(255,255,255,0.07)',
-            border: '2px solid rgba(232,160,48,0.6)', color: '#e8a030', fontSize: '1.6rem',
+            width: 'clamp(70px, 20vmin, 92px)', height: 'clamp(64px, 18vmin, 84px)', borderRadius: 22,
+            background: down
+                ? 'linear-gradient(180deg, #ffb84d, #e8860c)'
+                : 'linear-gradient(180deg, rgba(58,66,82,0.92), rgba(24,29,39,0.92))',
+            border: '2px solid rgba(255,190,90,0.75)',
+            boxShadow: down
+                ? '0 1px 0 #8a4f00, 0 0 22px rgba(255,170,40,0.6), inset 0 2px 6px rgba(255,255,255,0.35)'
+                : '0 6px 0 rgba(0,0,0,0.55), 0 10px 18px rgba(0,0,0,0.35), inset 0 2px 0 rgba(255,255,255,0.12)',
+            transform: down ? 'translateY(5px)' : 'none', transition: 'transform 0.05s, background 0.05s',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            transform: down ? 'scale(0.94)' : 'none', transition: 'transform 0.05s, background 0.05s',
             userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none',
-        }}>{label}</div>
+        }}>
+            <svg width="46%" height="46%" viewBox="0 0 24 24" style={{ transform: dir < 0 ? 'scaleX(-1)' : 'none', pointerEvents: 'none' }}>
+                <path d="M7 3 L18 12 L7 21 Z" fill={down ? '#3b2300' : '#ffb84d'} stroke={down ? '#3b2300' : '#ffd99a'} strokeWidth="1.5" strokeLinejoin="round" />
+            </svg>
+        </div>
     );
 }
 
-// Tall pedal-style button (GAS / BRAKE)
-function Pedal({ label, color, action, onAction, style }) {
+// Metal pedal with grip ridges (GAS / BRAKE)
+function PedalButton({ kind, action, onAction, style }) {
     const [down, handlers] = useHold(action, onAction);
+    const color = kind === 'gas' ? '#37d67a' : '#ff4d5e';
     return (
         <div {...handlers} style={{
-            position: 'absolute', pointerEvents: 'auto', width: 'var(--pw)', borderRadius: 14,
-            background: down
-                ? `linear-gradient(180deg, ${color}66, ${color}33)`
-                : `repeating-linear-gradient(180deg, ${color}22 0 6px, ${color}10 6px 12px)`,
-            border: `2px solid ${color}`, color, fontWeight: 900, fontSize: '0.78rem', letterSpacing: 1,
-            display: 'flex', alignItems: 'flex-end', justifyContent: 'center', paddingBottom: 10, boxSizing: 'border-box',
-            boxShadow: down ? `0 0 18px ${color}88` : `0 0 10px ${color}33`,
-            transform: down ? 'scale(0.96)' : 'none', transition: 'transform 0.05s, box-shadow 0.05s',
+            position: 'absolute', pointerEvents: 'auto', width: 'var(--pw)', borderRadius: '16px 16px 20px 20px',
+            background: `linear-gradient(180deg, #59616e 0%, #3a414c 45%, #262b33 100%)`,
+            border: `2px solid ${color}`,
+            boxShadow: down
+                ? `0 1px 0 rgba(0,0,0,0.6), 0 0 26px ${color}, inset 0 0 18px ${color}66`
+                : `0 6px 0 rgba(0,0,0,0.55), 0 0 12px ${color}55, inset 0 2px 0 rgba(255,255,255,0.18)`,
+            transform: down ? 'translateY(5px) scale(0.98)' : 'none',
+            transformOrigin: '50% 100%', transition: 'transform 0.05s, box-shadow 0.05s',
+            overflow: 'hidden', userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none',
+            ...style,
+        }}>
+            {/* rubber grip ridges */}
+            <div style={{
+                position: 'absolute', left: '14%', right: '14%', top: '12%', bottom: '30%', borderRadius: 8,
+                background: `repeating-linear-gradient(180deg, rgba(0,0,0,0.45) 0 5px, rgba(255,255,255,0.10) 5px 7px, rgba(0,0,0,0) 7px 11px)`,
+            }} />
+            <div className="gtitle" style={{
+                position: 'absolute', left: 0, right: 0, bottom: 8, textAlign: 'center',
+                fontSize: '0.78rem', color, textShadow: `0 0 8px ${color}aa, 0 2px 0 #000`,
+            }}>{kind === 'gas' ? 'GAS' : 'BRAKE'}</div>
+        </div>
+    );
+}
+
+const POWER_LOOK = {
+    nitro: { color: '#25c6ff', label: 'NITRO', icon: 'M12 2 C13 7 18 8 17 14 C16.5 18 14 21 12 22 C10 21 7.5 18 7 14 C6.6 10.5 9 9 9.5 6 C11 8 11.5 9.5 11 11 C13 9.5 13 5.5 12 2 Z' },
+    fire: { color: '#ff3d5a', label: 'FIRE', icon: 'M20 4 L14 5 L6 13 L5 17 L3 19 L5 21 L7 19 L11 18 L19 10 Z M8.5 15.5 L7 17 M14.5 7 L17 9.5' },
+    oil: { color: '#c08a4a', label: 'OIL', icon: 'M12 3 C15 8 18 11 18 15 A6 6 0 0 1 6 15 C6 11 9 8 12 3 Z' },
+    flip: { color: '#b24aff', label: 'FLIP', icon: 'M5 12 A7 7 0 0 1 17 7 L17 4 L21 8 L17 12 L17 9 A5 5 0 0 0 7 12 Z M19 12 A7 7 0 0 1 7 17 L7 20 L3 16 L7 12 L7 15 A5 5 0 0 0 17 12 Z' },
+};
+
+// Round power button with an icon and a ring that fills up as it recharges
+function PowerButton({ kind, action, onAction, cooldown = 0, maxCooldown = 1, active = false, size, style }) {
+    const [down, handlers] = useHold(action, onAction);
+    const look = POWER_LOOK[kind] || POWER_LOOK.fire;
+    const ready = !cooldown || cooldown <= 0;
+    const frac = ready ? 1 : Math.max(0, 1 - cooldown / maxCooldown);
+    const C = 2 * Math.PI * 45;
+    return (
+        <div {...handlers} style={{
+            position: 'absolute', pointerEvents: 'auto', width: size, height: size, borderRadius: '50%',
+            background: `radial-gradient(circle at 50% 30%, ${look.color}55, rgba(14,18,26,0.92) 70%)`,
+            boxShadow: ready
+                ? `0 6px 0 rgba(0,0,0,0.5), 0 0 ${active ? 30 : 16}px ${look.color}${active ? 'cc' : '66'}`
+                : '0 6px 0 rgba(0,0,0,0.5)',
+            transform: down ? 'translateY(4px) scale(0.96)' : 'none', transition: 'transform 0.05s',
+            animation: active ? 'powerPulse 0.5s ease-in-out infinite alternate' : 'none',
             userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none',
             ...style,
-        }}>{label}</div>
+        }}>
+            <svg viewBox="0 0 100 100" width="100%" height="100%" style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+                <circle cx="50" cy="50" r="45" fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="6" />
+                <circle cx="50" cy="50" r="45" fill="none" stroke={ready ? look.color : `${look.color}99`} strokeWidth="6"
+                    strokeLinecap="round" strokeDasharray={`${C * frac} ${C}`} transform="rotate(-90 50 50)" />
+                <g transform="translate(27 17) scale(1.9)">
+                    {kind === 'fire' ? (
+                        /* crosshair */
+                        <g fill="none" stroke={ready ? look.color : '#59606b'} strokeWidth="2.2" strokeLinecap="round">
+                            <circle cx="12" cy="12" r="7" />
+                            <path d="M12 1.5 V6 M12 18 V22.5 M1.5 12 H6 M18 12 H22.5" />
+                            <circle cx="12" cy="12" r="1.6" fill={ready ? look.color : '#59606b'} stroke="none" />
+                        </g>
+                    ) : (
+                        <path d={look.icon} fill={ready ? look.color : '#59606b'} stroke={ready ? '#ffffff88' : 'none'} strokeWidth="0.8" strokeLinejoin="round" />
+                    )}
+                </g>
+                <text x="50" y="83" textAnchor="middle" fontSize="13" fontFamily="Russo One, Arial Black, sans-serif"
+                    fill={ready ? '#fff' : '#8a93a0'}>{look.label}</text>
+            </svg>
+        </div>
+    );
+}
+
+// Your health bar (bottom centre, between the thumbs)
+function HealthHud({ hp, touchUI }) {
+    const v = Math.max(0, Math.min(100, hp));
+    const col = v > 60 ? '#3ddc84' : v > 30 ? '#ffc93d' : '#ff4d4d';
+    return (
+        <div style={{
+            position: 'absolute', left: '50%', transform: 'translateX(-50%)', zIndex: 6, pointerEvents: 'none',
+            bottom: `calc(${EDGE_BOTTOM} + ${touchUI ? '6px' : '40px'})`,
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
+            background: 'rgba(0,0,0,0.55)', borderRadius: 20, border: `1px solid ${col}66`,
+            animation: v <= 30 ? 'lowHp 0.6s ease-in-out infinite alternate' : 'none',
+        }}>
+            <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 21 C5 15 2 12 2 8 A5 5 0 0 1 12 6 A5 5 0 0 1 22 8 C22 12 19 15 12 21 Z" fill={col} /></svg>
+            <div style={{ width: 'clamp(110px, 22vw, 200px)', height: 12, borderRadius: 6, background: 'rgba(255,255,255,0.12)', overflow: 'hidden' }}>
+                <div style={{
+                    width: `${v}%`, height: '100%', borderRadius: 6, transition: 'width 0.2s, background 0.2s',
+                    background: `linear-gradient(180deg, ${col}, ${col}aa)`, boxShadow: `0 0 10px ${col}`,
+                }} />
+            </div>
+            <span className="gtitle" style={{ color: '#fff', fontSize: '0.8rem', minWidth: 28, textAlign: 'right' }}>{Math.ceil(v)}</span>
+        </div>
     );
 }
 
@@ -952,39 +1074,3 @@ function SpecButton({ label, onClick }) {
     );
 }
 
-function ActionButton({ label, color, action, onAction, cooldown = 0, maxCooldown = 1, size = 75, fontSize = '0.8rem', style }) {
-    const ready = !cooldown || cooldown <= 0;
-    const pct = ready ? 0 : (cooldown / maxCooldown) * 100;
-
-    return (
-        <div
-            onPointerDown={e => { e.preventDefault(); onAction(action, true); }}
-            onPointerUp={e => { e.preventDefault(); onAction(action, false); }}
-            onPointerLeave={e => { e.preventDefault(); onAction(action, false); }}
-            onPointerCancel={e => { e.preventDefault(); onAction(action, false); }}
-            style={{
-                position: 'absolute', pointerEvents: 'auto',
-                width: size, height: size,
-                borderRadius: '50%',
-                background: `radial-gradient(circle at 50% 35%, ${color}40, ${color}14)`,
-                border: `2px solid ${ready ? color : '#444'}`,
-                color: ready ? color : '#555',
-                fontSize, fontWeight: 'bold', letterSpacing: '0.5px',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none',
-                overflow: 'hidden',
-                transition: 'border-color 0.2s, color 0.2s',
-                boxShadow: ready ? `0 0 16px ${color}40, inset 0 0 12px ${color}22` : 'none',
-                ...style,
-            }}
-        >
-            {label}
-            {pct > 0 && (
-                <div style={{
-                    position: 'absolute', bottom: 0, left: 0, width: '100%', height: `${pct}%`,
-                    background: 'rgba(0,0,0,0.5)', borderRadius: '50%', pointerEvents: 'none'
-                }} />
-            )}
-        </div>
-    );
-}

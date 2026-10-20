@@ -8,7 +8,7 @@
 import { DT, CAR_TYPES, driveCar, stepCars } from '../../../shared/physics.mjs';
 import { socket } from './socket';
 
-const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet'];
+const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades'];
 const WEAPONS = [null, 'oil', 'reverse'];
 const HAZARDS = ['oil', 'reverse'];
 export const PLANE_SPEED = 560;     // must match the server
@@ -109,15 +109,15 @@ class NetClient {
                 id: r.id, name: r.name, isBot: r.isBot, carType: r.carType, cosmetics: r.cosmetics,
                 x: a[1], y: a[2], angle: a[3], vx: a[4], vy: a[5], av: a[6],
                 alive: !!(a[7] & 1), shield: !!(a[7] & 2), isDashing: !!(a[7] & 4),
-                skid: !!(a[7] & 8), magnetTimer: (a[7] & 16) ? 1 : 0,
+                skid: !!(a[7] & 8), magnetTimer: (a[7] & 16) ? 1 : 0, blades: !!(a[7] & 32),
                 dashCooldown: a[8], shootCooldown: a[9], nitro: a[10], slip: a[11], stun: a[12],
-                speedMult: a[13] / 100, scale: a[14] / 100, weapon: WEAPONS[a[15]] || null, kills: a[16],
+                speedMult: a[13] / 100, scale: a[14] / 100, weapon: WEAPONS[a[15]] || null, kills: a[16], hp: a[17] ?? 100,
             });
         }
         const snap = {
             players,
             powerups: m.u.map(([id, t, x, y, ld]) => ({ id, type: PU_TYPES[t], x, y, landAt: m.t + ld })),
-            projectiles: m.j.map(([x, y, vx, vy]) => ({ x, y, vx, vy })),
+            projectiles: m.j.map(([id, x, y, vx, vy]) => ({ id, x, y, vx, vy })),
             hazards: m.h.map(([id, t, x, y]) => ({ id, type: HAZARDS[t], x, y })),
             planes: m.pl.map(([id, x, y, angle]) => ({ id, x, y, angle })),
             timestamp: m.t,
@@ -269,4 +269,4 @@ class NetClient {
 export const net = new NetClient();
 
 // Handy for debugging in the browser console
-if (typeof window !== 'undefined') window.__dashNet = net;
+if (typeof window !== 'undefined') { window.__dashNet = net; window.__dashSocket = socket; }
