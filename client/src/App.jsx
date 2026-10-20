@@ -121,6 +121,8 @@ export default function App() {
                 />
             )}
 
+            <RotatePrompt />
+
             {notice && (
                 <div style={{
                     position: 'fixed', top: 'max(14px, env(safe-area-inset-top))', left: '50%',
@@ -130,6 +132,40 @@ export default function App() {
                     boxShadow: '0 6px 24px rgba(0,0,0,0.5)',
                 }}>{notice}</div>
             )}
+        </div>
+    );
+}
+
+// Phones play in landscape only: in portrait, cover everything with a prompt
+function RotatePrompt() {
+    const check = () => {
+        const touch = (navigator.maxTouchPoints || 0) > 0 || window.matchMedia?.('(pointer: coarse)').matches;
+        return touch && window.innerHeight > window.innerWidth && Math.min(window.innerWidth, window.innerHeight) < 900;
+    };
+    const [portrait, setPortrait] = useState(check);
+    useEffect(() => {
+        const on = () => setPortrait(check());
+        window.addEventListener('resize', on);
+        window.addEventListener('orientationchange', on);
+        return () => { window.removeEventListener('resize', on); window.removeEventListener('orientationchange', on); };
+    }, []);
+    if (!portrait) return null;
+    return (
+        <div style={{
+            position: 'fixed', inset: 0, zIndex: 100, display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 22, padding: 24, textAlign: 'center',
+            background: 'radial-gradient(ellipse at 50% 40%, #22304a 0%, #0a0d13 75%)',
+        }}>
+            <div style={{ animation: 'rotatePhone 2.2s ease-in-out infinite' }}>
+                <svg width="90" height="90" viewBox="0 0 64 64">
+                    <rect x="20" y="6" width="24" height="44" rx="5" fill="none" stroke="#ffc53d" strokeWidth="3.5" />
+                    <circle cx="32" cy="44" r="2.2" fill="#ffc53d" />
+                </svg>
+            </div>
+            <div className="gtitle" style={{ fontSize: '1.4rem', color: '#ffc53d' }}>ROTATE YOUR PHONE</div>
+            <div style={{ color: '#aab6c6', fontSize: '0.95rem', maxWidth: 280 }}>
+                Dash Arena plays in landscape. Turn your phone sideways to continue.
+            </div>
         </div>
     );
 }

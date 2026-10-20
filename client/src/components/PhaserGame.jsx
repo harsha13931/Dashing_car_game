@@ -147,6 +147,61 @@ function makePlaneCanvas() {
     return c;
 }
 
+function makeRocketCanvas() {
+    const W = 70, H = 24;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    // Fins
+    g.fillStyle = '#3b3f46';
+    g.beginPath(); g.moveTo(10, 12); g.lineTo(2, 1); g.lineTo(18, 7); g.closePath(); g.fill();
+    g.beginPath(); g.moveTo(10, 12); g.lineTo(2, 23); g.lineTo(18, 17); g.closePath(); g.fill();
+    // Body
+    const bg = g.createLinearGradient(0, 6, 0, 18);
+    bg.addColorStop(0, '#f2f4f6'); bg.addColorStop(0.5, '#c9ced6'); bg.addColorStop(1, '#8a929e');
+    g.fillStyle = bg; g.fillRect(8, 6.5, 44, 11);
+    // Nose cone
+    g.fillStyle = '#d6312f';
+    g.beginPath(); g.moveTo(52, 6.5); g.quadraticCurveTo(68, 12, 52, 17.5); g.closePath(); g.fill();
+    // Band + nozzle
+    g.fillStyle = '#d6312f'; g.fillRect(30, 6.5, 4, 11);
+    g.fillStyle = '#2a2d33'; g.fillRect(4, 8.5, 5, 7);
+    return c;
+}
+
+function makeSawCanvas() {
+    const S = 64;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    g.translate(S / 2, S / 2);
+    const teeth = 18;
+    g.beginPath();
+    for (let i = 0; i < teeth; i++) {
+        const a0 = (i / teeth) * Math.PI * 2, a1 = ((i + 0.6) / teeth) * Math.PI * 2;
+        g.lineTo(Math.cos(a0) * 24, Math.sin(a0) * 24);
+        g.lineTo(Math.cos(a1) * 31, Math.sin(a1) * 31);
+    }
+    g.closePath();
+    const sg = g.createRadialGradient(-6, -6, 2, 0, 0, 31);
+    sg.addColorStop(0, '#f4f6f9'); sg.addColorStop(0.6, '#aab3bf'); sg.addColorStop(1, '#6b7480');
+    g.fillStyle = sg; g.fill();
+    g.strokeStyle = '#4b525c'; g.lineWidth = 1.5; g.stroke();
+    g.fillStyle = '#d6312f'; g.beginPath(); g.arc(0, 0, 8, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#3a3f47';
+    for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI * 2;
+        g.beginPath(); g.arc(Math.cos(a) * 15, Math.sin(a) * 15, 3.5, 0, Math.PI * 2); g.fill();
+    }
+    return c;
+}
+
+function mixColor(a, b, t) {
+    const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+    const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+    return (Math.round(ar + (br - ar) * t) << 16) | (Math.round(ag + (bg - ag) * t) << 8) | Math.round(ab + (bb - ab) * t);
+}
+
 function makeCrateCanvas() {
     const S = 64;
     const c = document.createElement('canvas');
@@ -225,6 +280,20 @@ const POWERUP_META = {
         c.beginPath(); c.moveTo(s * 0.5, s * 0.22);
         c.quadraticCurveTo(s * 0.74, s * 0.56, s * 0.5, s * 0.8);
         c.quadraticCurveTo(s * 0.26, s * 0.56, s * 0.5, s * 0.22); c.closePath(); c.fill();
+    } },
+    Repair: { color: '#2fbf5f', label: '+40 HEALTH', icon: (c, s) => { // first-aid cross
+        c.fillRect(s * 0.42, s * 0.24, s * 0.16, s * 0.52);
+        c.fillRect(s * 0.24, s * 0.42, s * 0.52, s * 0.16);
+    } },
+    Blades: { color: '#8f9aa8', label: 'BLADES!', icon: (c, s) => { // saw blade
+        c.beginPath();
+        for (let i = 0; i < 16; i++) {
+            const a = (i / 16) * Math.PI * 2, r = i % 2 ? s * 0.2 : s * 0.29;
+            c.lineTo(s * 0.5 + Math.cos(a) * r, s * 0.5 + Math.sin(a) * r);
+        }
+        c.closePath(); c.fill();
+        c.fillStyle = 'rgba(0,0,0,0.45)';
+        c.beginPath(); c.arc(s * 0.5, s * 0.5, s * 0.07, 0, Math.PI * 2); c.fill();
     } },
     Reverse: { color: '#a24aff', label: 'REVERSE!', icon: (c, s) => { // circular arrows
         c.lineWidth = s * 0.1; c.strokeStyle = c.fillStyle;
@@ -323,6 +392,9 @@ class ArenaScene extends Phaser.Scene {
         this.textures.addCanvas('crate', makeCrateCanvas());
         this.textures.addCanvas('chute', makeChuteCanvas());
         this.planeSprites = new Map();
+        this.textures.addCanvas('rocket', makeRocketCanvas());
+        this.textures.addCanvas('saw', makeSawCanvas());
+        this.rocketSprites = new Map();
 
         // Asphalt ground as a large tiled sprite centered on the world origin
         this.textures.addCanvas('asphalt', makeAsphaltCanvas());
@@ -368,6 +440,31 @@ class ArenaScene extends Phaser.Scene {
             blendMode: 'ADD', emitting: false,
         }).setDepth(8);
 
+        // Damage + explosion effects
+        this.darkSmoke = this.add.particles(0, 0, 'puff', {
+            speed: { min: 10, max: 40 }, angle: { min: 0, max: 360 }, gravityY: -25,
+            scale: { start: 0.55, end: 2.3 }, alpha: { start: 0.75, end: 0 },
+            lifespan: 1400, tint: 0x3b3836, blendMode: 'NORMAL', emitting: false,
+        }).setDepth(7);
+        this.fire = this.add.particles(0, 0, 'puff', {
+            speed: { min: 15, max: 60 }, angle: { min: 0, max: 360 }, gravityY: -40,
+            scale: { start: 0.55, end: 0 }, alpha: { start: 0.95, end: 0 },
+            lifespan: 450, tint: [0xffe08a, 0xff9d2a, 0xff4a1a], blendMode: 'ADD', emitting: false,
+        }).setDepth(7.5);
+        this.blast = this.add.particles(0, 0, 'puff', {
+            speed: { min: 60, max: 340 }, angle: { min: 0, max: 360 },
+            scale: { start: 1.3, end: 0 }, alpha: { start: 1, end: 0 },
+            lifespan: 520, tint: [0xfff3b0, 0xffb347, 0xff5a1a, 0xd62a12], blendMode: 'ADD', emitting: false,
+        }).setDepth(9);
+        this.rocketTrail = this.add.particles(0, 0, 'puff', {
+            speed: { min: 2, max: 18 }, angle: { min: 0, max: 360 },
+            scale: { start: 0.28, end: 0.9 }, alpha: { start: 0.45, end: 0 },
+            lifespan: 700, tint: 0xcfcfcf, blendMode: 'NORMAL', emitting: false,
+        }).setDepth(5.5);
+        this.hpGfx = this.add.graphics().setDepth(8);
+        this.boomGfx = this.add.graphics().setDepth(9.5);
+        this.booms = [];
+
         // Camera
         this.cameras.main.setBackgroundColor('#0a0d13');
         this.zoom = this.baseZoom();
@@ -407,6 +504,19 @@ class ArenaScene extends Phaser.Scene {
                 onComplete: () => t.destroy(),
             });
         };
+        this._onExplosion = ({ x, y, big, ids }) => {
+            const n = big ? 60 : 36;
+            this.blast.emitParticleAt(x, y, n);
+            this.darkSmoke.emitParticleAt(x, y, big ? 26 : 14);
+            this.spark.emitParticleAt(x, y, big ? 30 : 18);
+            this.booms.push({ x, y, t: 0, r: big ? 170 : 130 });
+            const focus = this.store.followId || this.store.localId;
+            const me = this.carSprites.get(focus);
+            const near = me ? Math.hypot(me.x - x, me.y - y) : 9999;
+            if ((ids && ids.includes(focus)) || near < 260) this.cameras.main.shake(260, big ? 0.02 : 0.014);
+            else if (near < 700) this.cameras.main.shake(160, 0.005);
+        };
+        socket.on('explosion', this._onExplosion);
         socket.on('collision', this._onCollision);
         socket.on('playerEliminated', this._onEliminated);
         socket.on('powerupCollected', this._onPickup);
@@ -473,7 +583,8 @@ class ArenaScene extends Phaser.Scene {
                 fontFamily: 'Arial, sans-serif', fontSize: '15px', color: '#fff',
                 stroke: '#000', strokeThickness: 3,
             }).setOrigin(0.5, 1).setDepth(7);
-            entry = { sprite, shadow, topper, label, x: p.x, y: p.y, a: p.angle, topperKey: null, skidL: null, skidR: null };
+            const saws = [0, 1].map(() => this.add.image(p.x, p.y, 'saw').setDepth(5.2).setVisible(false));
+            entry = { sprite, shadow, topper, label, saws, x: p.x, y: p.y, a: p.angle, topperKey: null, skidL: null, skidR: null };
             this.carSprites.set(p.id, entry);
         }
         return entry;
@@ -530,11 +641,13 @@ class ArenaScene extends Phaser.Scene {
             e.sprite.setScale(scale);
             e.sprite.setPosition(e.x, e.y);
             e.sprite.setRotation(rot);
-            e.sprite.setAlpha(p.alive ? 1 : 0.35);
+            const hp = p.hp ?? 100;
+            const wrecked = !p.alive && hp <= 0;          // blown up, not pushed out
+            e.sprite.setAlpha(p.alive || wrecked ? 1 : 0.35);
             e.shadow.setScale(scale);
             e.shadow.setPosition(e.x + 5, e.y + 8);
             e.shadow.setRotation(rot);
-            e.shadow.setVisible(p.alive);
+            e.shadow.setVisible(p.alive || wrecked);
 
             // Paint: custom color, else slot color (tinted neutral car)
             const cos = p.cosmetics || null;
@@ -542,7 +655,10 @@ class ArenaScene extends Phaser.Scene {
             // bots (no cosmetics) → a slot color so they're easy to tell apart
             const paintHex = (cos && (paintColor(cos.paint) || CAR_COLOR[p.carType])) || SLOT_HEX[colorForId(p.id)];
             e.tintInt = hexToInt(paintHex);
-            e.sprite.setTint(p.alive ? e.tintInt : 0x777777);
+            // Damage shows on the body: paint darkens and burns as health drops
+            const dmg = 1 - Math.max(0, Math.min(100, hp)) / 100;
+            e.sprite.setTint(wrecked ? 0x2a2522 : p.alive ? mixColor(e.tintInt, 0x1d1b1a, dmg * 0.55) : 0x777777);
+            e.hp = hp; e.wrecked = wrecked;
             e.alive = p.alive;
             e.isMe = p.id === this.store.localId;
             e.sizeMult = sizeMult;
@@ -568,6 +684,40 @@ class ArenaScene extends Phaser.Scene {
             e.label.setText(p.id === this.store.localId ? `★ ${p.name || ''}` : watched ? `👁 ${p.name || ''}` : (p.name || ''));
             e.label.setColor(p.id === this.store.localId ? '#8fe3ff' : watched ? '#ffd27a' : '#ffffff');
             e.label.setVisible(p.alive);
+
+            // ─── Damage smoke / fire from the engine bay ───────────────
+            if (p.alive || wrecked) {
+                const hx = e.x + Math.cos(e.a) * 26 * sizeMult, hy = e.y + Math.sin(e.a) * 26 * sizeMult;
+                const tk = this._tick || 0;
+                if (wrecked) {
+                    if (tk % 2 === 0) this.darkSmoke.emitParticleAt(e.x, e.y, 1);
+                    if (tk % 3 === 0) this.fire.emitParticleAt(e.x + (Math.random() - 0.5) * 30, e.y + (Math.random() - 0.5) * 30, 1);
+                } else if (hp < 22) {
+                    if (tk % 2 === 0) this.fire.emitParticleAt(hx, hy, 1);
+                    if (tk % 3 === 0) this.darkSmoke.emitParticleAt(hx, hy, 1);
+                    if (tk % 40 === 0) this.spark.emitParticleAt(hx, hy, 3);
+                } else if (hp < 45) {
+                    if (tk % 4 === 0) this.darkSmoke.emitParticleAt(hx, hy, 1);
+                    if (tk % 70 === 0) this.spark.emitParticleAt(hx, hy, 2);
+                } else if (hp < 70) {
+                    if (tk % 7 === 0) this.smoke.emitParticleAt(hx, hy, 1);
+                }
+            }
+
+            // ─── Spinning saw blades (power-up) on both sides ──────────
+            const bladesOn = p.alive && p.blades;
+            for (let i = 0; i < 2; i++) {
+                const saw = e.saws[i];
+                saw.setVisible(bladesOn);
+                if (!bladesOn) continue;
+                const side = i ? 1 : -1, off = 42 * sizeMult;
+                const fwd = 10 * sizeMult;
+                saw.setPosition(
+                    e.x + Math.cos(e.a) * fwd - Math.sin(e.a) * off * side,
+                    e.y + Math.sin(e.a) * fwd + Math.cos(e.a) * off * side);
+                saw.setScale(0.85 * sizeMult);
+                saw.rotation += (side * delta) / 1000 * 22;
+            }
 
             // ─── Exhaust / smoke / tire marks ───────────────────────────
             if (p.alive) {
@@ -617,6 +767,7 @@ class ArenaScene extends Phaser.Scene {
         for (const [id, e] of this.carSprites) {
             if (!seen.has(id)) {
                 e.sprite.destroy(); e.shadow.destroy(); e.label.destroy(); e.topper && e.topper.destroy();
+                e.saws.forEach(sw => sw.destroy());
                 this.carSprites.delete(id);
             }
         }
@@ -666,6 +817,36 @@ class ArenaScene extends Phaser.Scene {
             rg.strokeCircle(e.x, e.y, r);
         }
 
+        // Health bars above every car
+        const hg2 = this.hpGfx;
+        hg2.clear();
+        for (const [, e] of this.carSprites) {
+            if (!e.alive) continue;
+            const hp = Math.max(0, Math.min(100, e.hp ?? 100));
+            const w = 50 / this.zoom * 0.85, h = 6 / this.zoom * 0.85;
+            const bx = e.x - w / 2, by = e.y - 50 * (e.sizeMult || 1) - 2 / this.zoom;
+            hg2.fillStyle(0x000000, 0.6);
+            hg2.fillRect(bx - 1.5 / this.zoom, by - 1.5 / this.zoom, w + 3 / this.zoom, h + 3 / this.zoom);
+            hg2.fillStyle(hp > 60 ? 0x3ddc84 : hp > 30 ? 0xffc93d : 0xff4d4d, 1);
+            hg2.fillRect(bx, by, w * hp / 100, h);
+        }
+
+        // Explosion flash + shockwave rings
+        const bg = this.boomGfx;
+        bg.clear();
+        for (let i = this.booms.length - 1; i >= 0; i--) {
+            const b = this.booms[i];
+            b.t += delta / 1000;
+            const k2 = b.t / 0.45;
+            if (k2 >= 1) { this.booms.splice(i, 1); continue; }
+            bg.fillStyle(0xff7a1a, 0.5 * (1 - k2));
+            bg.fillCircle(b.x, b.y, b.r * 0.7 * (0.5 + k2));
+            bg.fillStyle(0xffe6a0, 0.8 * (1 - k2) * (1 - k2));
+            bg.fillCircle(b.x, b.y, b.r * 0.35 * (0.4 + k2));
+            bg.lineStyle(6 * (1 - k2) + 1, 0xffe0a0, 0.8 * (1 - k2));
+            bg.strokeCircle(b.x, b.y, b.r * (0.3 + k2 * 1.1));
+        }
+
         // Arrows on the screen edge pointing at rivals you can't see
         const ag = this.arrowGfx;
         ag.clear();
@@ -673,7 +854,7 @@ class ArenaScene extends Phaser.Scene {
             const halfW = cam.width / 2 / this.zoom, halfH = cam.height / 2 / this.zoom;
             // Keep arrows clear of the HUD: more room at the top (timer, minimap)
             const z = this.zoom, size = 13 / z;
-            const limL = halfW - 34 / z, limR = halfW - 34 / z, limT = halfH - 112 / z, limB = halfH - 40 / z;
+            const limL = halfW - 34 / z, limR = halfW - 34 / z, limT = halfH - 112 / z, limB = halfH - 86 / z;   // clear of the health bar + controls
             for (const [id, e] of this.carSprites) {
                 if (!e.alive || id === focusId) continue;
                 const dx = e.x - this.camX, dy = e.y - this.camY;
@@ -770,17 +951,27 @@ class ArenaScene extends Phaser.Scene {
             if (!plSeen.has(id)) { d.plane.destroy(); d.shadow.destroy(); this.planeSprites.delete(id); }
         }
 
-        // Projectiles (moved forward from the last snapshot)
-        const jg = this.projectileGfx;
-        jg.clear();
+        // Rockets (moved forward from the last snapshot) with flame + smoke trail
+        const rSeen = new Set();
         for (const pr of (snap.projectiles || [])) {
-            jg.fillStyle(0xffcc33, 1);
-            jg.fillCircle(pr.x + pr.vx * sinceSnap, pr.y + pr.vy * sinceSnap, 5);
+            rSeen.add(pr.id);
+            let r = this.rocketSprites.get(pr.id);
+            if (!r) { r = this.add.image(pr.x, pr.y, 'rocket').setDepth(6); this.rocketSprites.set(pr.id, r); }
+            const x = pr.x + pr.vx * sinceSnap, y = pr.y + pr.vy * sinceSnap;
+            const ang = Math.atan2(pr.vy, pr.vx);
+            r.setPosition(x, y).setRotation(ang).setScale(0.85);
+            const tx = x - Math.cos(ang) * 30, ty = y - Math.sin(ang) * 30;
+            this.flame.emitParticleAt(tx, ty, 2);
+            this.rocketTrail.emitParticleAt(tx, ty, 1);
+        }
+        for (const [id, r] of this.rocketSprites) {
+            if (!rSeen.has(id)) { r.destroy(); this.rocketSprites.delete(id); }
         }
     }
 
     shutdownScene() {
         socket.off('collision', this._onCollision);
+        socket.off('explosion', this._onExplosion);
         socket.off('playerEliminated', this._onEliminated);
         socket.off('powerupCollected', this._onPickup);
     }

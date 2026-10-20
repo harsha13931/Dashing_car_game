@@ -229,6 +229,10 @@ class SoundManager {
                 { type: 'triangle', dur: 0.12 + k * 0.25, vol: (0.06 + k * 0.08) / (i + 1), at: 0.004 }));
         }
         if (type === 'projectile') this._noise({ dur: 0.12, vol: 0.3, type: 'highpass', freq: 2500 });
+        if (type === 'blade') {       // saw grinding metal
+            this._noise({ dur: 0.35, vol: 0.35, type: 'bandpass', freq: 3800, endFreq: 2200, q: 4 });
+            this._tone(1900, { type: 'sawtooth', dur: 0.25, vol: 0.05, glide: 1400 });
+        }
     }
 
     playPowerup() {
@@ -312,6 +316,24 @@ class SoundManager {
         });
         lfo.start(t); lfo.stop(t + dur + 0.1);
         oscs[0].onended = () => out.disconnect();
+    }
+
+    // Rocket launch: ignition pop + rushing whoosh
+    playRocket(vol = 1) {
+        this._tone(160, { type: 'square', dur: 0.08, vol: 0.12 * vol, glide: 60 });
+        this._noise({ dur: 0.55, vol: 0.32 * vol, type: 'bandpass', freq: 900, endFreq: 2600, q: 0.9 });
+    }
+
+    // Explosion: deep boom + crackling debris, louder when it's close to you
+    playExplosion(vol = 1, big = false) {
+        if (!this.ctx) return;
+        this.resume();
+        const v = Math.max(0.05, Math.min(1, vol));
+        this._tone(big ? 70 : 90, { type: 'sine', dur: big ? 0.9 : 0.6, vol: 0.7 * v, glide: 28 });
+        this._noise({ dur: big ? 1.2 : 0.8, vol: 0.6 * v, freq: 1800, endFreq: 120, q: 0.7 });
+        for (let i = 0; i < 5; i++) {
+            this._noise({ dur: 0.05, vol: 0.12 * v, type: 'highpass', freq: 2500, at: 0.08 + Math.random() * 0.4 });
+        }
     }
 
     playArenaWarning() {

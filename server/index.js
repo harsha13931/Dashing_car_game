@@ -107,6 +107,9 @@ function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 's
         shield: false,
         shieldTimer: 0,
         megaTimer: 0,
+        hp: 100,               // health — 0 = wrecked
+        bladeTimer: 0,         // spinning saw blades power-up
+        bladeHits: {},         // victim id → last blade hit time
         speedTimer: 0,
         inputs: { forward: 0, steer: 0, dash: false, shoot: false, drop: false },
         lastProcessedInput: 0,
@@ -209,6 +212,9 @@ function resetPlayers(room) {
         p.shield = false;
         p.shieldTimer = 0;
         p.megaTimer = 0;
+        p.hp = 100;
+        p.bladeTimer = 0;
+        p.bladeHits = {};
         p.speedTimer = 0;
         p.slip = 0;
         p.scale = 1;
@@ -340,7 +346,19 @@ function updateBotAI(bot, room, now) {
     // Decide target
     let targetX, targetY, targetType = 'roam';
 
-    switch (bs.personality) {
+    // Badly damaged: go for a repair kit first
+    let repairKit = null, repairDist = Infinity;
+    if (bot.hp < 45) {
+        for (const pu of powerups) {
+            if (pu.type !== 'Repair' || pu.landAt > now + 600) continue;
+            const d = Math.hypot(pu.x - bot.x, pu.y - bot.y);
+            if (d < repairDist) { repairKit = pu; repairDist = d; }
+        }
+    }
+
+    if (repairKit) {
+        targetX = repairKit.x; targetY = repairKit.y; targetType = 'powerup';
+    } else switch (bs.personality) {
         case 'aggressive':
             // Ram the nearest enemy, prefer weak ones near edge
             if (weakestEdgeDist < 200 && weakestEnemy) {
@@ -485,6 +503,13 @@ function applyPowerup(type, player, room) {
         case 'Reverse':
             player.weapon = 'reverse';  // held trap; deploy with Drop
             break;
+        case 'Repair':
+            player.hp = Math.min(100, player.hp + 40);   // health pack
+            break;
+        case 'Blades':
+            player.bladeTimer = 8;                      // spinning saws for 8 s
+            player.bladeHits = {};
+            break;
         case 'Magnet':
             // Pull nearby powerups toward player for 3 seconds (handled in tick)
             player.magnetTimer = 3;
@@ -517,6 +542,7 @@ function tickTimers(p) {
     if (p.megaTimer > 0) { p.megaTimer -= DT; if (p.megaTimer <= 0) { p.scale = 1; if (p.speedTimer <= 0) p.speedMult = 1; } }
     if (p.speedTimer > 0) { p.speedTimer -= DT; if (p.speedTimer <= 0 && p.megaTimer <= 0) p.speedMult = 1; }
     if (p.magnetTimer > 0) p.magnetTimer -= DT;
+    if (p.bladeTimer > 0) p.bladeTimer -= DT;
 }
 
 function addPlayer(room, p) {
@@ -759,6 +785,46 @@ function addFx(fx, key, ev) {
     if (!cur || ev.impact > cur.impact) fx.set(key, ev);
 }
 
+// ─── Health, rockets, blades ──────────────────────────────────────────────
+const ROCKET_SPEED = 900;           // px/s
+const ROCKET_LIFE_MS = 1400;
+const BLAST_RADIUS = 120;
+const ROCKET_DIRECT_DMG = 15;
+const ROCKET_SPLASH_DMG = 9;
+const BLADE_DMG = 7;
+const BLADE_HIT_EVERY_MS = 350;
+
+function damage(room, p, amount, attacker, now) {
+    if (!p.alive || amount <= 0) return;
+    if (p.shield) amount *= 0.25;                     // shield soaks most of it
+    p.hp = Math.max(0, p.hp - amount);
+    if (attacker && attacker !== p) { markHit(p, attacker, now); attacker.damageDealt += amount; }
+    if (p.hp <= 0) {
+        p.vx *= 0.2; p.vy *= 0.2;
+        eliminate(p, room, now, 'wrecked');
+        io.to(room.id).emit('explosion', { x: p.x, y: p.y, big: 1, ids: [p.id] });
+    }
+}
+
+function explode(room, x, y, owner, direct, now) {
+    const hit = [];
+    for (const p of Object.values(room.players)) {
+        if (!p.alive) continue;
+        const d = Math.hypot(p.x - x, p.y - y);
+        const isDirect = p === direct;
+        if (!isDirect && (d > BLAST_RADIUS || (owner && p.id === owner.id))) continue;
+        const fall = isDirect ? 1 : 1 - d / BLAST_RADIUS;
+        const push = (isDirect ? 430 : 330 * fall) / PHYS.carMass(p);
+        const nx = d > 1 ? (p.x - x) / d : 1, ny = d > 1 ? (p.y - y) / d : 0;
+        p.vx += nx * push; p.vy += ny * push;
+        p.av += (Math.random() - 0.5) * 4 * fall;
+        p.stun = Math.max(p.stun || 0, 0.15 + 0.25 * fall);
+        hit.push(p.id);
+        damage(room, p, isDirect ? ROCKET_DIRECT_DMG : ROCKET_SPLASH_DMG * fall, owner, now);
+    }
+    io.to(room.id).emit('explosion', { x, y, ids: hit });
+}
+
 function updateArena(room, now) {
     const t = Math.max(0, (now - room.matchStartTime) / 1000);
     const R0 = room.settings.arenaRadius;
@@ -777,8 +843,8 @@ function updateArena(room, now) {
 }
 
 // ─── Air drops: a cargo plane crosses the arena and drops crates ─────────
-const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet'];
-const PU_WEIGHTS = [25, 20, 15, 15, 10, 15];
+const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades'];
+const PU_WEIGHTS = [20, 16, 12, 12, 8, 10, 20, 14];
 const PLANE_SPEED = 560;            // px/s
 const PLANE_EVERY_MS = 8000;
 const PLANE_MARGIN = 750;           // start/end this far outside the fence
@@ -851,12 +917,12 @@ function sendSnapshot(room, now) {
         p: Object.values(room.players).map(p => [
             p.num, r1(p.x), r1(p.y), Math.round(p.angle * 1000) / 1000,
             Math.round(p.vx), Math.round(p.vy), r2(p.av),
-            (p.alive ? 1 : 0) | (p.shield ? 2 : 0) | (p.nitro > 0 ? 4 : 0) | (p.skid ? 8 : 0) | (p.magnetTimer > 0 ? 16 : 0),
+            (p.alive ? 1 : 0) | (p.shield ? 2 : 0) | (p.nitro > 0 ? 4 : 0) | (p.skid ? 8 : 0) | (p.magnetTimer > 0 ? 16 : 0) | (p.bladeTimer > 0 ? 32 : 0),
             r2(p.dashCooldown), r1(p.shootCooldown), r2(p.nitro), r2(p.slip), r2(p.stun),
-            Math.round(p.speedMult * 100), Math.round(p.scale * 100), WEAPON_CODE[p.weapon] || 0, p.kills,
+            Math.round(p.speedMult * 100), Math.round(p.scale * 100), WEAPON_CODE[p.weapon] || 0, p.kills, Math.ceil(p.hp),
         ]),
         u: room.powerups.map(pu => [pu.id, PU_TYPES.indexOf(pu.type), Math.round(pu.x), Math.round(pu.y), Math.max(0, Math.round(pu.landAt - now))]),
-        j: room.projectiles.map(pr => [Math.round(pr.x), Math.round(pr.y), Math.round(pr.vx), Math.round(pr.vy)]),
+        j: room.projectiles.map(pr => [pr.id, Math.round(pr.x), Math.round(pr.y), Math.round(pr.vx), Math.round(pr.vy)]),
         h: room.hazards.map(hz => [hz.id, hz.type === 'oil' ? 0 : 1, Math.round(hz.x), Math.round(hz.y)]),
         pl: room.planes.map(pl => {
             const d = ((now - pl.t0) / 1000) * PLANE_SPEED;
@@ -943,7 +1009,7 @@ function tickRoom(room, roomId, now) {
 
         // Shoot
         if (inp.shoot && p.shootCooldown <= 0 && room.projectiles.length < MAX_PROJECTILES) {
-            const speed = 1150;
+            const speed = ROCKET_SPEED;
             room.projectiles.push({
                 id: ++room._uid,
                 ownerId: p.id,
@@ -953,8 +1019,9 @@ function tickRoom(room, roomId, now) {
                 vy: Math.sin(p.angle) * speed + p.vy,
                 created: now
             });
-            p.shootCooldown = 0.8;
+            p.shootCooldown = 1.1;
             p.shotsFired++;
+            io.to(room.id).emit('rocketFired', { id: p.id });
         }
 
         // Magnet: pull nearby (landed) powerups
@@ -983,6 +1050,17 @@ function tickRoom(room, roomId, now) {
             if (r.bPushesA) markHit(a, b, now);
             if (r.impact > 60) { a.damageDealt += r.impact * 0.5; b.damageDealt += r.impact * 0.5; }
             if (r.impact > 90) addFx(fx, a.id < b.id ? a.id + b.id : b.id + a.id, { impact: r.impact, x: r.cx, y: r.cy, type: 'car', ids: [a.id, b.id] });
+            // Crash damage: harder hits hurt more, heavy cars hurt light ones,
+            // and whoever did the ramming takes less
+            if (r.impact > 160) {
+                const base = Math.min(16, (r.impact - 160) * 0.022);
+                const mA = PHYS.carMass(a), mB = PHYS.carMass(b);
+                let dA = base * Math.min(1.6, mB / mA), dB = base * Math.min(1.6, mA / mB);
+                if (r.aPushesB && !r.bPushesA) dA *= 0.4;
+                else if (r.bPushesA && !r.aPushesB) dB *= 0.4;
+                damage(room, b, dB, r.aPushesB ? a : null, now);
+                damage(room, a, dA, r.bPushesA ? b : null, now);
+            }
         },
         onFence: (B, c) => {
             const p = B.p;
@@ -994,6 +1072,10 @@ function tickRoom(room, roomId, now) {
                 else { eliminate(p, room, now, room.suddenDeath ? 'electric' : 'fence'); return false; }
             }
             if (c.vn > 140) addFx(fx, 'wall' + p.id, { impact: c.vn, x: c.x, y: c.y, type: 'wall', ids: [p.id] });
+            if (c.vn > 260) {                       // slamming the barrier dents you too
+                damage(room, p, (c.vn - 260) * 0.015, pushed ? room.players[p.lastHitBy] : null, now);
+                if (!p.alive) return false;
+            }
             return true;
         },
     });
@@ -1023,31 +1105,47 @@ function tickRoom(room, roomId, now) {
         proj.x += proj.vx * DT;
         proj.y += proj.vy * DT;
 
-        if (Math.hypot(proj.x, proj.y) > room.arenaR + 40 || now - proj.created > 1300) {
+        // Rockets blow up on the fence or when their fuel runs out
+        if (Math.hypot(proj.x, proj.y) > room.arenaR || now - proj.created > ROCKET_LIFE_MS) {
             room.projectiles.splice(i, 1);
+            explode(room, proj.x, proj.y, room.players[proj.ownerId], null, now);
             continue;
         }
 
         for (const id in room.players) {
             const p = room.players[id];
             if (!p.alive || p.id === proj.ownerId) continue;
-            if (Math.hypot(p.x - proj.x, p.y - proj.y) < 34 * p.scale * p.carStats.size) {
-                const ang = Math.atan2(proj.vy, proj.vx);
-                const force = (p.shield ? 160 : 420) / PHYS.carMass(p);
-                p.vx += Math.cos(ang) * force;
-                p.vy += Math.sin(ang) * force;
-                p.av += (Math.random() - 0.5) * 3;
-                p.stun = Math.max(p.stun || 0, 0.25);
-
-                const shooter = room.players[proj.ownerId];
-                if (shooter) { shooter.damageDealt += force; markHit(p, shooter, now); }
-
+            if (Math.hypot(p.x - proj.x, p.y - proj.y) < 36 * p.scale * p.carStats.size) {
                 room.projectiles.splice(i, 1);
-                io.to(room.id).emit('collision', { impact: 260, x: p.x, y: p.y, type: 'projectile', ids: [p.id] });
+                explode(room, proj.x, proj.y, room.players[proj.ownerId], p, now);
                 break;
             }
         }
     }
+    if (!room.running) return;
+
+    // ─── Spinning blades: shred anyone who touches the sides ───────────
+    {
+        const alive = Object.values(room.players).filter(p => p.alive);
+        for (const a of alive) {
+            if (a.bladeTimer <= 0) continue;
+            const reachA = PHYS.CAR_HALF_LEN * a.carStats.size * a.scale + 24;
+            for (const b of alive) {
+                if (b === a || !b.alive) continue;
+                const d = Math.hypot(b.x - a.x, b.y - a.y);
+                const reachB = PHYS.CAR_HALF_WID * b.carStats.size * b.scale + 12;
+                if (d > reachA + reachB || d < 1) continue;
+                if (now - (a.bladeHits[b.id] || 0) < BLADE_HIT_EVERY_MS) continue;
+                a.bladeHits[b.id] = now;
+                const push = 240 / PHYS.carMass(b);
+                b.vx += (b.x - a.x) / d * push; b.vy += (b.y - a.y) / d * push;
+                b.stun = Math.max(b.stun || 0, 0.3);
+                io.to(room.id).emit('collision', { impact: 320, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, type: 'blade', ids: [b.id, a.id] });
+                damage(room, b, BLADE_DMG, a, now);
+            }
+        }
+    }
+    if (!room.running) return;
 
     // ─── Trap hazards (dropped Oil / Reverse) ──────────────────────────
     if (room.hazards && room.hazards.length) {

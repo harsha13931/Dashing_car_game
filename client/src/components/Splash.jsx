@@ -117,12 +117,18 @@ export default function Splash({ connected, onDone }) {
         soundManager.resume();
         soundManager.playClick();
         const el = document.documentElement;
+        // Fullscreen + lock to landscape (Android). iPhones can't lock from a
+        // web page, so App shows a "rotate your phone" screen in portrait.
+        const lockLandscape = () => {
+            try { screen.orientation?.lock?.('landscape')?.catch?.(() => {}); } catch (_) { /* ignore */ }
+        };
         try {
             const req = el.requestFullscreen || el.webkitRequestFullscreen;
             if (req && !document.fullscreenElement) {
                 const p = req.call(el, { navigationUI: 'hide' });
-                if (p && p.catch) p.catch(() => {});
-            }
+                if (p && p.then) p.then(lockLandscape).catch(() => {});
+                else lockLandscape();
+            } else lockLandscape();
         } catch (_) { /* not supported (e.g. iPhone) */ }
         if (!socket.connected) socket.connect();
         onDone();
@@ -171,7 +177,7 @@ export default function Splash({ connected, onDone }) {
             <div style={{
                 position: 'absolute', bottom: 'max(10px, env(safe-area-inset-bottom))', left: 0, right: 0,
                 textAlign: 'center', fontSize: '0.65rem', color: '#556', pointerEvents: 'none',
-            }}>Best in landscape · Car art by Kenney (CC0)</div>
+            }}>Landscape game · Car art by Kenney (CC0)</div>
         </div>
     );
 }
