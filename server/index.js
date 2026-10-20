@@ -794,8 +794,11 @@ const HIT_WINDOW_MS = 2000;         // how long after a shove you still count as
 const SHRINK_START = 25;            // s — arena starts closing in
 const SHRINK_END = 75;              // s — fully shrunk; fence turns electric (sudden death)
 const FINAL_END = 120;              // s — slow final squeeze
+const OVERTIME_END = 150;            // s — overtime: ring closes right in, so a round always ends
 const SHRINK_FRAC = 0.5;
 const FINAL_FRAC = 0.3;
+const OVERTIME_FRAC = 0.1;
+const ZAP_DPS = 20;                 // electric fence burns cars resting against it
 const SNAPSHOT_EVERY = 3;           // ticks → 20 snapshots a second (clients predict / smooth between)
 
 function markHit(victim, attacker, now) {
@@ -881,11 +884,27 @@ function updateArena(room, now) {
     const t = Math.max(0, (now - room.matchStartTime) / 1000);
     const R0 = room.settings.arenaRadius;
     let frac = 1;
-    if (t >= SHRINK_END) frac = SHRINK_FRAC + (FINAL_FRAC - SHRINK_FRAC) * Math.min(1, (t - SHRINK_END) / (FINAL_END - SHRINK_END));
+    if (t >= FINAL_END) frac = FINAL_FRAC + (OVERTIME_FRAC - FINAL_FRAC) * Math.min(1, (t - FINAL_END) / (OVERTIME_END - FINAL_END));
+    else if (t >= SHRINK_END) frac = SHRINK_FRAC + (FINAL_FRAC - SHRINK_FRAC) * Math.min(1, (t - SHRINK_END) / (FINAL_END - SHRINK_END));
     else if (t >= SHRINK_START) frac = 1 + (SHRINK_FRAC - 1) * (t - SHRINK_START) / (SHRINK_END - SHRINK_START);
     room.arenaR = R0 * frac;
     const wasSD = room.suddenDeath;
     room.suddenDeath = t >= SHRINK_END;
+    // Hiding against the electric fence isn't safe either — it slowly fries you
+    if (room.suddenDeath) {
+        for (const p of Object.values(room.players)) {
+            if (!p.alive) continue;
+            const reach = PHYS.CAR_HALF_WID * p.carStats.size * p.scale + 4;
+            if (Math.hypot(p.x, p.y) + reach < room.arenaR) continue;
+            const pushed = now - (p.lastHitAt || 0) < HIT_WINDOW_MS;
+            damage(room, p, ZAP_DPS * DT, pushed ? room.players[p.lastHitBy] : null, now);
+            if (!p._zapFx || now - p._zapFx > 400) {
+                p._zapFx = now;
+                const a = Math.atan2(p.y, p.x);
+                io.to(room.id).emit('collision', { impact: 150, x: Math.cos(a) * room.arenaR, y: Math.sin(a) * room.arenaR, type: 'wall', ids: [p.id] });
+            }
+        }
+    }
     if (room.suddenDeath && !wasSD) io.to(room.id).emit('arenaEvent', { type: 'suddenDeath' });
     if (t >= SHRINK_START && !room._shrinkAnnounced) {
         room._shrinkAnnounced = true;

@@ -132,7 +132,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
         socket.on('arenaEvent', ({ type }) => {
             const b = type === 'suddenDeath'
-                ? { title: 'SUDDEN DEATH', sub: 'The fence is electric — touch it and you\'re out!', color: '#4fd8ff' }
+                ? { title: 'SUDDEN DEATH', sub: 'The fence is electric — hit it and you\'re out, lean on it and it burns', color: '#4fd8ff' }
                 : { title: 'ARENA SHRINKING', sub: 'Stay inside the fence', color: '#ffb347' };
             setBanner(b);
             soundManager.playArenaWarning();

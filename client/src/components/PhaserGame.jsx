@@ -34,10 +34,8 @@ function cssToInt(col) {
     return 0xffa000;
 }
 // ─── Car art ───────────────────────────────────────────────────────────────
-const TYPE_SIZE = {             // matches server carStats.size for hitbox accuracy
-    sports: 0.9, muscle: 1.1, truck: 1.4, rally: 0.95,
-    kart: 0.7, suv: 1.2, drift: 0.95, supercar: 0.85,
-};
+// Same sizes the physics uses, so what you see is what you hit
+const TYPE_SIZE = Object.fromEntries(Object.entries(CAR_TYPES).map(([k, c]) => [k, c.size]));
 // The physics box is 88×46 world px × size; the drawn car is 264×144 px,
 // so this scale makes what you see match what you hit.
 const CAR_SCALE = 92.4 / CAR_TEX_H;
