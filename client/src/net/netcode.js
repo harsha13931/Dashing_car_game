@@ -5,7 +5,7 @@
 // says. Other cars are extrapolated from their last known speed and smoothed,
 // so they glide between the 20 updates a second.
 
-import { DT, CAR_TYPES, driveCar, stepCars } from '../../../shared/physics.mjs';
+import { DT, CAR_TYPES, driveCar, stepCars, arenaEnv, ARENA_KEYS, ARENAS } from '../../../shared/physics.mjs';
 import { socket } from './socket';
 
 const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades', 'Bumper'];
@@ -129,6 +129,8 @@ class NetClient {
             round: m.rd, maxRounds: m.mr,
             live: !!m.lv,
             fenceLock: m.fl || 0,
+            arena: ARENA_KEYS[m.ak] || 'classic',
+            barAngle: m.ba || 0,
         };
         this.snap = snap;
 
@@ -163,12 +165,23 @@ class NetClient {
         return out;
     }
 
+    // The arena at server time tau (the windmill bar keeps turning between snapshots)
+    envAt(tau) {
+        const s = this.snap;
+        if (!s) return arenaEnv('classic', 850);
+        const bar = ARENAS[s.arena] && ARENAS[s.arena].bar;
+        const ang = bar && s.live ? s.barAngle + bar.speed * Math.max(0, (tau - s.timestamp) / 1000) : s.barAngle;
+        return arenaEnv(s.arena, s.arenaRadius, ang);
+    }
+
     simStep(car, input, tau) {
-        driveCar(car, input);
-        const R = this.snap ? this.snap.arenaRadius : 850;
+        const env = this.envAt(tau);
+        driveCar(car, input, env);
         const obs = this.obstacles(tau, car);
-        stepCars(obs.length ? [car, ...obs] : [car], R, {
+        stepCars(obs.length ? [car, ...obs] : [car], env, {
             collides: (a, b) => a === car || b === car,
+            // the sinkhole rim only holds while the fence is locked (same rule as the server)
+            onFence: (B, c) => !c.pit || (this.snap && this.snap.fenceLock > 0),
         });
     }
 

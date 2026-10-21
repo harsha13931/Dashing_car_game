@@ -5,7 +5,7 @@ import { trailColor, drawTopper, TOPPERS } from '../cosmetics';
 import { renderCar, renderShadow, renderBrakeGlow, lookKey, resolveLook, CAR_TEX_H } from '../carRender';
 import { PAINTS, underglowColor } from '../cosmetics';
 import { net, PLANE_SPEED, DROP_FALL_MS } from '../net/netcode';
-import { pickRocketTarget, CAR_TYPES } from '../../../shared/physics.mjs';
+import { pickRocketTarget, CAR_TYPES, ARENAS, arenaEnv } from '../../../shared/physics.mjs';
 
 function hexToInt(hex) {
     if (!hex || hex[0] !== '#') return 0xffffff;
@@ -174,6 +174,43 @@ function makeRocketCanvas() {
 }
 
 // Industrial circular saw: dark steel, hooked teeth, cut-outs, bolted hub
+// Windmill bar: a long steel beam with hazard stripes (scaled to the arena)
+function makeBarCanvas() {
+    const W = 1024, H = 48, c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    const body = g.createLinearGradient(0, 4, 0, H - 4);
+    body.addColorStop(0, '#c9ced6'); body.addColorStop(0.45, '#8a909a'); body.addColorStop(1, '#4b5059');
+    g.fillStyle = body;
+    g.beginPath(); g.roundRect(0, 4, W, H - 8, 10); g.fill();
+    // hazard stripes on both ends
+    g.save(); g.beginPath(); g.roundRect(0, 4, W, H - 8, 10); g.clip();
+    for (const [x0, x1] of [[0, 150], [W - 150, W]]) {
+        g.fillStyle = '#ffc21a'; g.fillRect(x0, 4, x1 - x0, H - 8);
+        g.fillStyle = '#1a1a1a';
+        for (let x = x0 - 40; x < x1; x += 36) { g.beginPath(); g.moveTo(x, H); g.lineTo(x + 18, H); g.lineTo(x + 46, 0); g.lineTo(x + 28, 0); g.fill(); }
+    }
+    g.restore();
+    g.fillStyle = 'rgba(255,255,255,0.35)'; g.fillRect(12, 9, W - 24, 3);
+    // rivets
+    g.fillStyle = '#3b4048';
+    for (let x = 180; x < W - 180; x += 60) { g.beginPath(); g.arc(x, H / 2, 3.5, 0, Math.PI * 2); g.fill(); }
+    return c;
+}
+
+function makeHubCanvas() {
+    const S = 96, c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    const rg = g.createRadialGradient(S * 0.4, S * 0.38, 4, S / 2, S / 2, S / 2);
+    rg.addColorStop(0, '#e9edf2'); rg.addColorStop(0.6, '#7d838d'); rg.addColorStop(1, '#2c3036');
+    g.fillStyle = rg; g.beginPath(); g.arc(S / 2, S / 2, S / 2 - 2, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#ffc21a'; g.beginPath(); g.arc(S / 2, S / 2, 14, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#1a1a1a';
+    for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3; g.beginPath(); g.arc(S / 2 + Math.cos(a) * 30, S / 2 + Math.sin(a) * 30, 4, 0, Math.PI * 2); g.fill(); }
+    return c;
+}
+
 function makeSawCanvas() {
     const S = 128;
     const c = document.createElement('canvas');
@@ -475,6 +512,13 @@ class ArenaScene extends Phaser.Scene {
         // Arena decorations drawn on a graphics layer
         this.arenaGfx = this.add.graphics().setDepth(-5);
         this.lastArenaR = 0;
+        this.lastArenaKey = null;
+        // Windmill bar (only shown on that arena)
+        this.textures.addCanvas('windbar', makeBarCanvas());
+        this.textures.addCanvas('windhub', makeHubCanvas());
+        this.barShadow = this.add.image(0, 0, 'windbar').setDepth(-3.9).setTint(0x000000).setAlpha(0.4).setVisible(false);
+        this.bar = this.add.image(0, 0, 'windbar').setDepth(4.8).setVisible(false);
+        this.hub = this.add.image(0, 0, 'windhub').setDepth(4.9).setVisible(false);
 
         // Tire marks layer (persistent-ish, drawn under cars)
         this.tireGfx = this.add.graphics().setDepth(-4);
@@ -612,53 +656,119 @@ class ArenaScene extends Phaser.Scene {
         return Math.max(0.62, Math.min(1.0, m / 560));
     }
 
-    drawArena(radius, base, electric, time, locked = false) {
+    drawArena(radius, base, electric, time, locked = false, arenaKey = 'classic') {
         const g = this.arenaGfx;
         g.clear();
+        const env = arenaEnv(arenaKey, radius);
+        const square = env.shape === 'square';
+        const half = env.half;
+        // Outline helper: the fence line at an offset from the edge
+        const outline = (off) => {
+            if (square) g.strokeRect(-half - off, -half - off, (half + off) * 2, (half + off) * 2);
+            else g.strokeCircle(0, 0, radius + off);
+        };
+
+        // Ice: pale, glossy floor with skate scratches
+        if (env.ice) {
+            g.fillStyle(0xbfe6ff, 0.28);
+            g.fillCircle(0, 0, radius);
+            g.lineStyle(2, 0xffffff, 0.12);
+            for (let i = 0; i < 26; i++) {
+                const a = i * 2.39, r = radius * (0.15 + ((i * 37) % 70) / 100);
+                const x = Math.cos(a) * r, y = Math.sin(a) * r;
+                g.beginPath(); g.arc(x, y, 60 + (i % 5) * 30, a, a + 0.9); g.strokePath();
+            }
+            g.fillStyle(0xffffff, 0.06);
+            g.fillCircle(-radius * 0.25, -radius * 0.3, radius * 0.45);
+        }
+
         // Closed-off ground outside the fence
-        g.lineStyle(3000, 0x05070b, 0.62);
-        g.strokeCircle(0, 0, radius + 1530);
+        if (square) {
+            const F = 4000;
+            g.fillStyle(0x05070b, 0.62);
+            g.fillRect(-F, -F, F * 2, F - half);
+            g.fillRect(-F, half, F * 2, F - half);
+            g.fillRect(-F, -half, F - half, half * 2);
+            g.fillRect(half, -half, F - half, half * 2);
+        } else {
+            g.lineStyle(3000, 0x05070b, 0.62);
+            g.strokeCircle(0, 0, radius + 1530);
+        }
         // Where the fence started (fades as the arena closes in)
         if (base && radius < base - 4) {
             g.lineStyle(3, 0xffb347, 0.22);
-            g.strokeCircle(0, 0, base);
+            if (square) { const h0 = base * 0.89; g.strokeRect(-h0, -h0, h0 * 2, h0 * 2); }
+            else g.strokeCircle(0, 0, base);
         }
         // Painted markings
         g.lineStyle(2, 0xffffff, 0.06);
-        g.strokeCircle(0, 0, Math.min(radius, base || radius) * 0.5);
-        g.strokeCircle(0, 0, 70);
+        if (square) g.strokeRect(-half * 0.5, -half * 0.5, half, half);
+        else g.strokeCircle(0, 0, Math.min(radius, base || radius) * 0.5);
+        if (!env.pitR) g.strokeCircle(0, 0, 70);
+
+        // Sinkhole: a dark pit with a hazard-striped rim
+        if (env.pitR) {
+            const pr = env.pitR;
+            for (let i = 6; i >= 0; i--) {
+                g.fillStyle(0x000000, 0.35 + (6 - i) * 0.09);
+                g.fillCircle(0, 0, pr * (0.45 + i * 0.09));
+            }
+            const segs = Math.max(12, Math.round((2 * Math.PI * pr) / 34));
+            const st = (Math.PI * 2) / segs;
+            for (let i = 0; i < segs; i++) {
+                g.lineStyle(10, i % 2 ? 0x1a1a1a : 0xffc21a, 1);
+                g.beginPath(); g.arc(0, 0, pr + 5, i * st, (i + 1) * st); g.strokePath();
+            }
+        }
 
         // Red / white kerb just inside the fence
-        const kerbR = radius - 8;
-        const segs = Math.max(24, Math.round((2 * Math.PI * kerbR) / 46));
-        const step = (Math.PI * 2) / segs;
-        for (let i = 0; i < segs; i++) {
-            g.lineStyle(14, electric ? (i % 2 ? 0x0c3550 : 0x1a6c94) : (i % 2 ? 0xf1f1f1 : 0xd6312f), 1);
-            g.beginPath();
-            g.arc(0, 0, kerbR, i * step, (i + 1) * step);
-            g.strokePath();
+        const kerbCol = (i) => (electric ? (i % 2 ? 0x0c3550 : 0x1a6c94) : (i % 2 ? 0xf1f1f1 : 0xd6312f));
+        if (square) {
+            const k = half - 8, n = Math.max(8, Math.round((2 * k) / 46)), len = (2 * k) / n;
+            for (let i = 0; i < n; i++) {
+                const a = -k + i * len;
+                g.lineStyle(14, kerbCol(i), 1);
+                g.lineBetween(a, -k, a + len, -k); g.lineBetween(a, k, a + len, k);
+                g.lineBetween(-k, a, -k, a + len); g.lineBetween(k, a, k, a + len);
+            }
+        } else {
+            const kerbR = radius - 8;
+            const segs = Math.max(24, Math.round((2 * Math.PI * kerbR) / 46));
+            const step = (Math.PI * 2) / segs;
+            for (let i = 0; i < segs; i++) {
+                g.lineStyle(14, kerbCol(i), 1);
+                g.beginPath();
+                g.arc(0, 0, kerbR, i * step, (i + 1) * step);
+                g.strokePath();
+            }
         }
         // Barrier wall (shadow, body, highlight)
-        g.lineStyle(18, 0x000000, 0.35);
-        g.strokeCircle(0, 0, radius + 14);
-        g.lineStyle(12, electric ? 0x173246 : 0x59606b, 1);
-        g.strokeCircle(0, 0, radius + 9);
-        g.lineStyle(3, electric ? 0x9fe9ff : 0xa9b0bb, 1);
-        g.strokeCircle(0, 0, radius + 4);
+        g.lineStyle(18, 0x000000, 0.35); outline(14);
+        g.lineStyle(12, electric ? 0x173246 : (env.ice ? 0x7aa6c4 : 0x59606b), 1); outline(9);
+        g.lineStyle(3, electric ? 0x9fe9ff : 0xa9b0bb, 1); outline(4);
         if (locked) {          // start of round: fence locked — glows green
             const pulse = 0.5 + 0.3 * Math.sin(time * 0.008);
-            g.lineStyle(20, 0x3ddc84, 0.2 * pulse);
-            g.strokeCircle(0, 0, radius + 6);
-            g.lineStyle(4, 0x9dffc4, pulse);
-            g.strokeCircle(0, 0, radius + 4);
+            g.lineStyle(20, 0x3ddc84, 0.2 * pulse); outline(6);
+            g.lineStyle(4, 0x9dffc4, pulse); outline(4);
         }
         if (electric) {
             const pulse = 0.45 + 0.35 * Math.sin(time * 0.012);
-            g.lineStyle(22, 0x4fd8ff, 0.18 * pulse);
-            g.strokeCircle(0, 0, radius + 6);
-            g.lineStyle(4, 0xe8fbff, pulse);
-            g.strokeCircle(0, 0, radius + 4);
+            g.lineStyle(22, 0x4fd8ff, 0.18 * pulse); outline(6);
+            g.lineStyle(4, 0xe8fbff, pulse); outline(4);
         }
+    }
+
+    // Windmill bar follows the server's angle, turning smoothly between snapshots
+    drawBar(snap) {
+        const spec = ARENAS[snap.arena] && ARENAS[snap.arena].bar;
+        this.bar.setVisible(!!spec); this.barShadow.setVisible(!!spec); this.hub.setVisible(!!spec);
+        if (!spec) return;
+        const ang = snap.barAngle + (snap.live ? spec.speed * Math.max(0, Math.min(0.3, (net.serverNow() - snap.timestamp) / 1000)) : 0);
+        const len = (snap.arenaRadius || 850) * spec.len;
+        for (const [img, dx] of [[this.barShadow, 10], [this.bar, 0]]) {
+            img.setPosition(dx, dx).setRotation(ang).setDisplaySize(len * 2, spec.w + 8);
+        }
+        this.hub.setRotation(ang).setDisplaySize(84, 84);
     }
 
     ensureSprite(p) {
@@ -707,11 +817,13 @@ class ArenaScene extends Phaser.Scene {
         if (!snap || !snap.players) return;
 
         const arenaR = snap.arenaRadius || 1000;
-        if (Math.abs(arenaR - this.lastArenaR) > 0.5 || snap.suddenDeath || snap.fenceLock > 0 || this.wasLocked) {
+        if (Math.abs(arenaR - this.lastArenaR) > 0.5 || snap.suddenDeath || snap.fenceLock > 0 || this.wasLocked || snap.arena !== this.lastArenaKey) {
             this.wasLocked = snap.fenceLock > 0;
-            this.drawArena(arenaR, snap.arenaBase || arenaR, !!snap.suddenDeath, time, snap.fenceLock > 0);
+            this.drawArena(arenaR, snap.arenaBase || arenaR, !!snap.suddenDeath, time, snap.fenceLock > 0, snap.arena);
             this.lastArenaR = arenaR;
+            this.lastArenaKey = snap.arena;
         }
+        this.drawBar(snap);
 
         const k = 1 - Math.pow(0.000001, delta / 1000); // smoothing factor (snappy, still filters jitter)
         const seen = new Set();

@@ -34,10 +34,11 @@ const BOT_NAMES = [
 
 // Bot difficulty presets
 const BOT_DIFFICULTY = {
-    easy:   { reactionTime: 0.4, accuracy: 0.5, aggression: 0.3, dashSkill: 0.3, shootSkill: 0.2 },
-    medium: { reactionTime: 0.25, accuracy: 0.7, aggression: 0.5, dashSkill: 0.6, shootSkill: 0.5 },
-    hard:   { reactionTime: 0.12, accuracy: 0.9, aggression: 0.7, dashSkill: 0.85, shootSkill: 0.8 },
-    insane: { reactionTime: 0.06, accuracy: 0.97, aggression: 0.9, dashSkill: 0.95, shootSkill: 0.95 }
+    // tactics = how often a bot uses its role's clever moves instead of just chasing
+    easy:   { reactionTime: 0.4, accuracy: 0.5, aggression: 0.3, dashSkill: 0.3, shootSkill: 0.2, tactics: 0.15 },
+    medium: { reactionTime: 0.25, accuracy: 0.7, aggression: 0.5, dashSkill: 0.6, shootSkill: 0.5, tactics: 0.4 },
+    hard:   { reactionTime: 0.12, accuracy: 0.9, aggression: 0.7, dashSkill: 0.85, shootSkill: 0.8, tactics: 0.8 },
+    insane: { reactionTime: 0.06, accuracy: 0.97, aggression: 0.9, dashSkill: 0.95, shootSkill: 0.95, tactics: 1 }
 };
 
 // ─── Car types ────────────────────────────────────────────────────────────
@@ -210,7 +211,8 @@ function createRoom(hostId) {
             botCount: 3,
             botDifficulty: 'medium',
             arenaRadius: ARENA_RADIUS,
-            powerupInterval: POWERUP_INTERVAL
+            powerupInterval: POWERUP_INTERVAL,
+            arena: 'random',          // or one arena key every round
         }
     };
     return rooms[roomId];
@@ -283,247 +285,263 @@ function resetPlayers(room) {
 }
 
 // ─── AI Bot Brain ──────────────────────────────────────────────────────────
+// Each car role drives its own way:
+//   bully   (Tank, Defender, Bruiser) – gets between you and the centre, then shoves you out
+//   brawler (All-rounder, Grip King)  – same push-out angles, mixes in rockets and power-ups
+//   dodger  (Dodger, Drifter)         – sidesteps charges, circles and shoots, strikes when you're near the edge
+//   lancer  (Rocket)                  – backs off for a run-up, then a long nitro ram
+// Every bot also flees the fence, dodges rockets aimed at it, keeps away from
+// saw blades and plays safe when badly damaged.
+const BOT_STYLE = { truck: 'bully', suv: 'bully', muscle: 'bully', rally: 'brawler', sports: 'brawler', kart: 'dodger', drift: 'dodger', supercar: 'lancer' };
+const wrapAngle = (a) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
+
 function updateBotAI(bot, room, now) {
     if (!bot.alive || !bot.isBot || !bot.botState) return;
 
     const bs = bot.botState;
     bs.thinkTimer -= DT;
 
+    // Stuck detection runs every tick
+    const moved = Math.hypot(bot.x - bs.lastX, bot.y - bs.lastY);
+    if (moved < 0.5 && Math.abs(bot.inputs.forward) > 0.3) bs.stuckTimer += DT; else bs.stuckTimer = 0;
+    bs.lastX = bot.x; bs.lastY = bot.y;
+
     // Only recalculate decisions periodically (based on reaction time)
     if (bs.thinkTimer > 0) return;
     bs.thinkTimer = bs.reactionTime + Math.random() * 0.1;
 
-    const players = Object.values(room.players).filter(p => p.alive && p.id !== bot.id);
-    const powerups = room.powerups;
-    const projectiles = room.projectiles;
-
-    // State calculations
-    const distFromCenter = Math.hypot(bot.x, bot.y);
+    const style = BOT_STYLE[bot.carType] || 'brawler';
+    const smart = Math.random() < (bs.tactics ?? bs.dashSkill);   // easy bots mostly just chase
+    const warmup = now < room.matchStartTime + FENCE_LOCK_MS;      // opening seconds: nobody can go out yet
+    const enemies = Object.values(room.players).filter(p => p.alive && p.id !== bot.id);
     const arenaR = room.arenaR || room.settings.arenaRadius;
-    const margin = room.suddenDeath ? 230 : 170;     // electric fence = keep well clear
-    const dangerZone = arenaR - margin;
-    const criticalZone = arenaR - margin * 0.45;
+    const env = room.env || PHYS.arenaEnv('classic', arenaR);
+    const myR = Math.hypot(bot.x, bot.y);
     const speed = Math.hypot(bot.vx, bot.vy);
+    const maxHp = bot.carStats.hp || 100;
+    const myMass = PHYS.carMass(bot);
+    const armed = bot.bladeTimer > 0 || bot.bumperTimer > 0 || bot.scale > 1.2 || bot.shield;
 
-    let forward = 0, steer = 0, dash = false, shoot = false;
-
-    // ─── PRIORITY 1: Survive — flee from edge ─────────────────────────
-    if (distFromCenter > dangerZone) {
-        const toCenter = Math.atan2(-bot.y, -bot.x);
-        let angleDiff = toCenter - bot.angle;
-        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-
-        steer = Math.max(-1, Math.min(1, angleDiff * 3));
+    let forward = 1, steer = 0, dash = false, shoot = false, drop = false;
+    let aimDiff = 0;
+    const steerTo = (x, y, gain = 2.6) => {
+        let d = wrapAngle(Math.atan2(y - bot.y, x - bot.x) - bot.angle);
+        d += (Math.random() - 0.5) * (1 - bs.accuracy) * 0.5;
+        aimDiff = d;
+        steer = Math.max(-1, Math.min(1, d * gain));
         forward = 1;
-        // Nose against the fence: back away first (reverse steering is mirrored)
-        if (Math.abs(angleDiff) > 1.9) { forward = -1; steer = -Math.sign(angleDiff); }
+        // Target behind us at speed: handbrake turn like a player would
+        if (Math.abs(d) > 2.2 && speed > 180) { forward = -1; steer = Math.sign(d); }
+        return d;
+    };
+    const finish = () => {
+        if (bs.stuckTimer > 0.6) { forward = -0.7; steer = bs.dodgeDir || 1; bs.stuckTimer = 0; }
+        bot.inputs = { forward, steer, dash: dash && bot.dashCooldown <= 0, shoot, drop };
+    };
 
-        // Emergency dash toward center if critical
-        if (distFromCenter > criticalZone && bot.dashCooldown <= 0 && Math.abs(angleDiff) < 0.5) {
-            dash = true;
+    // ─── 1. Survive: get away from the fence, the sinkhole and the windmill ─
+    const margin = (room.suddenDeath ? 230 : 160) + speed * 0.12;
+    const outerGap = env.shape === 'square' ? env.half - Math.max(Math.abs(bot.x), Math.abs(bot.y)) : arenaR - myR;
+    if (outerGap < margin) {
+        const d = steerTo(0, 0, 3);
+        if (Math.abs(d) > 1.9) { forward = -1; steer = -Math.sign(d); }   // nose to the fence: reverse out
+        else if (outerGap < margin * 0.5 && Math.abs(d) < 0.5) dash = true;
+        return finish();
+    }
+    if (env.pitR && myR - env.pitR < 110 + speed * 0.18) {
+        // Head away from the hole, curving around it
+        const k = (env.pitR + 280) / (myR || 1);
+        const d = steerTo(bot.x * k - bot.y * 0.4, bot.y * k + bot.x * 0.4, 3);
+        if (Math.abs(d) > 1.9) { forward = -1; steer = -Math.sign(d); }
+        return finish();
+    }
+    if (env.bar && Math.random() < bs.accuracy) {
+        const ux = Math.cos(env.bar.angle), uy = Math.sin(env.bar.angle);
+        const t = Math.max(-env.bar.len, Math.min(env.bar.len, bot.x * ux + bot.y * uy));
+        const dx = bot.x - ux * t, dy = bot.y - uy * t, d = Math.hypot(dx, dy) || 1;
+        // Is the bar sweeping toward us?
+        const comingAtMe = (-env.bar.av * uy * t * dx + env.bar.av * ux * t * dy) < 0;
+        if (d < 120 && comingAtMe && Math.abs(t) < env.bar.len) {
+            steerTo(bot.x + (dx / d) * 200 - bot.x * 0.2, bot.y + (dy / d) * 200 - bot.y * 0.2, 3);
+            return finish();
         }
-
-        bot.inputs = { forward, steer, dash, shoot };
-        return;
     }
 
-    // ─── PRIORITY 2: Dodge incoming projectiles ────────────────────────
-    let dodging = false;
-    for (const proj of projectiles) {
-        if (proj.ownerId === bot.id) continue;
-        const dx = proj.x - bot.x;
-        const dy = proj.y - bot.y;
+    // ─── 2. Dodge rockets heading for us ───────────────────────────────
+    for (const pr of room.projectiles) {
+        if (pr.ownerId === bot.id) continue;
+        const dx = bot.x - pr.x, dy = bot.y - pr.y;
         const dist = Math.hypot(dx, dy);
-        if (dist > 300) continue;
-
-        // Predict if projectile will hit us
-        const projSpeed = Math.hypot(proj.vx, proj.vy);
-        if (projSpeed < 100) continue;
-        const timeToReach = dist / projSpeed;
-        const futureX = proj.x + proj.vx * timeToReach;
-        const futureY = proj.y + proj.vy * timeToReach;
-        const futureDistToMe = Math.hypot(futureX - bot.x, futureY - bot.y);
-
-        if (futureDistToMe < 80) {
-            // Dodge perpendicular to projectile path
-            const projAngle = Math.atan2(proj.vy, proj.vx);
-            const dodgeAngle = projAngle + (bs.dodgeDir > 0 ? Math.PI / 2 : -Math.PI / 2);
-            let angleDiff = dodgeAngle - bot.angle;
-            while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-            while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-
-            steer = Math.max(-1, Math.min(1, angleDiff * 3));
-            forward = 1;
-            if (dist < 150 && bot.dashCooldown <= 0) dash = true;
-            dodging = true;
-            break;
+        if (dist > 380) continue;
+        const ps = Math.hypot(pr.vx, pr.vy) || 1;
+        const along = (dx * pr.vx + dy * pr.vy) / ps;           // how far ahead of the rocket we are
+        const miss = Math.abs(dx * pr.vy - dy * pr.vx) / ps;     // sideways distance from its path
+        if ((pr.targetId === bot.id || miss < 70) && along > 0 && Math.random() < bs.accuracy) {
+            // Break sideways, toward the centre side of the rocket's path
+            const px = -pr.vy / ps, py = pr.vx / ps;
+            const side = (px * -bot.x + py * -bot.y) > 0 ? 1 : -1;
+            steerTo(bot.x + px * side * 200, bot.y + py * side * 200, 3);
+            if (dist < 200 && style === 'dodger') dash = true;
+            return finish();
         }
     }
 
-    if (dodging) {
-        bot.inputs = { forward, steer, dash, shoot };
-        return;
-    }
-
-    // ─── PRIORITY 3: Personality-driven behavior ───────────────────────
-
-    // Find nearest enemy and nearest powerup
-    let nearestEnemy = null, nearestEnemyDist = Infinity;
-    let weakestEnemy = null, weakestEdgeDist = Infinity;
-    for (const p of players) {
-        if (p.isBot && bs.personality === 'collector') continue; // collectors ignore other bots
-        const d = Math.hypot(p.x - bot.x, p.y - bot.y);
-        if (d < nearestEnemyDist) { nearestEnemy = p; nearestEnemyDist = d; }
-        // Find enemies near edge (weak targets)
-        const edgeDist = arenaR - Math.hypot(p.x, p.y);
-        if (edgeDist < weakestEdgeDist) { weakestEnemy = p; weakestEdgeDist = edgeDist; }
-    }
-
-    let nearestPU = null, nearestPUDist = Infinity;
-    for (const pu of powerups) {
-        if (pu.landAt > now + 600) continue;          // still floating down
-        const d = Math.hypot(pu.x - bot.x, pu.y - bot.y);
-        if (d < nearestPUDist) { nearestPU = pu; nearestPUDist = d; }
-    }
-
-    // Decide target
-    let targetX, targetY, targetType = 'roam';
-
-    // Badly damaged: go for a repair kit first
-    let repairKit = null, repairDist = Infinity;
-    if (bot.hp < (bot.carStats.hp || 100) * 0.45) {
-        for (const pu of powerups) {
-            if (pu.type !== 'Repair' || pu.landAt > now + 600) continue;
-            const d = Math.hypot(pu.x - bot.x, pu.y - bot.y);
-            if (d < repairDist) { repairKit = pu; repairDist = d; }
+    // ─── 3. Sidestep a car charging at us ──────────────────────────────
+    for (const e of enemies) {
+        const dx = bot.x - e.x, dy = bot.y - e.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 300 || dist < 1) continue;
+        const closing = ((e.vx - bot.vx) * dx + (e.vy - bot.vy) * dy) / dist;
+        const eSpeed = Math.hypot(e.vx, e.vy);
+        const headingAtMe = eSpeed > 1 && (e.vx * dx + e.vy * dy) / (eSpeed * dist) > 0.93;
+        const scary = PHYS.carMass(e) > myMass * 0.9 || e.nitro > 0 || e.bladeTimer > 0;
+        const exposed = myR > arenaR * 0.5 || bot.hp < maxHp * 0.4;
+        const wants = style === 'dodger' ? 0.9 : style === 'lancer' ? 0.6 : exposed ? 0.5 : 0.15;
+        if (closing > 220 && headingAtMe && scary && !armed && smart && Math.random() < wants) {
+            const ex = e.vx / eSpeed, ey = e.vy / eSpeed;
+            const px = -ey, py = ex;
+            const side = (px * -bot.x + py * -bot.y) > 0 ? 1 : -1;   // dodge toward the centre
+            steerTo(bot.x + px * side * 220 + ex * 40, bot.y + py * side * 220 + ey * 40, 3.2);
+            if (dist < 200 && style !== 'bully') dash = true;
+            return finish();
         }
     }
 
-    if (repairKit) {
-        targetX = repairKit.x; targetY = repairKit.y; targetType = 'powerup';
-    } else switch (bs.personality) {
-        case 'aggressive':
-            // Ram the nearest enemy, prefer weak ones near edge
-            if (weakestEdgeDist < 200 && weakestEnemy) {
-                targetX = weakestEnemy.x; targetY = weakestEnemy.y; targetType = 'ram';
-            } else if (nearestEnemy && nearestEnemyDist < 500) {
-                targetX = nearestEnemy.x; targetY = nearestEnemy.y; targetType = 'ram';
-            } else if (nearestPU && nearestPUDist < 400) {
-                targetX = nearestPU.x; targetY = nearestPU.y; targetType = 'powerup';
-            } else {
-                targetX = nearestEnemy ? nearestEnemy.x : 0;
-                targetY = nearestEnemy ? nearestEnemy.y : 0;
-                targetType = 'chase';
-            }
-            break;
-
-        case 'hunter':
-            // Prioritize shooting from medium range
-            if (nearestEnemy) {
-                const idealRange = 250;
-                const dx = nearestEnemy.x - bot.x;
-                const dy = nearestEnemy.y - bot.y;
-                const dist = Math.hypot(dx, dy);
-                if (dist < idealRange * 0.7) {
-                    // Too close, back off slightly
-                    targetX = bot.x - dx * 0.5;
-                    targetY = bot.y - dy * 0.5;
-                    targetType = 'kite';
-                } else {
-                    targetX = nearestEnemy.x; targetY = nearestEnemy.y; targetType = 'shoot';
-                }
-            } else {
-                targetX = 0; targetY = 0; targetType = 'roam';
-            }
-            break;
-
-        case 'collector':
-            // Prioritize powerups
-            if (nearestPU) {
-                targetX = nearestPU.x; targetY = nearestPU.y; targetType = 'powerup';
-            } else if (nearestEnemy && bot.scale > 1.2) {
-                // Got MegaPush, go ram!
-                targetX = nearestEnemy.x; targetY = nearestEnemy.y; targetType = 'ram';
-            } else {
-                // Roam center
-                targetX = Math.cos(now / 3000) * 200;
-                targetY = Math.sin(now / 3000) * 200;
-                targetType = 'roam';
-            }
-            break;
-
-        case 'defensive':
-        default:
-            // Stay near center, collect powerups, engage only when strong
-            if (nearestPU && nearestPUDist < 300) {
-                targetX = nearestPU.x; targetY = nearestPU.y; targetType = 'powerup';
-            } else if (bot.shield || bot.scale > 1.2) {
-                // We have an advantage — attack!
-                if (nearestEnemy) {
-                    targetX = nearestEnemy.x; targetY = nearestEnemy.y; targetType = 'ram';
-                }
-            } else {
-                // Stay near center
-                targetX = Math.cos(now / 4000 + bot.x) * 150;
-                targetY = Math.sin(now / 4000 + bot.y) * 150;
-                targetType = 'roam';
-            }
-            break;
-    }
-
-    if (targetX === undefined) { targetX = 0; targetY = 0; }
-
-    // ─── Steering toward target ────────────────────────────────────────
-    const toTarget = Math.atan2(targetY - bot.y, targetX - bot.x);
-    let angleDiff = toTarget - bot.angle;
-    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-    while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-
-    // Add inaccuracy
-    angleDiff += (Math.random() - 0.5) * (1 - bs.accuracy) * 0.5;
-
-    steer = Math.max(-1, Math.min(1, angleDiff * 2.5));
-    forward = 1;
-    // Target behind us at speed: handbrake turn like a player would
-    if (Math.abs(angleDiff) > 2.2 && speed > 180) { forward = -1; steer = Math.sign(angleDiff); }
-
-    // Slow down if very close to powerup (precision collection)
-    if (targetType === 'powerup' && nearestPUDist < 50) forward = 0.5;
-
-    // Reverse if stuck
-    if (bs.stuckTimer > 0.5) { forward = -0.5; steer = 1; bs.stuckTimer = 0; }
-    const moved = Math.hypot(bot.x - bs.lastX, bot.y - bs.lastY);
-    if (moved < 1) bs.stuckTimer += DT; else bs.stuckTimer = 0;
-    bs.lastX = bot.x; bs.lastY = bot.y;
-
-    // ─── Dash decision ─────────────────────────────────────────────────
-    if (bot.dashCooldown <= 0) {
-        if (targetType === 'ram' && nearestEnemyDist < 200 && Math.abs(angleDiff) < 0.4) {
-            if (Math.random() < bs.dashSkill) dash = true;
-        }
-        // Also dash if enemy is near edge and we're pointed at them
-        if (weakestEnemy && weakestEdgeDist < 150 && nearestEnemyDist < 250 && Math.abs(angleDiff) < 0.5) {
-            if (Math.random() < bs.dashSkill * 1.2) dash = true;
+    // ─── 4. Keep away from spinning saws ───────────────────────────────
+    if (!armed) {
+        const saw = enemies.find(e => e.bladeTimer > 0 && Math.hypot(e.x - bot.x, e.y - bot.y) < 260);
+        if (saw) {
+            const dx = bot.x - saw.x, dy = bot.y - saw.y, d = Math.hypot(dx, dy) || 1;
+            // Run away, bending toward the centre so we don't flee into the fence
+            steerTo(bot.x + (dx / d) * 200 - bot.x * 0.25, bot.y + (dy / d) * 200 - bot.y * 0.25, 3);
+            if (bot.shootCooldown <= 0 && Math.abs(wrapAngle(Math.atan2(saw.y - bot.y, saw.x - bot.x) - bot.angle)) < 0.3) shoot = true;
+            return finish();
         }
     }
 
-    // ─── Shoot decision ────────────────────────────────────────────────
-    if (bot.shootCooldown <= 0 && nearestEnemy) {
-        const shootAngle = Math.atan2(nearestEnemy.y - bot.y, nearestEnemy.x - bot.x);
-        let shootDiff = shootAngle - bot.angle;
-        while (shootDiff > Math.PI) shootDiff -= Math.PI * 2;
-        while (shootDiff < -Math.PI) shootDiff += Math.PI * 2;
-
-        if (Math.abs(shootDiff) < 0.3 && nearestEnemyDist < 500 && nearestEnemyDist > 80) {
-            if (Math.random() < bs.shootSkill * 0.45) shoot = true;   // rockets home in now — bots fire less often
-        }
+    // ─── 5. Power-ups (repair first when hurt) ─────────────────────────
+    let pick = null, pickDist = Infinity;
+    const hurt = bot.hp < maxHp * 0.45;
+    for (const pu of room.powerups) {
+        if (pu.landAt > now + 600) continue;
+        if (PHYS.edgeDistance(env, pu.x, pu.y) < 110) continue;      // not worth dying for
+        let d = Math.hypot(pu.x - bot.x, pu.y - bot.y);
+        if (pu.type === 'Repair') d *= hurt ? 0.3 : 1.4;
+        if (d < pickDist) { pick = pu; pickDist = d; }
+    }
+    const puRange = warmup ? 700 : bs.personality === 'collector' ? 520 : style === 'dodger' ? 360 : 260;
+    if (pick && (pickDist < puRange || (hurt && pick.type === 'Repair'))) {
+        steerTo(pick.x, pick.y);
+        if (pickDist < 60) forward = 0.6;
+        return finish();
     }
 
-    // Flip dodge direction periodically
-    if (Math.random() < 0.02) bs.dodgeDir = -bs.dodgeDir || 1;
+    // ─── 6. Badly hurt: stay central, keep distance, shoot ─────────────
+    const nearest = enemies.reduce((b, e) => {
+        const d = Math.hypot(e.x - bot.x, e.y - bot.y);
+        return d < b.d ? { e, d } : b;
+    }, { e: null, d: Infinity });
+    if (bot.hp < maxHp * 0.3 && !armed && nearest.e && nearest.d < 360 && smart) {
+        const dx = bot.x - nearest.e.x, dy = bot.y - nearest.e.y, d = nearest.d || 1;
+        steerTo(bot.x + (dx / d) * 150 - bot.x * 0.4, bot.y + (dy / d) * 150 - bot.y * 0.4);
+        maybeShoot();
+        return finish();
+    }
 
-    bot.inputs = { forward, steer, dash, shoot, drop: !!bot.weapon && Math.random() < 0.03 };
+    // ─── 7. Attack: pick a victim ──────────────────────────────────────
+    let target = null, best = -Infinity;
+    for (const e of enemies) {
+        const d = Math.hypot(e.x - bot.x, e.y - bot.y);
+        const edge = PHYS.edgeDistance(env, e.x, e.y);
+        let score = -d * 0.004 + (edge < 260 ? (260 - edge) * 0.012 : 0) + (1 - e.hp / (e.carStats.hp || 100)) * 0.8;
+        if (style === 'bully' && PHYS.carMass(e) < myMass) score += 0.5;      // pick on lighter cars
+        if (e.id === bs.targetId) score += 0.6;                                 // don't flip-flop
+        if (e.bladeTimer > 0 && !armed) score -= 2;
+        if (score > best) { best = score; target = e; }
+    }
+    bs.targetId = target ? target.id : null;
+    if (warmup && target) {
+        // Fence is locked: jostle for position near the middle instead of lining up a knock-out
+        const a = Math.atan2(bot.y, bot.x) + 0.6;
+        steerTo(Math.cos(a) * 260, Math.sin(a) * 260);
+        forward = 0.75;
+        return finish();
+    }
+    if (!target) { steerTo(Math.cos(now / 3000) * 150, Math.sin(now / 3000) * 150); return finish(); }
+
+    const tx = target.x, ty = target.y;
+    const tR = Math.hypot(tx, ty) || 1;
+    // Which way to shove the target: toward its nearest wall (or into the sinkhole)
+    let ux = tx / tR, uy = ty / tR;
+    if (env.shape === 'square') { if (Math.abs(tx) > Math.abs(ty)) { ux = Math.sign(tx); uy = 0; } else { ux = 0; uy = Math.sign(ty); } }
+    const outerT = env.shape === 'square' ? env.half - Math.max(Math.abs(tx), Math.abs(ty)) : arenaR - tR;
+    if (env.pitR && tR - env.pitR < outerT) { ux = -tx / tR; uy = -ty / tR; }
+    const dist = Math.hypot(tx - bot.x, ty - bot.y);
+    const targetEdge = PHYS.edgeDistance(env, tx, ty);
+    // Are we on the centre side of the target, lined up to push it outward?
+    const inside = ((bot.x - tx) * ux + (bot.y - ty) * uy) < -25;
+    const lead = Math.min(0.45, dist / 900);
+    const leadX = tx + target.vx * lead, leadY = ty + target.vy * lead;
+
+    const charge = (nitroDist) => {
+        const d = steerTo(leadX, leadY, 3);
+        if (dist < nitroDist && Math.abs(d) < 0.32 && Math.random() < bs.dashSkill) dash = true;
+    };
+    const stage = (back, sideways = 0) => {
+        // A point on the centre side of the target (plus a little sideways so we don't hit it on the way)
+        const px = -uy, py = ux;
+        const s = Math.sign((bot.x - tx) * px + (bot.y - ty) * py) || 1;
+        steerTo(tx - ux * back + px * s * sideways, ty - uy * back + py * s * sideways);
+    };
+
+    if (!smart || armed) {
+        charge(armed ? 260 : 180);
+    } else if (style === 'bully' || style === 'brawler') {
+        if (inside || targetEdge > 380 || dist < 110) charge(style === 'bully' ? 240 : 200);
+        else stage(170, dist < 260 ? 90 : 0);
+    } else if (style === 'lancer') {
+        bs.runUp = bs.runUp || 0;
+        if (bs.runUp > 0) {
+            bs.runUp -= bs.reactionTime;
+            charge(420);
+        } else if (dist < 300 && !inside) {
+            stage(400, 120);                                 // back off for a run-up
+        } else if (inside && dist > 280) {
+            bs.runUp = 1.4;
+            charge(420);
+        } else {
+            stage(380);
+        }
+    } else {   // dodger
+        if (targetEdge < 230 && inside) charge(200);
+        else if (dist > 320) stage(220, 140);
+        else {
+            // Circle the target at rocket range
+            const ang = Math.atan2(bot.y - ty, bot.x - tx) + (bs.dodgeDir || 1) * 0.9;   // (circle point is pulled toward the middle)
+            steerTo(tx + Math.cos(ang) * 260 - tx * 0.15, ty + Math.sin(ang) * 260 - ty * 0.15);
+        }
+    }
+    maybeShoot();
+
+    // Held traps: drop them on someone tailing us
+    if (bot.weapon) {
+        const tail = enemies.find(e => {
+            const dx = e.x - bot.x, dy = e.y - bot.y, d = Math.hypot(dx, dy);
+            return d < 240 && (dx * Math.cos(bot.angle) + dy * Math.sin(bot.angle)) / (d || 1) < -0.6;
+        });
+        if (tail || Math.random() < 0.01) drop = true;
+    }
+    if (Math.random() < 0.02) bs.dodgeDir = -(bs.dodgeDir || 1);
+    return finish();
+
+    function maybeShoot() {
+        if (bot.shootCooldown > 0 || now < room.matchStartTime + FENCE_LOCK_MS) return;   // no shooting in the opening seconds
+        const t = PHYS.pickRocketTarget(bot, Object.values(room.players));
+        if (!t) return;
+        const d = Math.hypot(t.x - bot.x, t.y - bot.y);
+        const keen = style === 'dodger' || bs.personality === 'hunter' ? 0.4 : 0.22;
+        if (d > 150 && d < 650 && Math.random() < bs.shootSkill * keen) shoot = true;
+    }
 }
 
 // ─── Physics helpers ───────────────────────────────────────────────────────
@@ -577,6 +595,8 @@ function beginRound(room) {
     room.matchStartTime = clock() + 3000;
     room.eliminationOrder = [];
     room.arenaR = room.settings.arenaRadius;
+    room.arenaKey = pickArena(room);
+    room.barAngle = 0;
     room.suddenDeath = false;
     room._shrinkAnnounced = false;
     room._cdlast = clock();         // show "3" for a full second
@@ -587,7 +607,21 @@ function beginRound(room) {
     resetPlayers(room);
     // Test hook: SIM_GIVE=Bumper hands the host a power-up at the start of each round
     if (process.env.SIM_GIVE && room.players[room.hostId]) applyPowerup(process.env.SIM_GIVE, room.players[room.hostId], room);
-    io.to(room.id).emit('matchStart', { count: room.countdown, round: room.round, maxRounds: room.maxRounds });
+    // Windmill: start with the bar pointing between two cars
+    const n = Object.keys(room.players).length;
+    room.barAngle = Math.PI / Math.max(1, n);
+    room.env = PHYS.arenaEnv(room.arenaKey, room.arenaR, room.barAngle);
+    io.to(room.id).emit('matchStart', { count: room.countdown, round: room.round, maxRounds: room.maxRounds, arena: room.arenaKey });
+}
+
+// Random arena each round (never the same twice in a row); round 1 of a
+// player's first match is always the classic ring
+function pickArena(room) {
+    const want = room.settings.arena;
+    if (want && want !== 'random' && PHYS.ARENAS[want]) return want;
+    if (room.round <= 1 && !room._playedBefore) { room._playedBefore = true; return 'classic'; }
+    const keys = PHYS.ARENA_KEYS.filter(k => k !== room.arenaKey);
+    return keys[Math.floor(Math.random() * keys.length)];
 }
 
 function tickTimers(p) {
@@ -641,7 +675,7 @@ function rekeyPlayer(room, oldId, newId) {
 io.on('connection', socket => {
     console.log(`[connect] ${socket.id}`);
 
-    socket.on('createRoom', ({ name, botCount, botDifficulty, carType, cosmetics, token }, cb) => {
+    socket.on('createRoom', ({ name, botCount, botDifficulty, carType, cosmetics, token, arena }, cb) => {
         if (typeof cb !== 'function') return;
         const room = createRoom(socket.id);
         if (!room) return cb({ error: 'Server full, try again later' });
@@ -651,6 +685,7 @@ io.on('connection', socket => {
         const requestedBots = parseInt(botCount);
         room.settings.botCount = Math.min(7, Math.max(0, Number.isNaN(requestedBots) ? 3 : requestedBots));
         room.settings.botDifficulty = BOT_DIFFICULTY[botDifficulty] ? botDifficulty : 'medium';
+        if (arena === 'random' || PHYS.ARENAS[arena]) room.settings.arena = arena;
 
         cb({ roomId: room.id, player: room.players[socket.id] });
         io.to(room.id).emit('roomUpdate', roomSummary(room));
@@ -674,6 +709,7 @@ io.on('connection', socket => {
         if (!room || room.hostId !== socket.id || room.running) return;
         if (settings.botCount !== undefined) room.settings.botCount = Math.min(MAX_PLAYERS_PER_ROOM - 1, Math.max(0, parseInt(settings.botCount) || 0));
         if (settings.botDifficulty && BOT_DIFFICULTY[settings.botDifficulty]) room.settings.botDifficulty = settings.botDifficulty;
+        if (settings.arena === 'random' || PHYS.ARENAS[settings.arena]) room.settings.arena = settings.arena;
         if (settings.maxRounds !== undefined) room.maxRounds = Math.min(10, Math.max(1, parseInt(settings.maxRounds) || 3));
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
@@ -874,7 +910,9 @@ const BLADE_HIT_EVERY_MS = 350;
 function damage(room, p, amount, attacker, now) {
     if (!p.alive || amount <= 0) return;
     if (p.shield) amount *= 0.25;                     // shield soaks most of it
-    p.hp = Math.max(0, p.hp - amount);
+    // Nobody can be wrecked while the fence is still locked at the start
+    const floor = now < room.matchStartTime + FENCE_LOCK_MS ? 1 : 0;
+    p.hp = Math.max(Math.min(floor, p.hp), p.hp - amount);
     if (attacker && attacker !== p) { markHit(p, attacker, now); attacker.damageDealt += amount; attacker.roundDamage = (attacker.roundDamage || 0) + amount; }
     if (p.hp <= 0) {
         p.vx *= 0.2; p.vy *= 0.2;
@@ -910,6 +948,9 @@ function updateArena(room, now) {
     else if (t >= SHRINK_END) frac = SHRINK_FRAC + (FINAL_FRAC - SHRINK_FRAC) * Math.min(1, (t - SHRINK_END) / (FINAL_END - SHRINK_END));
     else if (t >= SHRINK_START) frac = 1 + (SHRINK_FRAC - 1) * (t - SHRINK_START) / (SHRINK_END - SHRINK_START);
     room.arenaR = R0 * frac;
+    const spec = PHYS.ARENAS[room.arenaKey];
+    if (spec && spec.bar) room.barAngle += spec.bar.speed * DT;
+    room.env = PHYS.arenaEnv(room.arenaKey, room.arenaR, room.barAngle);
     const wasSD = room.suddenDeath;
     room.suddenDeath = t >= SHRINK_END;
     // Hiding against the electric fence isn't safe either — it slowly fries you
@@ -917,13 +958,15 @@ function updateArena(room, now) {
         for (const p of Object.values(room.players)) {
             if (!p.alive) continue;
             const reach = PHYS.CAR_HALF_WID * p.carStats.size * p.scale + 4;
-            if (Math.hypot(p.x, p.y) + reach < room.arenaR) continue;
+            const env = PHYS.arenaEnv(room.arenaKey, room.arenaR);
+            const out = env.shape === 'square' ? env.half - Math.max(Math.abs(p.x), Math.abs(p.y)) : room.arenaR - Math.hypot(p.x, p.y);
+            if (out > reach) continue;
             const pushed = now - (p.lastHitAt || 0) < HIT_WINDOW_MS;
             damage(room, p, ZAP_DPS * DT, pushed ? room.players[p.lastHitBy] : null, now);
             if (!p._zapFx || now - p._zapFx > 400) {
                 p._zapFx = now;
-                const a = Math.atan2(p.y, p.x);
-                io.to(room.id).emit('collision', { impact: 150, x: Math.cos(a) * room.arenaR, y: Math.sin(a) * room.arenaR, type: 'wall', ids: [p.id] });
+                const k = (Math.hypot(p.x, p.y) + out) / (Math.hypot(p.x, p.y) || 1);
+                io.to(room.id).emit('collision', { impact: 150, x: p.x * k, y: p.y * k, type: 'wall', ids: [p.id] });
             }
         }
     }
@@ -977,6 +1020,8 @@ function updatePlanes(room, now) {
             d.done = true;
             if (room.powerups.length >= MAX_POWERUPS) continue;
             const dist = ((now - pl.t0) / 1000) * PLANE_SPEED;
+            const px = pl.x0 + pl.dx * dist, py = pl.y0 + pl.dy * dist;
+            if (room.env && room.env.pitR && Math.hypot(px, py) < room.env.pitR + 50) continue;
             room.powerups.push({
                 id: ++room._uid, type: pickPowerupType(),
                 x: pl.x0 + pl.dx * dist, y: pl.y0 + pl.dy * dist,
@@ -1007,6 +1052,8 @@ function sendSnapshot(room, now) {
         si: room.countdown > 0 ? SHRINK_START : r1(Math.max(0, SHRINK_START - t)),
         rd: room.round, mr: room.maxRounds,
         lv: room.countdown > 0 ? 0 : 1,
+        ak: PHYS.ARENA_KEYS.indexOf(room.arenaKey),
+        ba: Math.round((room.barAngle || 0) * 1000) / 1000,
         fl: room.countdown > 0 ? FENCE_LOCK_MS / 1000 : r1(Math.max(0, FENCE_LOCK_MS - (now - room.matchStartTime)) / 1000),   // fence-lock seconds left          // cars can move (clients only predict while live)
         p: Object.values(room.players).map(p => [
             p.num, r1(p.x), r1(p.y), Math.round(p.angle * 1000) / 1000,
@@ -1080,7 +1127,7 @@ function tickRoom(room, roomId, now) {
 
         const inp = p.inputs;
         tickTimers(p);
-        if (PHYS.driveCar(p, inp)) p.dashesUsed++;
+        if (PHYS.driveCar(p, inp, room.env)) p.dashesUsed++;
 
         // Drop a held trap weapon (Oil / Reverse) behind the car
         if (inp.drop && p.weapon && p.dropCooldown <= 0) {
@@ -1149,7 +1196,12 @@ function tickRoom(room, roomId, now) {
 
     // ─── Move cars + resolve contacts (shared physics) ─────────────────
     const fx = new Map();
-    PHYS.stepCars(Object.values(room.players).filter(p => p.alive), room.arenaR, {
+    PHYS.stepCars(Object.values(room.players).filter(p => p.alive), room.env, {
+        onBar: (B, c) => {
+            const p = B.p;
+            if (c.vn > 120) addFx(fx, 'bar' + p.id, { impact: c.vn, x: c.x, y: c.y, type: 'wall', ids: [p.id] });
+            if (c.vn > 200) damage(room, p, (c.vn - 200) * 0.02, null, now);
+        },
         onPair: (A, B, r) => {
             const a = A.p, b = B.p;
             if (r.aPushesB) markHit(b, a, now);
@@ -1170,6 +1222,8 @@ function tickRoom(room, roomId, now) {
         },
         onFence: (B, c) => {
             const p = B.p;
+            // Sinkhole rim: solid while the fence is locked, otherwise you can slide in
+            if (c.pit) return now < room.matchStartTime + FENCE_LOCK_MS;
             // The fence holds unless you're shoved into it — or it's electric (sudden death)
             // For the first seconds of a round the fence is locked: nobody goes out at the start,
             // and a car already pinned there when it unlocks needs a fresh shove to go through.
@@ -1191,6 +1245,11 @@ function tickRoom(room, roomId, now) {
         },
     });
     for (const ev of fx.values()) io.to(room.id).emit('collision', ev);
+    if (room.env.pitR) {
+        for (const p of Object.values(room.players)) {
+            if (p.alive && Math.hypot(p.x, p.y) < room.env.pitR) eliminate(p, room, now, 'pit');
+        }
+    }
     if (!room.running) return;   // solo match ended this tick
 
     // Powerup pickup (only once the crate has landed)

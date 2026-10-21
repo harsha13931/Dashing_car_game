@@ -40,6 +40,39 @@ const STUN_MAX = 0.5;               // s of reduced grip after a big hit (so kno
 
 const clampSpin = (v) => Math.max(-MAX_SPIN, Math.min(MAX_SPIN, v));
 
+// ─── Arenas ───────────────────────────────────────────────────────────────
+// A different arena can be picked every round. The physics only ever sees an
+// "env": { R, shape, half, pitR, ice, bar } built by arenaEnv().
+export const ARENAS = {
+    classic:  { name: 'Classic Ring', tip: 'Push them through the fence!', shape: 'circle' },
+    ice:      { name: 'Ice Rink',     tip: 'Slippery! Brake early, turn gently', shape: 'circle', ice: true },
+    box:      { name: 'The Box',      tip: 'Corners are traps — stay out of them', shape: 'square' },
+    sinkhole: { name: 'Sinkhole',     tip: 'Don\'t fall in the hole in the middle!', shape: 'circle', pit: 0.2 },
+    windmill: { name: 'Windmill',     tip: 'Dodge the spinning bar', shape: 'circle', bar: { len: 0.6, w: 30, speed: 0.55 } },
+};
+export const ARENA_KEYS = Object.keys(ARENAS);
+const SQUARE_HALF = 0.89;           // square arenas have about the same floor area as the ring
+
+// R = current fence radius, barAngle = where the windmill bar points now
+export function arenaEnv(key, R, barAngle = 0) {
+    const a = ARENAS[key] || ARENAS.classic;
+    return {
+        key: ARENAS[key] ? key : 'classic', R, shape: a.shape,
+        half: R * SQUARE_HALF,
+        pitR: a.pit ? R * a.pit : 0,
+        ice: !!a.ice,
+        bar: a.bar ? { angle: barAngle, av: a.bar.speed, len: R * a.bar.len, w: a.bar.w } : null,
+    };
+}
+const toEnv = (env) => (typeof env === 'number' ? arenaEnv('classic', env) : env);
+
+// How far a point is from falling out (fence or pit); negative = already out
+export function edgeDistance(env, x, y) {
+    env = toEnv(env);
+    const out = env.shape === 'square' ? env.half - Math.max(Math.abs(x), Math.abs(y)) : env.R - Math.hypot(x, y);
+    return env.pitR ? Math.min(out, Math.hypot(x, y) - env.pitR) : out;
+}
+
 export function carSpec(p) {
     const s = p.carStats;
     return {
@@ -165,18 +198,77 @@ export function collideCars(A, B) {
 }
 
 // Car vs fence (circle of radius R) → contact or null
-export function fenceContact(B, R) {
+function contactAt(p, pt, nx, ny, pen) {
+    const rx = pt[0] - p.x, ry = pt[1] - p.y;
+    const vcx = p.vx - p.av * ry, vcy = p.vy + p.av * rx;
+    return { nx, ny, rx, ry, x: pt[0], y: pt[1], vn: vcx * nx + vcy * ny, pen };
+}
+
+// Deepest point of the car past the outer fence (n = outward normal)
+export function fenceContact(B, env) {
+    env = toEnv(env);
     const p = B.p;
+    if (env.shape === 'square') {
+        let best = null, pen = 0, nx = 0, ny = 0;
+        for (const c of B.corners) {
+            const px = Math.abs(c[0]) - env.half, py = Math.abs(c[1]) - env.half;
+            if (px > pen) { pen = px; best = c; nx = Math.sign(c[0]); ny = 0; }
+            if (py > pen) { pen = py; best = c; nx = 0; ny = Math.sign(c[1]); }
+        }
+        return best ? contactAt(p, best, nx, ny, pen) : null;
+    }
     let far = null, farD = 0;
     for (const c of B.corners) {
         const d = Math.hypot(c[0], c[1]);
         if (d > farD) { farD = d; far = c; }
     }
-    if (farD <= R) return null;
-    const nx = far[0] / farD, ny = far[1] / farD;     // outward normal
-    const rx = far[0] - p.x, ry = far[1] - p.y;
-    const vcx = p.vx - p.av * ry, vcy = p.vy + p.av * rx;
-    return { nx, ny, rx, ry, x: far[0], y: far[1], vn: vcx * nx + vcy * ny, pen: farD - R };
+    if (farD <= env.R) return null;
+    return contactAt(p, far, far[0] / farD, far[1] / farD, farD - env.R);
+}
+
+// Rim of the sinkhole: the car's point nearest the centre, once it's over the hole
+// (n points into the hole, so it works with bounceFence like a wall)
+export function pitContact(B, pitR) {
+    let near = null, nearD = Infinity;
+    for (const c of B.corners) {
+        const d = Math.hypot(c[0], c[1]);
+        if (d < nearD) { nearD = d; near = c; }
+    }
+    if (!near || nearD >= pitR || nearD < 1e-3) return null;
+    const c = contactAt(B.p, near, -near[0] / nearD, -near[1] / nearD, pitR - nearD);
+    c.pit = true;
+    return c;
+}
+
+// The windmill bar: a solid spinning beam through the centre
+function barContact(B, bar) {
+    const p = B.p;
+    const ux = Math.cos(bar.angle), uy = Math.sin(bar.angle);
+    const [c0, c1, c2, c3] = B.corners;
+    const pts = [c0, c1, c2, c3, [p.x, p.y],
+        [(c0[0] + c1[0]) / 2, (c0[1] + c1[1]) / 2], [(c1[0] + c2[0]) / 2, (c1[1] + c2[1]) / 2],
+        [(c2[0] + c3[0]) / 2, (c2[1] + c3[1]) / 2], [(c3[0] + c0[0]) / 2, (c3[1] + c0[1]) / 2]];
+    let best = null, bestPen = 0, bx = 0, by = 0, nx = 0, ny = 0;
+    const half = bar.w / 2;
+    for (const pt of pts) {
+        const t = Math.max(-bar.len, Math.min(bar.len, pt[0] * ux + pt[1] * uy));
+        const qx = ux * t, qy = uy * t;
+        const dx = pt[0] - qx, dy = pt[1] - qy, d = Math.hypot(dx, dy);
+        if (d < half && half - d > bestPen) {
+            bestPen = half - d; best = pt; bx = qx; by = qy;
+            // push the car out on its own side of the bar
+            const side = d > 1e-3 ? 1 / d : 0;
+            nx = d > 1e-3 ? dx * side : (p.x - qx); ny = d > 1e-3 ? dy * side : (p.y - qy);
+            const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+        }
+    }
+    if (!best) return null;
+    // The beam itself is moving: relative speed decides how hard you get batted
+    const c = contactAt(p, best, -nx, -ny, bestPen);
+    const vbx = -bar.av * by, vby = bar.av * bx;
+    c.vn -= vbx * c.nx + vby * c.ny;
+    c.bar = true;
+    return c;
 }
 
 // Bounce off the fence and move back inside
@@ -193,8 +285,9 @@ export function bounceFence(B, c) {
 
 // Engine, brakes, nitro, steering and tyre grip — once per tick.
 // Returns true when nitro was fired this tick.
-export function driveCar(p, inp) {
+export function driveCar(p, inp, env) {
     const spec = carSpec(p);
+    const ice = !!(env && env.ice);
     const fx = Math.cos(p.angle), fy = Math.sin(p.angle);
     let fwd = p.vx * fx + p.vy * fy;
     let lat = -p.vx * fy + p.vy * fx;
@@ -211,7 +304,7 @@ export function driveCar(p, inp) {
     }
     const boost = p.nitro > 0 ? 1.45 + 0.1 * p.carStats.dashForce : 1;
     const top = spec.top * p.speedMult * boost;
-    const accel = spec.accel * p.speedMult * (p.nitro > 0 ? 2.2 : 1) * (stunned ? 0.35 : 1);
+    const accel = spec.accel * p.speedMult * (p.nitro > 0 ? 2.2 : 1) * (stunned ? 0.35 : 1) * (ice ? 0.7 : 1);
     const throttle = p.nitro > 0 ? Math.max(thr, 0.8) : thr;   // nitro keeps pulling
 
     // Handbrake turn: brake + steer while moving → rear steps out, car whips round
@@ -224,10 +317,10 @@ export function driveCar(p, inp) {
         else fwd += accel * throttle * (1 - fwd / top) * DT;                 // also drags back above top speed
     } else if (throttle < -0.05) {
         const rTop = top * 0.45;
-        if (fwd > 15) fwd = Math.max(0, fwd + (handbrake ? 300 : 1100) * throttle * DT);   // brake (handbrake bleeds speed slower)
+        if (fwd > 15) fwd = Math.max(0, fwd + (handbrake ? 300 : 1100) * (ice ? 0.35 : 1) * throttle * DT);   // brake (handbrake bleeds speed slower)
         else fwd += accel * 0.6 * throttle * (1 + fwd / rTop) * DT;         // reverse gear
     } else {
-        const roll = (160 + 0.9 * Math.abs(fwd)) * DT * (stunned ? 0.4 : 1); // rolling resistance
+        const roll = (160 + 0.9 * Math.abs(fwd)) * DT * (stunned ? 0.4 : 1) * (ice ? 0.3 : 1); // rolling resistance
         fwd = Math.abs(fwd) <= roll ? 0 : fwd - Math.sign(fwd) * roll;
     }
 
@@ -235,8 +328,9 @@ export function driveCar(p, inp) {
     let grip = p.slip > 0 ? 220 : spec.grip;
     if (stunned) grip *= 0.25;
     if (handbrake) grip *= 0.4;
+    if (ice) grip *= 0.25;
     const scrub = grip * DT;
-    p.skid = Math.abs(lat) > 150 || p.slip > 0 || handbrake;
+    p.skid = Math.abs(lat) > (ice ? 260 : 150) || p.slip > 0 || handbrake;
     lat = Math.abs(lat) <= scrub ? 0 : lat - Math.sign(lat) * scrub;
 
     // Steering: full authority from walking pace, a little less at top speed,
@@ -247,7 +341,7 @@ export function driveCar(p, inp) {
     const dir = fwd < -5 ? -1 : 1;
     // (while handbraking the car pivots on its sliding rear, whatever the forward speed)
     const targetYaw = handbrake ? inp.steer * spec.turn * 1.7 : inp.steer * spec.turn * steerScale * dir;
-    const yawResponse = p.slip > 0 ? 2.5 : stunned ? 2 : handbrake ? 22 : 18;
+    const yawResponse = (p.slip > 0 ? 2.5 : stunned ? 2 : handbrake ? 22 : 18) * (ice ? 0.55 : 1);
     p.av += (targetYaw - p.av) * Math.min(1, yawResponse * DT);
 
     p.vx = fx * fwd - fy * lat;
@@ -265,12 +359,15 @@ export function driveCar(p, inp) {
 
 // Move cars and resolve contacts for one tick, in sub-steps.
 //   cars       — the cars to simulate (alive)
-//   R          — fence radius
+//   env        — arena (from arenaEnv) or just the fence radius
 //   onPair     — (A, B, result) after a car/car contact (optional)
 //   onFence    — (B, contact) before bouncing; return false to skip the bounce
-//                (e.g. the car broke through and is out)
+//                (e.g. the car broke through and is out). Sinkhole rims come
+//                through here too, with contact.pit set.
+//   onBar      — (B, contact) when the windmill bar bats a car (optional)
 //   collides   — (a, b) → whether this pair should collide (optional)
-export function stepCars(cars, R, { onPair, onFence, collides } = {}) {
+export function stepCars(cars, env, { onPair, onFence, onBar, collides } = {}) {
+    env = toEnv(env);
     const h = DT / SUBSTEPS;
     for (let s = 0; s < SUBSTEPS; s++) {
         cars = cars.filter(p => p.alive !== false);     // a car can go out mid-tick
@@ -294,10 +391,20 @@ export function stepCars(cars, R, { onPair, onFence, collides } = {}) {
         boxes = cars.map(carBox);      // positions moved — rebuild before the fence pass
         for (const B of boxes) {
             if (B.p.frozen) continue;
-            const c = fenceContact(B, R);
-            if (!c) continue;
-            if (onFence && onFence(B, c) === false) continue;
-            bounceFence(B, c);
+            const c = fenceContact(B, env);
+            if (c && !(onFence && onFence(B, c) === false)) bounceFence(B, c);
+            if (env.pitR) {
+                const pc = pitContact(B, env.pitR);
+                if (pc && !(onFence && onFence(B, pc) === false)) bounceFence(B, pc);
+            }
+            if (env.bar) {
+                const bc = barContact(B, env.bar);
+                if (bc) {
+                    if (onBar) onBar(B, bc);
+                    bounceFence(B, bc);
+                    if (bc.vn > 150) B.p.stun = Math.max(B.p.stun || 0, 0.25);
+                }
+            }
         }
     }
 }
