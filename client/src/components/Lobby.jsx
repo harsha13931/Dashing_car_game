@@ -706,6 +706,14 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
     const update = (settings) => socket.emit('updateSettings', { roomId: room.id, settings });
     const start = () => { click(); soundManager.playGo(); socket.emit('startMatch', { roomId: room.id }); };
     const [chatOpen, setChatOpenUI] = useState(false);
+    // Chat and voice only once someone else has joined (nobody to talk to on your own)
+    const together = humans.filter(p => p.connected !== false).length >= 2;
+    useEffect(() => {
+        if (together) return;
+        setChatOpenUI(false);
+        const t = setTimeout(leaveVoice, 15000);      // they may just have switched apps for a moment
+        return () => clearTimeout(t);
+    }, [together]);
 
     // Team Battle: two sides of 4 places
     const teamMode = room.settings?.mode === 'teams';
@@ -728,8 +736,8 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                     <TopButton onClick={onLeave} label="Leave room">‹ LEAVE</TopButton>
-                    <ChatButton onClick={() => setChatOpenUI(true)} />
-                    <VoiceControls roomId={room.id} />
+                    {together && <ChatButton onClick={() => setChatOpenUI(true)} />}
+                    {together && <VoiceControls roomId={room.id} />}
                 </div>
                 <div style={{ textAlign: 'center' }}>
                     <div className="gtitle" style={{ fontSize: '0.6rem', color: '#8fa1b8' }}>ROOM CODE</div>
@@ -819,7 +827,7 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
                     : 'Invite a friend or add a bot to start'}
             </div>
 
-            {chatOpen && <ChatPanel roomId={room.id} onClose={() => setChatOpenUI(false)} />}
+            {chatOpen && together && <ChatPanel roomId={room.id} onClose={() => setChatOpenUI(false)} />}
         </div>
     );
 }
