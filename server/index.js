@@ -1396,8 +1396,17 @@ setInterval(() => {
 }, 15000);
 
 // ─── Serve client ──────────────────────────────────────────────────────────
-app.use(express.static(path.join(__dirname, '../client/dist')));
+// Hashed build files never change → cache for a year; the page, manifest and
+// service worker must always be re-checked so app updates reach players.
+app.use(express.static(path.join(__dirname, '../client/dist'), {
+    setHeaders: (res, file) => {
+        if (file.includes(`${path.sep}assets${path.sep}`)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        else res.setHeader('Cache-Control', 'no-cache');
+        if (file.endsWith('.webmanifest')) res.setHeader('Content-Type', 'application/manifest+json');
+    },
+}));
 app.get('*', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(path.join(__dirname, '../client/dist/index.html'));
 });
 
