@@ -134,8 +134,8 @@ class NetClient {
     onSnapshot(m) {
         if (m.ro) {
             this.roster.clear();
-            for (const [num, id, name, carType, isBot, cosmetics, team] of m.ro) {
-                this.roster.set(num, { id, name, carType, isBot: !!isBot, cosmetics, team: team || 0 });
+            for (const [num, id, name, carType, isBot, cosmetics, team, away] of m.ro) {
+                this.roster.set(num, { id, name, carType, isBot: !!isBot, cosmetics, team: team || 0, away: !!away });
             }
         }
         const players = [];
@@ -143,7 +143,7 @@ class NetClient {
             const r = this.roster.get(a[0]);
             if (!r) continue;
             players.push({
-                id: r.id, name: r.name, isBot: r.isBot, carType: r.carType, cosmetics: r.cosmetics, team: r.team, num: a[0], hill: a[20] || 0,
+                id: r.id, name: r.name, isBot: r.isBot, away: r.away, carType: r.carType, cosmetics: r.cosmetics, team: r.team, num: a[0], hill: a[20] || 0,
                 x: a[1], y: a[2], angle: a[3], vx: a[4], vy: a[5], av: a[6],
                 alive: !!(a[7] & 1), shield: !!(a[7] & 2), isDashing: !!(a[7] & 4),
                 skid: !!(a[7] & 8), magnetTimer: (a[7] & 16) ? 1 : 0, blades: !!(a[7] & 32), braking: !!(a[7] & 64), bumper: !!(a[7] & 128), gun: !!(a[7] & 256), gunLeft: a[21] || 0, gunAim: a[22] || 0,

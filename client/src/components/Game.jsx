@@ -9,6 +9,7 @@ import { net } from '../net/netcode';
 import { NITRO_COOLDOWN, CAR_TYPES, ARENAS, GAME_MODES, HILL_TARGET } from '../../../shared/physics.mjs';
 import { RoundRewards, Coin } from './Rewards';
 import { ChatPanel, VoiceControls } from './Social';
+import { leaveVoice } from '../net/voice';
 import { onChatMessage } from '../net/chat';
 import { completeTutorial, TUTORIAL_REWARD } from '../progress';
 
@@ -42,6 +43,19 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     const [arenaInfo, setArenaInfo] = useState(() => (early && ARENAS[early.arena] ? { ...ARENAS[early.arena], key: early.arena } : null));
     const followRef = useRef(null);
     const [emoteOpen, setEmoteOpen] = useState(false);
+    // Typed chat and voice are for playing with real people — not shown in a solo game vs bots
+    const humanCount = (snapshot.players || []).filter(p => !p.isBot && !p.away).length;
+    const withPeople = humanCount >= 2;
+    // everyone else left mid-match: close the chat, and hang up voice if they
+    // don't come back soon (phones drop out for a moment when backgrounded)
+    const hadPeople = useRef(false);
+    useEffect(() => {
+        if (withPeople) { hadPeople.current = true; return; }
+        if (!hadPeople.current || !humanCount) return;
+        setChatOpen(false);
+        const t = setTimeout(() => { hadPeople.current = false; leaveVoice(); }, 15000);
+        return () => clearTimeout(t);
+    }, [withPeople, humanCount]);
     const [menuOpen, setMenuOpen] = useState(false);
     const [teamPts, setTeamPts] = useState({ 1: 0, 2: 0 });
     const lastElim = useRef(null);
@@ -835,23 +849,24 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                 </div>
             )}
 
-            {chatOpen && <ChatPanel roomId={room?.id} onClose={() => setChatOpen(false)} />}
+            {chatOpen && withPeople && <ChatPanel roomId={room?.id} onClose={() => setChatOpen(false)} />}
 
             {/* ─── Top-left: chat & emotes, menu, mic ───────────────────── */}
             {!matchData && (
                 <div style={{ position: 'absolute', top: EDGE_TOP, left: EDGE_LEFT, zIndex: 8, pointerEvents: 'auto' }}>
                     <div style={{ display: 'flex', gap: 6 }}>
-                        <HudButton onClick={() => { setEmoteOpen(o => !o); setMenuOpen(false); }} active={emoteOpen} label="Chat and emotes">
-                            <svg width="20" height="20" viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" fill="#fff" /><circle cx="8" cy="10.5" r="1.4" fill="#1f6fe0" /><circle cx="12" cy="10.5" r="1.4" fill="#1f6fe0" /><circle cx="16" cy="10.5" r="1.4" fill="#1f6fe0" /></svg>
+                        <HudButton onClick={() => { setEmoteOpen(o => !o); setMenuOpen(false); }} active={emoteOpen} label={withPeople ? 'Chat and emotes' : 'Emotes'}>
+                            {withPeople ? <svg width="20" height="20" viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" fill="#fff" /><circle cx="8" cy="10.5" r="1.4" fill="#1f6fe0" /><circle cx="12" cy="10.5" r="1.4" fill="#1f6fe0" /><circle cx="16" cy="10.5" r="1.4" fill="#1f6fe0" /></svg>
+                                : <span style={{ fontSize: '1.15rem', lineHeight: 1 }}>😀</span>}
                         </HudButton>
                         <HudButton onClick={() => { setMenuOpen(o => !o); setEmoteOpen(false); }} active={menuOpen} label="Menu">
                             <svg width="20" height="20" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" stroke="#fff" strokeWidth="2.8" strokeLinecap="round" /></svg>
                         </HudButton>
-                        <VoiceControls roomId={room?.id} round />
+                        {withPeople && <VoiceControls roomId={room?.id} round />}
                     </div>
                     {emoteOpen && (
                         <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', maxWidth: '60vw' }}>
-                            <button onClick={() => { setEmoteOpen(false); setChatOpen(true); }} aria-label="Type a message" style={emoteChip}>⌨️</button>
+                            {withPeople && <button onClick={() => { setEmoteOpen(false); setChatOpen(true); }} aria-label="Type a message" style={emoteChip}>⌨️</button>}
                             {EMOTES.map((em, i) => (
                                 <button key={em} onClick={() => sendEmote(i)} style={{ ...emoteChip, fontSize: em.length > 2 ? '0.85rem' : '1.15rem' }}>{em}</button>
                             ))}

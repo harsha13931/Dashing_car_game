@@ -1004,6 +1004,7 @@ io.on('connection', socket => {
         }
         p.connected = true;
         p.disconnectedAt = 0;
+        room.rosterDirty = true;
         if (!room.players[room.hostId] || room.players[room.hostId].connected === false) room.hostId = socket.id;
         socket.join(room.id);
         socket.emit('chatHistory', room.chat || []);
@@ -1105,6 +1106,7 @@ io.on('connection', socket => {
             if (!p) continue;
             p.connected = false;
             p.disconnectedAt = Date.now();
+            room.rosterDirty = true;
             p.inputs = { forward: 0, steer: 0, dash: false, shoot: false, drop: false };
             if (room.hostId === socket.id && connectedHumans(room).length) room.hostId = connectedHumans(room)[0].id;
             if (room.voice && room.voice.delete(socket.id)) io.to(roomId).emit('voice:left', { id: socket.id });
@@ -1405,7 +1407,7 @@ const r1 = (n) => Math.round(n * 10) / 10;
 const r2 = (n) => Math.round(n * 100) / 100;
 
 function rosterOf(room) {
-    return Object.values(room.players).map(p => [p.num, p.id, p.name, p.carType, p.isBot ? 1 : 0, p.cosmetics, p.team || 0]);
+    return Object.values(room.players).map(p => [p.num, p.id, p.name, p.carType, p.isBot ? 1 : 0, p.cosmetics, p.team || 0, p.connected === false ? 1 : 0]);
 }
 
 function sendSnapshot(room, now) {
