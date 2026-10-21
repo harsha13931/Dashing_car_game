@@ -8,7 +8,7 @@
 import { DT, CAR_TYPES, driveCar, stepCars, arenaEnv, ARENA_KEYS, ARENAS, MODE_KEYS } from '../../../shared/physics.mjs';
 import { socket } from './socket';
 
-const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades', 'Bumper'];
+const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades', 'Bumper', 'Gatling'];
 const WEAPONS = [null, 'oil', 'reverse'];
 const HAZARDS = ['oil', 'reverse'];
 export const PLANE_SPEED = 560;     // must match the server
@@ -146,7 +146,7 @@ class NetClient {
                 id: r.id, name: r.name, isBot: r.isBot, carType: r.carType, cosmetics: r.cosmetics, team: r.team, num: a[0], hill: a[20] || 0,
                 x: a[1], y: a[2], angle: a[3], vx: a[4], vy: a[5], av: a[6],
                 alive: !!(a[7] & 1), shield: !!(a[7] & 2), isDashing: !!(a[7] & 4),
-                skid: !!(a[7] & 8), magnetTimer: (a[7] & 16) ? 1 : 0, blades: !!(a[7] & 32), braking: !!(a[7] & 64), bumper: !!(a[7] & 128),
+                skid: !!(a[7] & 8), magnetTimer: (a[7] & 16) ? 1 : 0, blades: !!(a[7] & 32), braking: !!(a[7] & 64), bumper: !!(a[7] & 128), gun: !!(a[7] & 256), gunLeft: a[21] || 0, gunAim: a[22] || 0,
                 dashCooldown: a[8], shootCooldown: a[9], nitro: a[10], slip: a[11], stun: a[12],
                 speedMult: a[13] / 100, scale: a[14] / 100, weapon: WEAPONS[a[15]] || null, kills: a[16], hp: a[17] ?? 100, bladeLeft: a[18] || 0, bumperLeft: a[19] || 0,
             });
@@ -155,6 +155,7 @@ class NetClient {
             players,
             powerups: m.u.map(([id, t, x, y, ld]) => ({ id, type: PU_TYPES[t], x, y, landAt: m.t + ld })),
             projectiles: m.j.map(([id, x, y, vx, vy]) => ({ id, x, y, vx, vy })),
+            bullets: (m.k || []).map(([id, x, y, vx, vy]) => ({ id, x, y, vx, vy })),
             hazards: m.h.map(([id, t, x, y]) => ({ id, type: HAZARDS[t], x, y })),
             planes: m.pl.map(([id, x, y, angle]) => ({ id, x, y, angle })),
             timestamp: m.t,
@@ -221,8 +222,6 @@ class NetClient {
         const obs = this.obstacles(tau, car);
         stepCars(obs.length ? [car, ...obs] : [car], env, {
             collides: (a, b) => a === car || b === car,
-            // the sinkhole rim only holds while the fence is locked (same rule as the server)
-            onFence: (B, c) => !c.pit || (this.snap && this.snap.fenceLock > 0),
         });
     }
 

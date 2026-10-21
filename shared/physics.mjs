@@ -16,14 +16,14 @@ export const SUBSTEPS = 4;
 //   hp        — health (heavier cars are tougher)
 //   stability — shrugs off hits: shorter loss of grip and harder to shove through the fence
 export const CAR_TYPES = {
-    sports:   { name: 'Venom GT',      role: 'All-rounder', maxSpeed: 1.2,  accel: 1.15, turn: 1.15, mass: 1.0,  dashForce: 1.0,  size: 0.9,  hp: 105, stability: 1.15, desc: 'Good at everything' },
-    muscle:   { name: 'Thunder V8',    role: 'Bruiser',     maxSpeed: 1.12, accel: 1.05, turn: 0.9,  mass: 1.3,  dashForce: 1.3,  size: 1.1,  hp: 115, stability: 1.15, desc: 'Brutal rams, wide turns' },
-    truck:    { name: 'War Rig',       role: 'Tank',        maxSpeed: 0.82, accel: 0.8,  turn: 0.78, mass: 1.55, dashForce: 1.45, size: 1.35, hp: 120, stability: 1.35, desc: 'Nearly impossible to push' },
-    rally:    { name: 'Dust Devil',    role: 'Grip King',   maxSpeed: 1.1,  accel: 1.15, turn: 1.3,  mass: 1.05, dashForce: 1.0,  size: 0.95, hp: 105, stability: 1.45, desc: 'Shakes off hits instantly' },
-    kart:     { name: 'Pocket Rocket', role: 'Dodger',      maxSpeed: 1.25, accel: 1.45, turn: 1.4,  mass: 0.88, dashForce: 0.9,  size: 0.75, hp: 105, stability: 1.4,  desc: 'Tiny, quick, hard to catch' },
-    suv:      { name: 'Iron Shield',   role: 'Defender',    maxSpeed: 0.95, accel: 0.9,  turn: 0.92, mass: 1.45, dashForce: 1.2,  size: 1.2,  hp: 120, stability: 1.25, desc: 'Heavy armour, slow start' },
-    drift:    { name: 'Sidewinder',    role: 'Drifter',     maxSpeed: 1.1,  accel: 1.1,  turn: 1.55, mass: 1.0,  dashForce: 1.05, size: 0.95, hp: 110, stability: 1.1,  desc: 'Fastest turns, likes to slide' },
-    supercar: { name: 'Phantom X',     role: 'Rocket',      maxSpeed: 1.45, accel: 1.3,  turn: 1.05, mass: 0.95, dashForce: 1.25, size: 0.85, hp: 105, stability: 1.15, desc: 'Top speed, big nitro hits, fragile' },
+    sports:   { name: 'Venom GT',      role: 'All-rounder', maxSpeed: 1.2,  accel: 1.15, turn: 1.15, mass: 1.0,  dashForce: 1.0,  size: 0.9,  hp: 118, stability: 1.15, desc: 'Good at everything' },
+    muscle:   { name: 'Thunder V8',    role: 'Bruiser',     maxSpeed: 1.12, accel: 1.05, turn: 0.9,  mass: 1.2,  dashForce: 1.3,  size: 1.1,  hp: 121, stability: 1.15, desc: 'Brutal rams, wide turns' },
+    truck:    { name: 'War Rig',       role: 'Tank',        maxSpeed: 0.82, accel: 0.8,  turn: 0.78, mass: 1.35, dashForce: 1.45, size: 1.35, hp: 125, stability: 1.35, desc: 'Nearly impossible to push' },
+    rally:    { name: 'Dust Devil',    role: 'Grip King',   maxSpeed: 1.1,  accel: 1.15, turn: 1.3,  mass: 1.05, dashForce: 1.0,  size: 0.95, hp: 118, stability: 1.45, desc: 'Shakes off hits instantly' },
+    kart:     { name: 'Pocket Rocket', role: 'Dodger',      maxSpeed: 1.25, accel: 1.45, turn: 1.4,  mass: 0.95, dashForce: 0.9,  size: 0.75, hp: 117, stability: 1.4,  desc: 'Tiny, quick, hard to catch' },
+    suv:      { name: 'Iron Shield',   role: 'Defender',    maxSpeed: 0.95, accel: 0.9,  turn: 0.92, mass: 1.3,  dashForce: 1.2,  size: 1.2,  hp: 125, stability: 1.25, desc: 'Heavy armour, slow start' },
+    drift:    { name: 'Sidewinder',    role: 'Drifter',     maxSpeed: 1.1,  accel: 1.1,  turn: 1.55, mass: 1.0,  dashForce: 1.05, size: 0.95, hp: 118, stability: 1.1,  desc: 'Fastest turns, likes to slide' },
+    supercar: { name: 'Phantom X',     role: 'Rocket',      maxSpeed: 1.45, accel: 1.3,  turn: 1.05, mass: 1.0,  dashForce: 1.25, size: 0.85, hp: 116, stability: 1.15, desc: 'Top speed, big nitro hits' },
 };
 
 export const CAR_HALF_LEN = 44;     // px at size 1 (sprite 131px × 0.7 scale)
@@ -36,6 +36,7 @@ export const NITRO_COOLDOWN = 7.0;  // s from pressing nitro until it's ready ag
 
 const RESTITUTION = 0.55;           // bounciness of a normal hit
 const RESTITUTION_NITRO = 0.85;     // ramming with nitro
+const PIVOT_TURN = 0.75;            // share of full turn rate when steering with no gas (turn on the spot)
 const STUN_MAX = 0.5;               // s of reduced grip after a big hit (so knockback carries)
 
 const clampSpin = (v) => Math.max(-MAX_SPIN, Math.min(MAX_SPIN, v));
@@ -44,18 +45,18 @@ const clampSpin = (v) => Math.max(-MAX_SPIN, Math.min(MAX_SPIN, v));
 // A different arena can be picked every round. The physics only ever sees an
 // "env": { R, shape, half, pitR, ice, bar } built by arenaEnv().
 export const ARENAS = {
-    classic:  { name: 'Classic Ring', tip: 'Push them through the fence!', shape: 'circle' },
+    classic:  { name: 'Classic Ring', tip: 'Slam rivals into the fence — every hit costs health', shape: 'circle' },
     ice:      { name: 'Ice Rink',     tip: 'Slippery! Brake early, turn gently', shape: 'circle', ice: true },
     box:      { name: 'The Box',      tip: 'Corners are traps — stay out of them', shape: 'square' },
-    sinkhole: { name: 'Sinkhole',     tip: 'Don\'t fall in the hole in the middle!', shape: 'circle', pit: 0.2 },
+    sinkhole: { name: 'Sinkhole',     tip: 'The hole\'s rim is a wall — ram rivals into it', shape: 'circle', pit: 0.2 },
     windmill: { name: 'Windmill',     tip: 'Dodge the spinning bar', shape: 'circle', bar: { len: 0.6, w: 30, speed: 0.55 } },
 };
 export const ARENA_KEYS = Object.keys(ARENAS);
 
 // ─── Game modes ───────────────────────────────────────────────────────────
 export const GAME_MODES = {
-    ffa:   { name: 'Last Car Standing', icon: '🏁', tip: 'Knock everyone out — last car standing wins' },
-    teams: { name: 'Team Battle',       icon: '⚔️', tip: 'Red vs Blue — knock out the other team' },
+    ffa:   { name: 'Last Car Standing', icon: '🏁', tip: 'Wreck everyone — last car standing wins' },
+    teams: { name: 'Team Battle',       icon: '⚔️', tip: 'Red vs Blue — wreck the other team' },
     koth:  { name: 'King of the Hill',  icon: '👑', tip: 'Hold the centre zone to score — alone scores double' },
     bomb:  { name: 'Hot Bomb',          icon: '💣', tip: 'Bump someone to pass the bomb before it blows!' },
 };
@@ -360,10 +361,13 @@ export function driveCar(p, inp, env) {
     lat = Math.abs(lat) <= scrub ? 0 : lat - Math.sign(lat) * scrub;
 
     // Steering: full authority from walking pace, a little less at top speed,
-    // flips in reverse; pulling away you can already turn. Tyres fight any spin.
+    // flips in reverse; pulling away you can already turn. With no gas at all
+    // the car still turns on the spot, so you can aim without driving off.
+    // Tyres fight any spin.
     const spd = Math.abs(fwd);
     let steerScale = Math.min(1, spd / 70) * (1 - 0.15 * Math.min(1, spd / top));
-    if (Math.abs(throttle) > 0.1) steerScale = Math.max(steerScale, 0.45);
+    if (Math.abs(throttle) > 0.1) steerScale = Math.max(steerScale, 0.6);
+    else if (Math.abs(inp.steer) > 0.1 && !stunned) steerScale = Math.max(steerScale, PIVOT_TURN);
     const dir = fwd < -5 ? -1 : 1;
     // (while handbraking the car pivots on its sliding rear, whatever the forward speed)
     const targetYaw = handbrake ? inp.steer * spec.turn * 1.7 : inp.steer * spec.turn * steerScale * dir;

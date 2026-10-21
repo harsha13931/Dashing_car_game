@@ -184,6 +184,11 @@ class View3D {
             crate: new THREE.BoxGeometry(30, 30, 30),
             chute: new THREE.SphereGeometry(30, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2),
             bomb: new THREE.SphereGeometry(10, 16, 12),
+            tracer: new THREE.BoxGeometry(46, 3.2, 3.2),
+            rocketBody: new THREE.CylinderGeometry(5.5, 5.5, 40, 12).rotateZ(Math.PI / 2),
+            rocketNose: new THREE.ConeGeometry(5.5, 15, 12).rotateZ(-Math.PI / 2),
+            rocketFins: new THREE.BoxGeometry(11, 1.6, 22),
+            rocketFlame: new THREE.ConeGeometry(5, 30, 10).rotateZ(Math.PI / 2),
         };
         this.mat = {
             blob: new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }),
@@ -192,7 +197,19 @@ class View3D {
             debris: new THREE.MeshStandardMaterial({ color: 0x8a8f98, roughness: 0.5, metalness: 0.6 }),
             chute: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, side: THREE.DoubleSide }),
             bomb: new THREE.MeshStandardMaterial({ color: 0x1d1f24, metalness: 0.4, roughness: 0.3 }),
+            tracer: new THREE.MeshBasicMaterial({ color: 0xffc04a, transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false }),
+            rocketBody: new THREE.MeshStandardMaterial({ color: 0xe8ebef, metalness: 0.5, roughness: 0.35 }),
+            rocketRed: new THREE.MeshStandardMaterial({ color: 0xd6312f, roughness: 0.5 }),
+            rocketFlame: new THREE.MeshBasicMaterial({ color: 0xffa23a, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }),
+            gunDark: new THREE.MeshStandardMaterial({ color: 0x2b2f36, metalness: 0.8, roughness: 0.3 }),
+            gunSteel: new THREE.MeshStandardMaterial({ color: 0x9aa3ad, metalness: 0.9, roughness: 0.25 }),
+            gunAmmo: new THREE.MeshStandardMaterial({ color: 0xff7a1a, roughness: 0.5 }),
         };
+        // Gatling tracers: one instanced mesh for every bullet in flight
+        this.tracers = new THREE.InstancedMesh(this.geo.tracer, this.mat.tracer, 200);
+        this.tracers.count = 0;
+        this.tracers.frustumCulled = false;
+        this.scene.add(this.tracers);
         // explosion flash + shockwave pool
         this.boomPool = [];
         for (let i = 0; i < 10; i++) {
@@ -275,6 +292,10 @@ class View3D {
         this._onCollision = (e) => {
             if (!e || typeof e.x !== 'number') return;
             const p = P(e.x, e.y), n = Math.min(26, 6 + Math.round((e.impact || 10) / 14));
+            if (e.type === 'bullet') {
+                this.fxAdd.emit({ x: p.x, y: 18, z: p.z, spread: 220, up: 0.6, life: 0.22, size: [6, 1], color: [0xffffff, 0xffb02a], alpha: [1, 0], gravity: 400, count: 6 });
+                return;
+            }
             this.fxAdd.emit({ x: p.x, y: 14, z: p.z, spread: 260, up: 0.9, life: 0.4, size: [7, 1], color: [0xfff1a0, 0xff8822], alpha: [1, 0], gravity: 500, drag: 2, count: n });
             if (e.type === 'balloon') this.fxAdd.emit({ x: p.x, y: 20, z: p.z, spread: 200, life: 0.6, size: [9, 3], color: [BALLOON_COLORS[Math.floor(Math.random() * 6)], 0xffffff], alpha: [1, 0], gravity: 200, count: 10 });
             this.fxSmoke.emit({ x: p.x, y: 6, z: p.z, spread: 40, life: 0.8, size: [16, 40], color: [0xd9b08a, 0xc9a07a], alpha: [0.5, 0], count: 3 });
@@ -357,6 +378,34 @@ class View3D {
         return Math.atan2(wz, wx);
     }
 
+    // Roof-mounted Gatling gun: base, body, ammo box and a spinning three-barrel cluster
+    makeGun() {
+        const g = new THREE.Group();
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(8, 9, 4, 14), this.mat.gunDark);
+        base.position.y = 2;
+        const body = new THREE.Mesh(new THREE.BoxGeometry(18, 9, 12), this.mat.gunDark);
+        body.position.set(2, 8, 0);
+        const ammo = new THREE.Mesh(new THREE.BoxGeometry(9, 8, 8), this.mat.gunAmmo);
+        ammo.position.set(-2, 8, 9);
+        const barrels = new THREE.Group();
+        barrels.position.set(11, 8, 0);
+        for (let i = 0; i < 3; i++) {
+            const a = (i / 3) * Math.PI * 2;
+            const b = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 26, 8).rotateZ(Math.PI / 2), this.mat.gunSteel);
+            b.position.set(13, Math.cos(a) * 3, Math.sin(a) * 3);
+            barrels.add(b);
+        }
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(4.6, 1, 6, 14).rotateY(Math.PI / 2), this.mat.gunDark);
+        ring.position.x = 24;
+        barrels.add(ring);
+        g.add(base, body, ammo, barrels);
+        g.traverse(o => { if (o.isMesh) o.castShadow = !this.low; });
+        g.userData.barrels = barrels;
+        g.visible = false;
+        this.scene.add(g);
+        return g;
+    }
+
     ensureCar(p) {
         const look = p.cosmetics || {};
         const key = `${p.carType}|${JSON.stringify(look)}`;
@@ -386,7 +435,7 @@ class View3D {
         const strings = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(12 * 3), 3)), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 }));
         strings.visible = false; strings.frustumCulled = false;
         this.scene.add(strings);
-        e = { key, car, ring, disc, blob, hpBg, hpFill, shield, saws, arms, balloons, strings, label: null, labelText: '', x: p.x, z: p.y, a: p.angle, lastA: p.angle, lastX: p.x, lastZ: p.y, steer: 0, lean: 0, alive: true, hp: 100, sizeMult: 1, sawSpin: 0 };
+        e = { key, car, ring, disc, blob, hpBg, hpFill, shield, saws, arms, balloons, strings, gun: null, label: null, labelText: '', x: p.x, z: p.y, a: p.angle, lastA: p.angle, lastX: p.x, lastZ: p.y, steer: 0, lean: 0, alive: true, hp: 100, sizeMult: 1, sawSpin: 0 };
         this.cars.set(p.id, e);
         return e;
     }
@@ -400,6 +449,7 @@ class View3D {
         e.balloons.forEach(b => b.material.dispose());
         e.strings.geometry.dispose();
         if (e.label) e.label.material.dispose();
+        if (e.gun) { this.scene.remove(e.gun); e.gun.traverse(o => { if (o.isMesh) o.geometry.dispose(); }); }
         this.cars.delete(id);
     }
 
@@ -536,6 +586,27 @@ class View3D {
                 e.shield.material.uniforms.uTime.value = time / 1000;
             }
 
+            // Gatling gun on the roof: swings onto its target and rattles away
+            const gunOn = p.alive && p.gun && !((p.gunLeft || 0) < 1 && Math.floor(time / 110) % 2 === 0);
+            if (gunOn && !e.gun) e.gun = this.makeGun();
+            if (e.gun) {
+                e.gun.visible = gunOn;
+                if (gunOn) {
+                    const aim = e.a + ((p.gunAim || p.angle) - p.angle);
+                    e.gun.position.set(e.x, (e.car.roofY - 1) * sizeMult, e.z);
+                    e.gun.scale.setScalar(sizeMult);
+                    e.gun.rotation.y = -aim;
+                    e.gun.userData.barrels.rotation.x += dt * 40;
+                    const mx = e.x + Math.cos(aim) * 38 * sizeMult, mz = e.z + Math.sin(aim) * 38 * sizeMult, my = (e.car.roofY + 7) * sizeMult;
+                    this.fxAdd.emit({ x: mx, y: my, z: mz, spread: 30, life: 0.06, size: [22, 6], color: [0xfff4c0, 0xff9a2a], alpha: [1, 0], count: 2 });
+                    if (Math.random() < 0.4) this.fxSmoke.emit({ x: mx, y: my, z: mz, spread: 20, life: 0.5, size: [6, 18], color: [0xcfcfcf, 0xaaaaaa], alpha: [0.35, 0], gravity: -20, count: 1 });
+                    if (Math.random() < 0.5) {     // spent shell casings
+                        const sa = aim + Math.PI / 2;
+                        this.fxAdd.emit({ x: e.x + Math.cos(sa) * 8, y: my, z: e.z + Math.sin(sa) * 8, vx: Math.cos(sa) * 90, vz: Math.sin(sa) * 90, vy: 120, spread: 30, life: 0.4, size: [3, 2], color: [0xffd27a, 0xb07a20], alpha: [1, 0.6], gravity: 600, count: 1 });
+                    }
+                }
+            }
+
             // spinning saws on steel arms
             const bladesOn = p.alive && p.blades && !((p.bladeLeft || 0) < 1.5 && Math.floor(time / 110) % 2 === 0);
             e.sawSpin += dt * 30;
@@ -662,26 +733,52 @@ class View3D {
             rSeen.add(pr.id);
             let m = this.rockets.get(pr.id);
             if (!m) {
+                // a proper missile: white body, red nose and fins, and a roaring flame out the back
                 m = new THREE.Group();
-                const body = new THREE.Mesh(new THREE.CylinderGeometry(3, 3, 22, 8).rotateZ(Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0xe8ebef, metalness: 0.5, roughness: 0.35 }));
-                const nose = new THREE.Mesh(new THREE.ConeGeometry(3, 8, 8).rotateZ(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0xd6312f }));
-                nose.position.x = 15;
-                const fins = new THREE.Mesh(new THREE.BoxGeometry(6, 1, 12), new THREE.MeshStandardMaterial({ color: 0xd6312f }));
-                fins.position.x = -9;
-                m.add(body, nose, fins);
-                m.traverse(o => { if (o.isMesh) o.castShadow = !this.low; });
+                const body = new THREE.Mesh(this.geo.rocketBody, this.mat.rocketBody);
+                const nose = new THREE.Mesh(this.geo.rocketNose, this.mat.rocketRed);
+                nose.position.x = 27;
+                const fins = new THREE.Mesh(this.geo.rocketFins, this.mat.rocketRed);
+                fins.position.x = -15;
+                const fins2 = new THREE.Mesh(this.geo.rocketFins, this.mat.rocketRed);
+                fins2.position.x = -15; fins2.rotation.x = Math.PI / 2;
+                const flame = new THREE.Mesh(this.geo.rocketFlame, this.mat.rocketFlame);
+                flame.position.x = -34;
+                m.add(body, nose, fins, fins2, flame);
+                m.userData.flame = flame;
+                body.castShadow = nose.castShadow = fins.castShadow = !this.low;
                 this.scene.add(m);
                 this.rockets.set(pr.id, m);
             }
             const x = pr.x + pr.vx * since, z = pr.y + pr.vy * since;
             const ang = Math.atan2(pr.vy, pr.vx);
-            m.position.set(x, 18, z);
+            m.position.set(x, 24, z);
             m.rotation.y = -ang;
-            const tx = x - Math.cos(ang) * 16, tz = z - Math.sin(ang) * 16;
-            this.fxAdd.emit({ x: tx, y: 18, z: tz, spread: 20, life: 0.18, size: [16, 3], color: [0xffe18a, 0xff5a1a], alpha: [1, 0], count: 2 });
-            this.fxSmoke.emit({ x: tx, y: 18, z: tz, spread: 8, life: 0.9, size: [8, 26], color: [0xdedede, 0xbdbdbd], alpha: [0.45, 0], gravity: -10, count: 1 });
+            m.rotation.x = time * 0.012;                      // slow barrel roll
+            const fl = m.userData.flame;
+            fl.scale.set(0.8 + Math.random() * 0.5, 0.9 + Math.random() * 0.3, 0.9 + Math.random() * 0.3);
+            const tx = x - Math.cos(ang) * 40, tz = z - Math.sin(ang) * 40;
+            this.fxAdd.emit({ x: tx, y: 24, z: tz, spread: 40, life: 0.28, size: [34, 6], color: [0xfff0a0, 0xff3a0a], alpha: [1, 0], count: this.low ? 2 : 4 });
+            this.fxSmoke.emit({ x: tx, y: 24, z: tz, spread: 14, life: 1.1, size: [14, 46], color: [0xe0e0e0, 0xa8a8a8], alpha: [0.5, 0], gravity: -12, count: this.low ? 1 : 2 });
         }
-        for (const [id, m] of this.rockets) if (!rSeen.has(id)) { this.scene.remove(m); m.traverse(o => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } }); this.rockets.delete(id); }
+        for (const [id, m] of this.rockets) if (!rSeen.has(id)) { this.scene.remove(m); this.rockets.delete(id); }
+
+        // Gatling tracers (extrapolated along their flight since the snapshot)
+        {
+            const bs = snap.bullets || [];
+            const n = Math.min(200, bs.length);
+            const M = this._tm || (this._tm = new THREE.Matrix4()), Q = this._tq || (this._tq = new THREE.Quaternion());
+            const V = this._tv || (this._tv = new THREE.Vector3()), S = this._ts || (this._ts = new THREE.Vector3(1, 1, 1)), Y = new THREE.Vector3(0, 1, 0);
+            for (let i = 0; i < n; i++) {
+                const b = bs[i];
+                V.set(b.x + b.vx * since, 22, b.y + b.vy * since);
+                Q.setFromAxisAngle(Y, -Math.atan2(b.vy, b.vx));
+                M.compose(V, Q, S);
+                this.tracers.setMatrixAt(i, M);
+            }
+            this.tracers.count = n;
+            this.tracers.instanceMatrix.needsUpdate = true;
+        }
 
         // air-drop crates: parachute down, then sit there with the icon bobbing
         const puSeen = new Set();
