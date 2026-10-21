@@ -149,46 +149,6 @@ export function renderCar(type, cos, { stage = 0, res = 1 } = {}) {
     return c;
 }
 
-// Soft black silhouette for the drop shadow
-export function renderShadow(type) {
-    const s = SPECS[type] || SPECS.sports;
-    const pad = 16;
-    const c = document.createElement('canvas');
-    c.width = CAR_TEX_W + pad * 2; c.height = CAR_TEX_H + pad * 2;
-    const g = c.getContext('2d');
-    g.translate(pad, pad);
-    try { g.filter = 'blur(5px)'; } catch (_) { /* ignore */ }
-    g.fillStyle = 'rgba(0,0,0,0.85)';
-    if (s.kart) { roundRect(g, CX - s.mw / 2, CY - s.L / 2 + 10, s.mw, s.L - 20, 20); g.fill(); }
-    else { smoothPath(g, bodyPoints(s)); g.fill(); }
-    return c;
-}
-
-// Red glow for the brake lights (drawn additively over the car)
-export function renderBrakeGlow(type) {
-    const s = SPECS[type] || SPECS.sports;
-    const c = document.createElement('canvas');
-    c.width = CAR_TEX_W; c.height = CAR_TEX_H + 40;
-    const g = c.getContext('2d');
-    const y = CY + s.L / 2 - 6;
-    const xs = s.kart ? [CX - 14, CX + 14] : [CX - s.rw * 0.33, CX + s.rw * 0.33];
-    for (const x of xs) {
-        const grd = g.createRadialGradient(x, y, 1, x, y, 26);
-        grd.addColorStop(0, 'rgba(255,60,60,1)');
-        grd.addColorStop(0.35, 'rgba(255,30,30,0.6)');
-        grd.addColorStop(1, 'rgba(255,0,0,0)');
-        g.fillStyle = grd;
-        g.fillRect(x - 26, y - 26, 52, 52);
-    }
-    return c;
-}
-
-// Where things sit on each model (for in-game effects), in canvas px from centre
-export function carAnchors(type) {
-    const s = SPECS[type] || SPECS.sports;
-    return { front: -s.L / 2, rear: s.L / 2, halfWidth: s.mw / 2 };
-}
-
 // ─── the drawing ─────────────────────────────────────────────────────────
 function drawWheel(g, x, y, w, h, rim) {
     roundRect(g, x - w / 2, y - h / 2, w, h, 6);

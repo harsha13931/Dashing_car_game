@@ -21,13 +21,7 @@ export function switchToLowAuto() {
 // Remember a slow device between sessions
 try { autoLow = localStorage.getItem(KEY + '.autolow') === '1'; } catch (_) { /* ignore */ }
 
-// ─── View: the 3D arena (default) or the classic flat 2D one ──────────────
-export function viewSetting() {
-    try { return localStorage.getItem('dasharena.view') || '3d'; } catch (_) { return '3d'; }
-}
-export function setViewSetting(v) {
-    try { localStorage.setItem('dasharena.view', v); } catch (_) { /* ignore */ }
-}
+// ─── Can this browser draw the 3D arena at all? ───────────────────────────
 export function webglOK() {
     try {
         const c = document.createElement('canvas');
