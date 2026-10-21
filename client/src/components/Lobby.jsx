@@ -13,9 +13,9 @@ const ARENA_CHOICES = ['random', ...Object.keys(ARENAS)];
 const arenaLabel = (k) => `${ARENA_ICON[k] || ''} ${k === 'random' ? 'Random' : ARENAS[k].name}`;
 import { getToken, saveRoom, clearRoom } from '../net/session';
 import { useInstall, promptInstall, isIOS } from '../pwa';
-import { gfxSetting, setGfxSetting, viewSetting, setViewSetting, webglOK } from '../gfx';
+import { gfxSetting, setGfxSetting, webglOK } from '../gfx';
 
-// The real 3D car on the showroom turntable (falls back to the 2D drawing)
+// The real 3D car on the showroom turntable (a flat picture while it loads)
 const Showroom3D = lazy(() => import('../three/Showroom3D'));
 import { ChatPanel, ChatButton, VoiceControls, VoiceBadge } from './Social';
 import { leaveVoice } from '../net/voice';
@@ -232,17 +232,17 @@ function paintCar(ctx, carKey, baseColor, cos) {
 
 // Large rotating turntable preview of the selected car.
 function CarShowroom(props) {
-    const [use3D] = useState(() => viewSetting() === '3d' && webglOK());
-    if (!use3D) return <CarShowroom2D {...props} />;
+    const [use3D] = useState(webglOK);
+    if (!use3D) return <CarPicture {...props} />;
     const { car, cos, height = 215 } = props;
     return (
-        <Suspense fallback={<CarShowroom2D {...props} />}>
+        <Suspense fallback={<CarPicture {...props} />}>
             <Showroom3D carKey={car.key} cos={cos} height={height} />
         </Suspense>
     );
 }
 
-function CarShowroom2D({ car, cos, height = 215, scale = 2.8, showName = true, framed = true }) {
+function CarPicture({ car, cos, height = 215, scale = 2.8, showName = true, framed = true }) {
     const canvasRef = useRef(null);
 
     useEffect(() => {
@@ -892,7 +892,6 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
     const [arena, setArena] = useState('random');
     const [gameMode, setGameMode] = useState('ffa');
     const [gfx, setGfx] = useState(gfxSetting);
-    const [view, setView] = useState(viewSetting);
     const [error, setError] = useState('');
     const [copied, setCopied] = useState(false);
     const [settings, setSettings] = useState(soundManager.settings);
@@ -1275,12 +1274,6 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
                     <Toggle label="🔊 Sound effects" on={settings.sound} onChange={v => setSetting('sound', v)} />
                     <Toggle label="🎵 Music" on={settings.music} onChange={v => setSetting('music', v)} />
                     <Toggle label="📳 Vibration" on={settings.vibration} onChange={v => setSetting('vibration', v)} />
-                    <Label>View</Label>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                        {[['3d', '3D Arena'], ['2d', 'Classic 2D']].map(([k, l]) => (
-                            <Pill key={k} active={view === k} onClick={() => { setViewSetting(k); setView(k); click(); }}>{l}</Pill>
-                        ))}
-                    </div>
                     <Label>Graphics</Label>
                     <div style={{ display: 'flex', gap: 6 }}>
                         {[['auto', 'Auto'], ['high', 'High'], ['low', 'Smooth (low)']].map(([k, l]) => (

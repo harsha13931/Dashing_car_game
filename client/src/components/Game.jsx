@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useRef, Suspense, lazy } from 'react';
-import PhaserGame from './PhaserGame';
-import { viewSetting, webglOK } from '../gfx';
+import { webglOK } from '../gfx';
 
 // The 3D arena loads on demand (keeps the menus quick to open)
 const Arena3D = lazy(() => import('../three/Arena3D'));
@@ -36,7 +35,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     const [nextIn, setNextIn] = useState(0);
     const [goFlash, setGoFlash] = useState(false);
     const [spectateId, setSpectateId] = useState(null);
-    const [USE_3D] = useState(() => viewSetting() === '3d' && webglOK());
+    const [canDraw3D] = useState(webglOK);
     const [soloOut, setSoloOut] = useState(null);     // solo: you're out → choose spectate or lobby
     const [sawOutCard, setSawOutCard] = useState(false);
     const [modeKey, setModeKey] = useState(() => (early && GAME_MODES[early.mode] ? early.mode : 'ffa'));
@@ -469,12 +468,14 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             background: '#030308', touchAction: 'none',
             userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
         }}>
-            {USE_3D ? (
+            {canDraw3D ? (
                 <Suspense fallback={<div className="full-screen center" style={{ color: '#9ab', fontSize: '0.9rem' }}>Loading 3D arena…</div>}>
                     <Arena3D snapshot={snapshot} localId={socket.id} followId={followId} />
                 </Suspense>
             ) : (
-                <PhaserGame snapshot={snapshot} localId={socket.id} followId={followId} />
+                <div className="full-screen center" style={{ color: '#cfd8e3', fontSize: '0.95rem', textAlign: 'center', padding: 24 }}>
+                    This browser can't show 3D graphics.<br />Turn on hardware acceleration or update your browser, then reload.
+                </div>
             )}
 
             {/* ─── HUD Overlay ──────────────────────────────────────────── */}

@@ -708,7 +708,7 @@ class View3D {
             this.zoomK += ((1 + 0.12 * Math.min(1, speed / 550)) - this.zoomK) * Math.min(1, dt * 2.5);
         }
         const f = this.focus || { x: 0, z: 0 };
-        // same framing as the 2D view: about as much arena across the screen
+        // about the same amount of arena across the screen on any device
         const zoom = Math.max(0.62, Math.min(1.0, Math.min(w, h) / 560));
         const visH = (h / zoom) * this.zoomK;
         const dist = this.camDist = (visH * 0.5) / Math.tan(FOV * Math.PI / 360) * 0.92;
