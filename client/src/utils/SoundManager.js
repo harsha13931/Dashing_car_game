@@ -90,6 +90,7 @@ class SoundManager {
     // One enveloped oscillator note
     _tone(freq, { type = 'sine', dur = 0.15, vol = 0.3, at = 0, glide = null, dest = null, attack = 0.005 } = {}) {
         if (!this.ctx) return;
+        vol = Math.max(0.0002, vol || 0);                 // exponential ramps can't reach 0
         const t = this.ctx.currentTime + at;
         const o = this.ctx.createOscillator();
         const g = this.ctx.createGain();
@@ -107,6 +108,7 @@ class SoundManager {
     // Filtered noise burst
     _noise({ dur = 0.2, vol = 0.4, at = 0, type = 'lowpass', freq = 1200, endFreq = null, q = 0.8, dest = null } = {}) {
         if (!this.ctx) return;
+        vol = Math.max(0.0002, vol || 0);
         const t = this.ctx.currentTime + at;
         const src = this.ctx.createBufferSource();
         src.buffer = this.noiseBuf;
