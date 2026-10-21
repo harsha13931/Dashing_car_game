@@ -36,6 +36,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     const followRef = useRef(null);
     const [emoteOpen, setEmoteOpen] = useState(false);
     const lastElim = useRef(null);
+    const [emoteFeed, setEmoteFeed] = useState([]);
     const [replay, setReplay] = useState(null);       // slow-mo of the round's final knock-out
     const sendEmote = (i) => { socket.emit('emote', { roomId: room?.id, e: i }); setEmoteOpen(false); soundManager.playClick(); };
 
@@ -153,6 +154,13 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         window.addEventListener('dash-gfx-low', onGfxLow);
         cleanups.push(() => window.removeEventListener('dash-gfx-low', onGfxLow));
 
+        socket.on('emote', ({ id, e }) => {
+            const who = net.snap?.players?.find(p => p.id === id);
+            const key = `${id}-${Date.now()}`;
+            setEmoteFeed(f => [...f.slice(-2), { key, mine: id === socket.id, name: who ? who.name : '?', text: EMOTES[e] }]);
+            setTimeout(() => setEmoteFeed(f => f.filter(x => x.key !== key)), 3500);
+        });
+
         socket.on('bombPass', ({ to, from }) => {
             if (to === socket.id) { soundManager.playArenaWarning(); soundManager.vibrate([60, 40, 60]); }
             else if (from === socket.id) soundManager.playPowerup();
@@ -230,6 +238,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             socket.off('playerEliminated');
             socket.off('arenaEvent');
             socket.off('bombPass');
+            socket.off('emote');
             socket.off('soloOut');
             socket.off('countdown');
             socket.off('matchStart');
@@ -489,7 +498,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
                 {/* Elimination feed */}
                 <div style={{
-                    position: 'absolute', left: EDGE_LEFT, top: `calc(${EDGE_TOP} + ${touchUI ? 136 : 130}px)`,
+                    position: 'absolute', left: EDGE_LEFT, top: `calc(${EDGE_TOP} + ${touchUI ? 174 : 206}px)`,
                     display: 'flex', flexDirection: 'column', gap: 4, maxWidth: '46vw',
                 }}>
                     {feed.map(e => (
@@ -809,7 +818,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             {spectating && target && (
                 <div style={{
                     position: 'absolute', left: '50%', transform: 'translateX(-50%)',
-                    bottom: `calc(${EDGE_BOTTOM} + 6px)`, zIndex: 8, pointerEvents: 'auto',
+                    bottom: `calc(${EDGE_BOTTOM} + 14px)`, zIndex: 8, pointerEvents: 'auto',
                     display: 'flex', alignItems: 'center', gap: 10,
                     background: 'rgba(0,0,0,0.65)', border: '1px solid rgba(255,210,122,0.4)',
                     borderRadius: 30, padding: '6px 8px',
@@ -831,6 +840,21 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             )}
 
             {room?.settings?.training && <TrainingCoach me={me} touchUI={touchUI} live={countdown <= 0} over={!!matchData || !!soloOut} />}
+
+            {/* Emote feed: who said what (works while you're spectating too) */}
+            {emoteFeed.length > 0 && (
+                <div style={{ position: 'absolute', top: `calc(${EDGE_TOP} + 52px)`, right: EDGE_RIGHT, zIndex: 8, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, pointerEvents: 'none' }}>
+                    {emoteFeed.map(m => (
+                        <div key={m.key} style={{
+                            background: 'rgba(0,0,0,0.7)', borderRadius: 14, padding: '3px 10px', color: '#fff', fontSize: '0.8rem', fontWeight: 700,
+                            border: `1px solid ${m.mine ? 'rgba(79,216,255,0.6)' : 'rgba(255,255,255,0.15)'}`, animation: 'popIn 0.2s ease-out',
+                        }}>
+                            <span style={{ color: m.mine ? '#8fe3ff' : '#ffd27a' }}>{m.mine ? 'You' : m.name}</span>{' '}
+                            <span style={{ fontSize: m.text.length > 2 ? '0.85rem' : '1.1rem' }}>{m.text}</span>
+                        </div>
+                    ))}
+                </div>
+            )}
 
             {/* ─── Emotes ───────────────────────────────────────────────── */}
             {!matchData && (
