@@ -438,6 +438,8 @@ class ArenaScene extends Phaser.Scene {
         }).setOrigin(0.5, 0.5).setDepth(19).setVisible(false);
         this.hillText = this.add.text(0, 0, '👑', { fontSize: '44px' }).setOrigin(0.5).setDepth(2.9).setAlpha(0.55).setVisible(false);
         this.bladeGfx = this.add.graphics().setDepth(5.05);
+        this.gunGfx = this.add.graphics().setDepth(6.6);      // roof Gatling guns
+        this.bulletGfx = this.add.graphics().setDepth(6.4);   // their tracers
         this.rocketSprites = new Map();
 
         // Asphalt ground as a large tiled sprite centered on the world origin
@@ -536,6 +538,10 @@ class ArenaScene extends Phaser.Scene {
                 if (typeof p.x === 'number') this.confetti.emitParticleAt(p.x, p.y, 14);
                 const focus = this.store.followId || this.store.localId;
                 if (p.ids && p.ids[0] === focus) this.cameras.main.shake(140, 0.008);
+                return;
+            }
+            if (p && p.type === 'bullet') {           // gun rounds: a few sparks, no shake
+                if (typeof p.x === 'number') this.spark.emitParticleAt(p.x, p.y, 3);
                 return;
             }
             // Shake only for hits on the car the camera is following
@@ -919,6 +925,7 @@ class ArenaScene extends Phaser.Scene {
             const bladeLeft = p.bladeLeft || 0;
             const bladesOn = p.alive && p.blades && !(bladeLeft < 1.5 && Math.floor(time / 110) % 2 === 0);
             e.bladeArms = null;
+            e.gunAim = p.alive && p.gun && !((p.gunLeft || 0) < 1 && Math.floor(time / 110) % 2 === 0) ? e.a + ((p.gunAim || p.angle) - p.angle) : null;
             for (let i = 0; i < 2; i++) {
                 const saw = e.saws[i], blur = e.sawBlurs[i];
                 saw.setVisible(bladesOn); blur.setVisible(bladesOn);
@@ -1104,6 +1111,27 @@ class ArenaScene extends Phaser.Scene {
             }
         }
 
+        // Gatling guns: dark turret, three spinning barrels, muzzle flash
+        const gg = this.gunGfx;
+        gg.clear();
+        for (const [, e] of this.carSprites) {
+            if (e.gunAim == null) continue;
+            const k = e.sizeMult || 1, ca = Math.cos(e.gunAim), sa = Math.sin(e.gunAim);
+            const at = (f, sd) => [e.x + ca * f * k - sa * sd * k, e.y + sa * f * k + ca * sd * k];
+            gg.fillStyle(0x2b2f36, 1); gg.fillCircle(e.x, e.y, 10 * k);
+            gg.fillStyle(0xff7a1a, 1); gg.fillCircle(...at(-4, 9), 4.5 * k);
+            const spin = (time / 30) % 3;
+            for (let i = 0; i < 3; i++) {
+                const sd = Math.sin(((i + spin) / 3) * Math.PI * 2) * 3.5;
+                gg.lineStyle(3.2 * k, i === 0 ? 0xc9d0d8 : 0x8a939e, 1);
+                gg.lineBetween(...at(6, sd), ...at(34, sd));
+            }
+            if (Math.random() < 0.7) {
+                const [mx, my] = at(38, 0);
+                gg.fillStyle(0xffe08a, 0.9); gg.fillCircle(mx, my, (5 + Math.random() * 5) * k);
+            }
+        }
+
         // Health bars above every car
         const hg2 = this.hpGfx;
         hg2.clear();
@@ -1273,10 +1301,19 @@ class ArenaScene extends Phaser.Scene {
             if (!r) { r = this.add.image(pr.x, pr.y, 'rocket').setDepth(6); this.rocketSprites.set(pr.id, r); }
             const x = pr.x + pr.vx * sinceSnap, y = pr.y + pr.vy * sinceSnap;
             const ang = Math.atan2(pr.vy, pr.vx);
-            r.setPosition(x, y).setRotation(ang).setScale(0.85);
-            const tx = x - Math.cos(ang) * 30, ty = y - Math.sin(ang) * 30;
-            this.flame.emitParticleAt(tx, ty, 2);
-            this.rocketTrail.emitParticleAt(tx, ty, 1);
+            r.setPosition(x, y).setRotation(ang).setScale(1.45);
+            const tx = x - Math.cos(ang) * 50, ty = y - Math.sin(ang) * 50;
+            this.flame.emitParticleAt(tx, ty, 4);
+            this.rocketTrail.emitParticleAt(tx, ty, 2);
+        }
+        // Gatling tracers
+        const bulletG = this.bulletGfx;
+        bulletG.clear();
+        for (const b of (snap.bullets || [])) {
+            const x = b.x + b.vx * sinceSnap, y = b.y + b.vy * sinceSnap;
+            const sp = Math.hypot(b.vx, b.vy) || 1, lx = b.vx / sp * 26, ly = b.vy / sp * 26;
+            bulletG.lineStyle(5, 0xff9a2a, 0.35); bulletG.lineBetween(x - lx, y - ly, x, y);
+            bulletG.lineStyle(2.2, 0xfff1b0, 1); bulletG.lineBetween(x - lx * 0.8, y - ly * 0.8, x, y);
         }
         for (const [id, r] of this.rocketSprites) {
             if (!rSeen.has(id)) { r.destroy(); this.rocketSprites.delete(id); }

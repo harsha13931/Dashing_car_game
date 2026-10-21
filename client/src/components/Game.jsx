@@ -105,12 +105,13 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         const audioTimer = setInterval(() => {
             const me = net.snap?.players?.find(p => p.id === socket.id);
             const local = net.local;
-            if (!me || !me.alive || !local) { soundManager.stopEngine(); soundManager.setBladeWhine(false); return; }
+            if (!me || !me.alive || !local) { soundManager.stopEngine(); soundManager.setBladeWhine(false); soundManager.setGunFire(false); return; }
             soundManager.startEngine(me.carType);
             const v = net.localSpeed();
             soundManager.updateEngine(v, inputRef.current.forward, local.nitro > 0 || me.speedMult > 1);
             soundManager.setSkid(local.skid ? Math.min(1, 0.35 + v / 500) : 0);
             soundManager.setBladeWhine(!!me.blades);
+            soundManager.setGunFire(!!me.gun);
         }, 50);
 
         socket.on('airdrop', () => soundManager.playPlane());
@@ -185,8 +186,8 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
         socket.on('arenaEvent', ({ type }) => {
             const b = type === 'suddenDeath'
-                ? { title: 'SUDDEN DEATH', sub: 'The fence is electric — hit it and you\'re out, lean on it and it burns', color: '#4fd8ff' }
-                : { title: 'ARENA SHRINKING', sub: 'Stay inside the fence', color: '#ffb347' };
+                ? { title: 'SUDDEN DEATH', sub: 'The fence is electric — hitting or leaning on it burns your health', color: '#4fd8ff' }
+                : { title: 'ARENA SHRINKING', sub: 'Less room to hide — keep your health up', color: '#ffb347' };
             setBanner(b);
             soundManager.playArenaWarning();
             setTimeout(() => setBanner(cur => (cur === b ? null : cur)), 2800);
@@ -269,7 +270,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             socket.off('matchStart');
             socket.off('matchEnd');
             soundManager.stopEngine();
-            soundManager.setBladeWhine(false);
+            soundManager.setBladeWhine(false); soundManager.setGunFire(false);
         };
     }, []);
 
@@ -495,7 +496,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         padding: '4px 12px', borderRadius: 14, fontWeight: 800, letterSpacing: 1,
                         fontSize: touchUI ? '0.7rem' : '0.8rem', color: '#7dffb0',
                         background: 'rgba(0,0,0,0.6)', border: '1px solid #3ddc8488',
-                    }}>🔒 FENCE LOCKED {Math.ceil(snapshot.fenceLock)}s — nobody can be knocked out yet</div>
+                    }}>🔒 SAFE START {Math.ceil(snapshot.fenceLock)}s — nobody can be wrecked yet</div>
                 )}
                 {countdown <= 0 && !matchData && !(snapshot.fenceLock > 0) && (snapshot.suddenDeath || (snapshot.shrinkIn > 0 && snapshot.shrinkIn <= 10)) && (
                     <div style={{
@@ -559,6 +560,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         {me.magnetTimer > 0 && <StatusPill label="MAGNET" color="#ffaa00" />}
                         {me.bumper && <StatusPill label={`🎈 BALLOONS ${Math.ceil(me.bumperLeft || 0)}s`} color="#ff5fa2" />}
                         {me.blades && <StatusPill label={`⚙ BLADES ${Math.ceil(me.bladeLeft || 0)}s`} color="#ff6a3d" />}
+                        {me.gun && <StatusPill label={`🔫 GATLING ${Math.ceil(me.gunLeft || 0)}s`} color="#ff7a1a" />}
                     </div>
                 )}
 
@@ -630,7 +632,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                             </div>
                         )}
                         <div style={{ fontSize: '0.85rem', color: '#9ab', marginTop: 4, textShadow: '0 2px 4px #000' }}>
-                            {arenaInfo ? arenaInfo.tip : 'Push rivals through the fence'} · last car standing wins
+                            {arenaInfo ? arenaInfo.tip : 'Wreck rivals by draining their health'} · last car standing wins
                         </div>
                     </div>
                 </div>
@@ -1109,7 +1111,7 @@ function TrainingCoach({ me, touchUI, live, over }) {
         { title: 'DRIVE', text: touchUI ? 'Put your thumb on the left side and point where you want to go' : 'Drive with the arrow keys (or WASD)' },
         { title: 'NITRO', text: touchUI ? 'Tap NITRO for a big speed boost' : 'Press SPACE for a nitro boost' },
         { title: 'FIRE', text: touchUI ? 'Tap FIRE to launch twin rockets at the bot' : 'Press F (or Shift) to fire rockets' },
-        { title: 'KNOCK IT OUT', text: 'Ram the Practice Bot through the fence (it unlocks after 8 s) — or wreck it with rockets!' },
+        { title: 'WRECK IT', text: 'Ram the Practice Bot and hit it with rockets until its health runs out!' },
     ];
     if (over) {
         return (

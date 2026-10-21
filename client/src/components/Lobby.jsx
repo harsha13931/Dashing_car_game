@@ -815,7 +815,7 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
                 </div>
             )}
             <div style={{ textAlign: 'center', color: '#8fa1b8', fontSize: '0.72rem', marginTop: -2, display: short ? 'none' : 'block' }}>
-                {canStart ? `Push rivals through the fence · ${rounds} round${rounds > 1 ? 's' : ''} · most points wins`
+                {canStart ? `Wreck rivals' health to zero · ${rounds} round${rounds > 1 ? 's' : ''} · most points wins`
                     : 'Invite a friend or add a bot to start'}
             </div>
 

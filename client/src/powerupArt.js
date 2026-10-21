@@ -53,6 +53,12 @@ export const POWERUP_META = {
         c.beginPath(); c.moveTo(s * 0.36, s * 0.53); c.lineTo(s * 0.5, s * 0.82); c.lineTo(s * 0.62, s * 0.5);
         c.moveTo(s * 0.5, s * 0.68); c.lineTo(s * 0.5, s * 0.82); c.stroke();
     } },
+    Gatling: { color: '#ff7a1a', label: 'GATLING!', icon: (c, s) => { // three-barrel gun
+        c.fillRect(s * 0.22, s * 0.46, s * 0.26, s * 0.22);             // body
+        c.fillRect(s * 0.3, s * 0.66, s * 0.1, s * 0.12);               // grip
+        for (const y of [0.4, 0.5, 0.6]) c.fillRect(s * 0.46, s * (y - 0.035), s * 0.34, s * 0.07);
+        c.fillRect(s * 0.76, s * 0.34, s * 0.06, s * 0.32);             // muzzle ring
+    } },
     Reverse: { color: '#a24aff', label: 'REVERSE!', icon: (c, s) => { // circular arrows
         c.lineWidth = s * 0.1; c.strokeStyle = c.fillStyle;
         c.beginPath(); c.arc(s * 0.5, s * 0.5, s * 0.2, 0.5, Math.PI * 1.7); c.stroke();

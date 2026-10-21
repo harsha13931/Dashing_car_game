@@ -159,6 +159,9 @@ function makePlayer(id, name, isBot = false, difficulty = 'medium', carType = 's
         bladeTimer: 0,         // spinning saw blades power-up
         bladeHits: {},         // victim id → last blade hit time
         bumperTimer: 0,        // bouncy balloons power-up
+        gunTimer: 0,           // roof-mounted Gatling gun power-up
+        gunAim: 0,
+        gunNext: 0,
         bumperHits: {},
         speedTimer: 0,
         inputs: { forward: 0, steer: 0, dash: false, shoot: false, drop: false },
@@ -201,6 +204,7 @@ function createRoom(hostId) {
         players: {},
         powerups: [],
         projectiles: [],
+        bullets: [],
         hazards: [],
         running: false,
         countdown: 0,
@@ -265,11 +269,12 @@ function resetPlayers(room) {
         p.shield = false;
         p.shieldTimer = 0;
         p.megaTimer = 0;
-        p.hp = p.carStats.hp || 100;
+        p.hp = room.settings.training && p.isBot ? TRAINING_BOT_HP : (p.carStats.hp || 100);
         p.bladeTimer = 0;
         p.bladeHits = {};
         p.bumperTimer = 0;
         p.bumperHits = {};
+        p.gunTimer = 0;
         p.speedTimer = 0;
         p.slip = 0;
         p.scale = 1;
@@ -653,6 +658,11 @@ function applyPowerup(type, player, room) {
             player.bumperTimer = 10;                    // bouncy balloons for 10 s
             player.bumperHits = {};
             break;
+        case 'Gatling':
+            player.gunTimer = GUN_TIME;                 // roof gun fires by itself
+            player.gunNext = 0;
+            player.gunAim = player.angle;
+            break;
         case 'Magnet':
             // Pull nearby powerups toward player for 3 seconds (handled in tick)
             player.magnetTimer = 3;
@@ -665,6 +675,7 @@ function beginRound(room) {
     room.countdown = 3;
     room.powerups = [];
     room.projectiles = [];
+    room.bullets = [];
     room.hazards = [];
     room.matchStartTime = clock() + 3000;
     room.eliminationOrder = [];
@@ -764,6 +775,7 @@ function tickTimers(p) {
     if (p.magnetTimer > 0) p.magnetTimer -= DT;
     if (p.bladeTimer > 0) p.bladeTimer -= DT;
     if (p.bumperTimer > 0) p.bumperTimer = Math.max(0, p.bumperTimer - DT);
+    if (p.gunTimer > 0) p.gunTimer = Math.max(0, p.gunTimer - DT);
 }
 
 function addPlayer(room, p) {
@@ -1102,8 +1114,11 @@ io.on('connection', socket => {
 });
 
 // ─── Rules on top of the shared car physics (shared/physics.mjs) ──────────
-const FENCE_BREAK_SPEED = 270;      // fence gives way at this speed — only when someone is pushing you
-const FENCE_LOCK_MS = 8000;         // fence can't be broken for the first 8 s of a round
+const FENCE_HURT_SPEED = 150;       // hitting the fence (or the sinkhole rim) faster than this costs health…
+const FENCE_DMG_PER = 0.03;         // …this much per px/s over it…
+const FENCE_DMG_MAX = 12;           // …up to this much per hit. The fence never knocks anyone out.
+const TRAINING_BOT_HP = 50;         // the tutorial's practice bot goes down quickly
+const FENCE_LOCK_MS = 8000;         // nobody can be wrecked in the first 8 s of a round
 const HIT_WINDOW_MS = 2000;         // how long after a shove you still count as "being pushed"
 const SHRINK_START = 25;            // s — arena starts closing in
 const SHRINK_END = 75;              // s — fully shrunk; fence turns electric (sudden death)
@@ -1190,6 +1205,14 @@ const ROCKET_DIRECT_DMG = 10;       // per rocket — a twin volley does 20
 const ROCKET_SPLASH_DMG = 6;
 const BLADE_DMG = 10;              // saws are a real weapon, not a toy
 const BLADE_HIT_EVERY_MS = 350;
+const GUN_TIME = 5;                 // s the Gatling gun keeps firing
+const GUN_EVERY = 0.085;            // s between bullets (~12 a second)
+const GUN_SPEED = 1500;             // px/s
+const GUN_RANGE = 720;              // px a bullet flies before it's spent
+const GUN_DMG = 1.5;                // per bullet — a full burst on target is ~90
+const GUN_CONE = 0.75;              // rad either side of the nose the turret can swing to
+const GUN_SWING = 7;                // rad/s turret turn speed
+const MAX_BULLETS = 160;
 
 function damage(room, p, amount, attacker, now) {
     if (!p.alive || amount <= 0) return;
@@ -1320,14 +1343,17 @@ function updateArena(room, now) {
 }
 
 // ─── Air drops: a cargo plane crosses the arena and drops crates ─────────
-const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades', 'Bumper'];
-const PU_WEIGHTS = [18, 14, 11, 11, 7, 9, 19, 13, 13];
+const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades', 'Bumper', 'Gatling'];
+const PU_WEIGHTS = [16, 13, 10, 10, 6, 8, 18, 12, 12, 13];
 const PLANE_SPEED = 560;            // px/s
 const PLANE_EVERY_MS = 8000;
 const PLANE_MARGIN = 750;           // start/end this far outside the fence
 const DROP_FALL_MS = 1800;          // crate hangs under its parachute this long
 
+// Testing: FORCE_PU=Gatling makes every crate that type
+const FORCE_PU = PU_TYPES.includes(process.env.FORCE_PU) ? process.env.FORCE_PU : null;
 function pickPowerupType() {
+    if (FORCE_PU) return FORCE_PU;
     let r = Math.random() * PU_WEIGHTS.reduce((a, b) => a + b, 0);
     for (let i = 0; i < PU_TYPES.length; i++) { r -= PU_WEIGHTS[i]; if (r <= 0) return PU_TYPES[i]; }
     return PU_TYPES[0];
@@ -1403,12 +1429,13 @@ function sendSnapshot(room, now) {
         p: Object.values(room.players).map(p => [
             p.num, r1(p.x), r1(p.y), Math.round(p.angle * 1000) / 1000,
             Math.round(p.vx), Math.round(p.vy), r2(p.av),
-            (p.alive ? 1 : 0) | (p.shield ? 2 : 0) | (p.nitro > 0 ? 4 : 0) | (p.skid ? 8 : 0) | (p.magnetTimer > 0 ? 16 : 0) | (p.bladeTimer > 0 ? 32 : 0) | (p.inputs.forward < -0.05 ? 64 : 0) | (p.bumperTimer > 0 ? 128 : 0),
+            (p.alive ? 1 : 0) | (p.shield ? 2 : 0) | (p.nitro > 0 ? 4 : 0) | (p.skid ? 8 : 0) | (p.magnetTimer > 0 ? 16 : 0) | (p.bladeTimer > 0 ? 32 : 0) | (p.inputs.forward < -0.05 ? 64 : 0) | (p.bumperTimer > 0 ? 128 : 0) | (p.gunTimer > 0 ? 256 : 0),
             r2(p.dashCooldown), r1(p.shootCooldown), r2(p.nitro), r2(p.slip), r2(p.stun),
-            Math.round(p.speedMult * 100), Math.round(p.scale * 100), WEAPON_CODE[p.weapon] || 0, p.kills, Math.ceil(p.hp), r1(Math.max(0, p.bladeTimer)), r1(p.bumperTimer || 0), r1(p.hill || 0),
+            Math.round(p.speedMult * 100), Math.round(p.scale * 100), WEAPON_CODE[p.weapon] || 0, p.kills, Math.ceil(p.hp), r1(Math.max(0, p.bladeTimer)), r1(p.bumperTimer || 0), r1(p.hill || 0), r1(p.gunTimer || 0), r2(p.gunAim || 0),
         ]),
         u: room.powerups.map(pu => [pu.id, PU_TYPES.indexOf(pu.type), Math.round(pu.x), Math.round(pu.y), Math.max(0, Math.round(pu.landAt - now))]),
         j: room.projectiles.map(pr => [pr.id, Math.round(pr.x), Math.round(pr.y), Math.round(pr.vx), Math.round(pr.vy)]),
+        k: room.bullets.map(b => [b.id, Math.round(b.x), Math.round(b.y), Math.round(b.vx), Math.round(b.vy)]),
         h: room.hazards.map(hz => [hz.id, hz.type === 'oil' ? 0 : 1, Math.round(hz.x), Math.round(hz.y)]),
         pl: room.planes.map(pl => {
             const d = ((now - pl.t0) / 1000) * PLANE_SPEED;
@@ -1528,6 +1555,38 @@ function tickRoom(room, roomId, now) {
             io.to(room.id).emit('rocketFired', { id: p.id });
         }
 
+        // Gatling gun: the turret swings onto the nearest rival in front and fires by itself
+        // (the tutorial's practice bot never shoots)
+        if (p.gunTimer > 0 && !(room.settings.training && p.isBot)) {
+            let want = p.angle, best = Infinity;
+            for (const q of Object.values(room.players)) {
+                if (!q.alive || q === p || mates(p, q)) continue;
+                const d = Math.hypot(q.x - p.x, q.y - p.y);
+                if (d > GUN_RANGE) continue;
+                const a = Math.atan2(q.y - p.y, q.x - p.x);
+                let da = a - p.angle;
+                while (da > Math.PI) da -= Math.PI * 2;
+                while (da < -Math.PI) da += Math.PI * 2;
+                if (Math.abs(da) > GUN_CONE) continue;
+                const score = d + Math.abs(da) * 400;
+                if (score < best) { best = score; want = a; }
+            }
+            let da = want - p.gunAim;
+            while (da > Math.PI) da -= Math.PI * 2;
+            while (da < -Math.PI) da += Math.PI * 2;
+            p.gunAim += Math.max(-GUN_SWING * DT, Math.min(GUN_SWING * DT, da)) + p.av * DT;
+            p.gunNext -= DT;
+            if (p.gunNext <= 0 && room.bullets.length < MAX_BULLETS) {
+                p.gunNext += GUN_EVERY;
+                const a = p.gunAim + (Math.random() - 0.5) * 0.07;
+                const ox = p.x + Math.cos(p.gunAim) * 30 * p.scale, oy = p.y + Math.sin(p.gunAim) * 30 * p.scale;
+                room.bullets.push({
+                    id: ++room._uid, ownerId: p.id, x: ox, y: oy,
+                    vx: Math.cos(a) * GUN_SPEED + p.vx, vy: Math.sin(a) * GUN_SPEED + p.vy, left: GUN_RANGE,
+                });
+            }
+        }
+
         // Magnet: pull nearby (landed) powerups
         if (p.magnetTimer > 0) {
             for (const pu of room.powerups) {
@@ -1572,9 +1631,10 @@ function tickRoom(room, roomId, now) {
             // Crash damage: harder hits hurt more, heavy cars hurt light ones,
             // and whoever did the ramming takes less
             if (r.impact > 160) {
-                const base = Math.min(16, (r.impact - 160) * 0.022);
+                const base = Math.min(17, (r.impact - 155) * 0.024);
                 const mA = PHYS.carMass(a), mB = PHYS.carMass(b);
-                let dA = base * Math.min(1.3, Math.sqrt(mB / mA)), dB = base * Math.min(1.3, Math.sqrt(mA / mB));
+                // (weight helps, but only a little — light cars shouldn't melt)
+                let dA = base * Math.min(1.08, (mB / mA) ** 0.2), dB = base * Math.min(1.08, (mA / mB) ** 0.2);
                 if (r.aPushesB && !r.bPushesA) dA *= 0.4;
                 else if (r.bPushesA && !r.aPushesB) dB *= 0.4;
                 damage(room, b, dB, r.aPushesB ? a : null, now);
@@ -1583,23 +1643,15 @@ function tickRoom(room, roomId, now) {
         },
         onFence: (B, c) => {
             const p = B.p;
-            // Sinkhole rim: solid while the fence is locked, otherwise you can slide in
-            if (c.pit) return now < room.matchStartTime + FENCE_LOCK_MS;
-            // The fence holds unless you're shoved into it — or it's electric (sudden death)
-            // For the first seconds of a round the fence is locked: nobody goes out at the start,
-            // and a car already pinned there when it unlocks needs a fresh shove to go through.
-            // Stable cars need a harder shove to break through.
-            const unlockAt = room.matchStartTime + FENCE_LOCK_MS;
-            const locked = now < unlockAt;
-            const pushed = now - (p.lastHitAt || 0) < HIT_WINDOW_MS && p.lastHitAt > unlockAt;
-            const lethal = !locked && ((room.suddenDeath && c.vn > 80) || (c.vn > FENCE_BREAK_SPEED * (p.carStats.stability || 1) && pushed));
-            if (lethal) {
-                if (p.shield) { p.shield = false; p.shieldTimer = 0; }    // shield absorbs it once
-                else { eliminate(p, room, now, room.suddenDeath ? 'electric' : 'fence'); return false; }
-            }
+            // The fence and the sinkhole rim are solid walls: they never knock anyone
+            // out. Slamming into one costs a little health (more when it's electric),
+            // and whoever shoved you gets the credit if it finishes you off.
+            const pushed = now - (p.lastHitAt || 0) < HIT_WINDOW_MS;
             if (c.vn > 140) addFx(fx, 'wall' + p.id, { impact: c.vn, x: c.x, y: c.y, type: 'wall', ids: [p.id] });
-            if (c.vn > 260) {                       // slamming the barrier dents you too
-                damage(room, p, (c.vn - 260) * 0.015, pushed ? room.players[p.lastHitBy] : null, now);
+            let hurt = c.vn > FENCE_HURT_SPEED ? Math.min(FENCE_DMG_MAX, (c.vn - FENCE_HURT_SPEED) * FENCE_DMG_PER) : 0;
+            if (room.suddenDeath && !c.pit && c.vn > 80) hurt += 4;
+            if (hurt > 0) {
+                damage(room, p, hurt, pushed ? room.players[p.lastHitBy] : null, now);
                 if (!p.alive) return false;
             }
             return true;
@@ -1607,8 +1659,13 @@ function tickRoom(room, roomId, now) {
     });
     for (const ev of fx.values()) io.to(room.id).emit('collision', ev);
     if (room.env.pitR) {
+        // A car somehow dead-centre over the hole (the rim can't tell which way is out): lift it out
         for (const p of Object.values(room.players)) {
-            if (p.alive && Math.hypot(p.x, p.y) < room.env.pitR) eliminate(p, room, now, 'pit');
+            const d = Math.hypot(p.x, p.y);
+            if (!p.alive || d >= room.env.pitR * 0.5) continue;
+            const k = (room.env.pitR + 50) / (d || 1);
+            p.x = d ? p.x * k : room.env.pitR + 50; p.y *= d ? k : 0;
+            p.vx = p.vy = 0;
         }
     }
     if (!room.running) return;   // solo match ended this tick
@@ -1667,6 +1724,33 @@ function tickRoom(room, roomId, now) {
         }
     }
     if (!room.running) return;
+
+    // ─── Gatling bullets: fast, small, chip away at health ─────────────
+    if (room.bullets.length) {
+        const hitFx = new Map();
+        const alive = Object.values(room.players).filter(p => p.alive);
+        room.bullets = room.bullets.filter(b => {
+            const owner = room.players[b.ownerId];
+            // two half-steps so a fast bullet can't skip over a car
+            for (let k = 0; k < 2; k++) {
+                b.x += b.vx * DT / 2; b.y += b.vy * DT / 2;
+                for (const p of alive) {
+                    if (!p.alive || p.id === b.ownerId || mates(p, owner)) continue;
+                    if (Math.hypot(p.x - b.x, p.y - b.y) > 32 * p.scale * p.carStats.size) continue;
+                    const sp = Math.hypot(b.vx, b.vy) || 1;
+                    const push = 22 / PHYS.carMass(p);
+                    p.vx += b.vx / sp * push; p.vy += b.vy / sp * push;
+                    damage(room, p, GUN_DMG, owner, now);
+                    if (!hitFx.has(p.id)) hitFx.set(p.id, { impact: 40, x: b.x, y: b.y, type: 'bullet', ids: [p.id] });
+                    return false;
+                }
+            }
+            b.left -= Math.hypot(b.vx, b.vy) * DT;
+            return b.left > 0 && Math.hypot(b.x, b.y) < room.arenaR + 40;
+        });
+        for (const ev of hitFx.values()) io.to(room.id).emit('collision', ev);
+        if (!room.running) return;
+    }
 
     // ─── Balloons: bounce away anyone who runs into them (no damage) ───
     {

@@ -231,6 +231,11 @@ class SoundManager {
             o.connect(gn); gn.connect(this.sfx); o.start(t); o.stop(t + 0.45);
             return;
         }
+        if (type === 'bullet') {      // gun rounds pinging off the body
+            this._noise({ dur: 0.06, vol: 0.22, type: 'bandpass', freq: 3200, q: 2 });
+            this._tone(1700 + Math.random() * 600, { type: 'triangle', dur: 0.07, vol: 0.06, glide: 900 });
+            return;
+        }
         const k = Math.min(1, impact / 600);
         // Body thump
         this._tone(95, { type: 'sine', dur: 0.28, vol: 0.35 + k * 0.5, glide: 38 });
@@ -350,6 +355,20 @@ class SoundManager {
             const b = this.blade; this.blade = null;
             b.out.gain.setTargetAtTime(0, this.ctx.currentTime, 0.08);
             setTimeout(() => { b.nodes.forEach(x => { try { x.stop(); } catch (_) { /* ignore */ } }); b.out.disconnect(); }, 600);
+        }
+    }
+
+    // Gatling gun: a rattle of short cracks while it's firing
+    setGunFire(on) {
+        if (!this.ctx) return;
+        if (on && !this.gunIv) {
+            this.gunIv = setInterval(() => {
+                this._noise({ dur: 0.045, vol: 0.18, type: 'highpass', freq: 1400 });
+                this._tone(150, { type: 'square', dur: 0.04, vol: 0.07, glide: 70 });
+            }, 85);
+        } else if (!on && this.gunIv) {
+            clearInterval(this.gunIv);
+            this.gunIv = null;
         }
     }
 
