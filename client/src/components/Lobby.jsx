@@ -6,7 +6,11 @@ import {
     loadGarage, saveGarage, cosmeticsFor, drawTopper, underglowColor,
 } from '../cosmetics';
 import { renderCar, lookKey } from '../carRender';
-import { CAR_TYPES as PHYS_CARS } from '../../../shared/physics.mjs';
+import { CAR_TYPES as PHYS_CARS, ARENAS } from '../../../shared/physics.mjs';
+
+const ARENA_ICON = { random: '🎲', classic: '🏟️', ice: '❄️', box: '⬛', sinkhole: '🕳️', windmill: '🌀' };
+const ARENA_CHOICES = ['random', ...Object.keys(ARENAS)];
+const arenaLabel = (k) => `${ARENA_ICON[k] || ''} ${k === 'random' ? 'Random' : ARENAS[k].name}`;
 import { getToken, saveRoom, clearRoom } from '../net/session';
 import { useInstall, promptInstall, isIOS } from '../pwa';
 import {
@@ -677,6 +681,14 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
                     <Stepper value={bots} min={0} max={8 - humans.length} disabled={!isHost}
                         onChange={n => update({ botCount: n })} />
                 </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="gtitle" style={{ fontSize: '0.65rem', color: '#8fa1b8' }}>ARENA</span>
+                    <Pill active disabled={!isHost} onClick={() => {
+                        if (!isHost) return;
+                        const cur = (room.settings && room.settings.arena) || 'random';
+                        update({ arena: ARENA_CHOICES[(ARENA_CHOICES.indexOf(cur) + 1) % ARENA_CHOICES.length] }); click();
+                    }}>{arenaLabel((room.settings && room.settings.arena) || 'random')} ▸</Pill>
+                </div>
             </div>
 
             {isHost ? (
@@ -762,6 +774,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
     const [rid, setRid] = useState(INVITE_CODE);
     const [botCount, setBotCount] = useState(3);
     const [botDifficulty, setBotDifficulty] = useState('medium');
+    const [arena, setArena] = useState('random');
     const [error, setError] = useState('');
     const [copied, setCopied] = useState(false);
     const [settings, setSettings] = useState(soundManager.settings);
@@ -826,7 +839,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
         if (!socket.connected) socket.connect();
         socket.emit('createRoom', {
             name: playerName(), botCount: mode === 'bots' ? botCount : 0, botDifficulty,
-            carType, cosmetics, token: getToken(),
+            carType, cosmetics, token: getToken(), arena: mode === 'bots' ? arena : 'random',
         }, (res) => {
             if (!res || res.error) return setError(res?.error || 'Could not create a room');
             saveRoom(res.roomId);
@@ -1058,6 +1071,12 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
                                 onClick={() => { setBotDifficulty(d.key); click(); }}>{d.label}</Pill>
                         ))}
                     </div>
+                    <Label>Arena</Label>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+                        {ARENA_CHOICES.map(k => (
+                            <Pill key={k} active={arena === k} onClick={() => { setArena(k); click(); }}>{arenaLabel(k)}</Pill>
+                        ))}
+                    </div>
                     <button className="gbtn yellow" onClick={() => createRoom('bots')} disabled={!connected}
                         style={{ width: '100%', fontSize: '1.2rem', padding: 14, marginTop: 18 }}>▶ START RACE</button>
                 </Sheet>
@@ -1074,7 +1093,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
                 </Sheet>
             )}
 
-            {showDaily && !askName && !room && screen === 'home' && (
+            {showDaily && !askName && !sheet && !room && screen === 'home' && (
                 <DailyRewardModal onClose={() => setShowDaily(false)} />
             )}
 

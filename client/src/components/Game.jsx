@@ -3,7 +3,7 @@ import PhaserGame from './PhaserGame';
 import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
 import { net } from '../net/netcode';
-import { NITRO_COOLDOWN, CAR_TYPES } from '../../../shared/physics.mjs';
+import { NITRO_COOLDOWN, CAR_TYPES, ARENAS } from '../../../shared/physics.mjs';
 import { RoundRewards } from './Rewards';
 
 // Screen-edge offsets that respect phone notches / home indicators
@@ -28,6 +28,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     const [goFlash, setGoFlash] = useState(false);
     const [spectateId, setSpectateId] = useState(null);
     const [soloOut, setSoloOut] = useState(null);     // solo run ended → heading back to lobby
+    const [arenaInfo, setArenaInfo] = useState(() => (early && ARENAS[early.arena] ? { ...ARENAS[early.arena], key: early.arena } : null));
     const followRef = useRef(null);
 
     const inputRef = useRef({ forward: 0, steer: 0, dash: false, shoot: false });
@@ -150,7 +151,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             }
         });
 
-        socket.on('matchStart', ({ count, round: r, maxRounds: mr }) => {
+        socket.on('matchStart', ({ count, round: r, maxRounds: mr, arena }) => {
             setRankings([]);
             net.reset();
             setMatchData(null);
@@ -158,6 +159,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             setRound(r);
             if (mr) setMaxRounds(mr);
             setFeed([]);
+            setArenaInfo(ARENAS[arena] ? { ...ARENAS[arena], key: arena } : null);
             setBanner(null);
             setMyElim(null);
             setSpectateId(null);
@@ -438,7 +440,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         }}>
                             {e.by ? <><b style={{ color: e.byId === socket.id ? '#4f4' : '#fff' }}>{e.byId === socket.id ? 'You' : e.by}</b>{e.reason === 'wrecked' ? ' wrecked ' : ' knocked out '}</> : ''}
                             <b style={{ color: e.id === socket.id ? '#ff5566' : '#fff' }}>{e.id === socket.id ? 'you' : e.name}</b>
-                            {!e.by && (e.reason === 'electric' ? ' got zapped ⚡' : e.reason === 'wrecked' ? ' blew up' : ' crashed out')}
+                            {!e.by && (e.reason === 'electric' ? ' got zapped ⚡' : e.reason === 'wrecked' ? ' blew up' : e.reason === 'pit' ? ' fell in the sinkhole 🕳️' : ' crashed out')}
                             {e.reason === 'wrecked' ? ' 💥' : ''}
                         </div>
                     ))}
@@ -574,8 +576,13 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                                 {round >= maxRounds && maxRounds > 1 ? 'FINAL ROUND' : `ROUND ${round} OF ${maxRounds}`}
                             </div>
                         )}
-                        <div style={{ fontSize: '0.85rem', color: '#9ab', marginTop: 6, textShadow: '0 2px 4px #000' }}>
-                            Push rivals through the fence · last car standing wins
+                        {arenaInfo && (
+                            <div className="gtitle" style={{ fontSize: '1.05rem', color: arenaInfo.ice ? '#9fe0ff' : '#ffc53d', marginTop: 6, letterSpacing: 2, textShadow: '0 2px 6px #000' }}>
+                                {{ classic: '🏟️', ice: '❄️', box: '⬛', sinkhole: '🕳️', windmill: '🌀' }[arenaInfo.key] || ''} {arenaInfo.name.toUpperCase()}
+                            </div>
+                        )}
+                        <div style={{ fontSize: '0.85rem', color: '#9ab', marginTop: 4, textShadow: '0 2px 4px #000' }}>
+                            {arenaInfo ? arenaInfo.tip : 'Push rivals through the fence'} · last car standing wins
                         </div>
                     </div>
                 </div>
@@ -901,6 +908,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 function outReason(e) {
     if (!e) return 'You left the arena';
     if (e.reason === 'wrecked') return e.by ? `Wrecked by ${e.by} 💥` : 'Your car blew up 💥';
+    if (e.reason === 'pit') return e.by ? `${e.by} shoved you into the sinkhole 🕳️` : 'You fell into the sinkhole 🕳️';
     if (e.by) return `Knocked out by ${e.by}`;
     return e.reason === 'electric' ? 'Zapped by the electric fence' : 'You left the arena';
 }
@@ -921,12 +929,25 @@ function Minimap({ snapshot, localId, size = 116 }) {
         const cx = S / 2, cy = S / 2, rad = S / 2 - 6;
 
         // Original arena (faint) and the live fence
-        ctx.fillStyle = 'rgba(255,255,255,0.03)';
-        ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = 'rgba(255,255,255,0.06)';
-        ctx.beginPath(); ctx.arc(cx, cy, rad * cur, 0, Math.PI * 2); ctx.fill();
+        const spec = ARENAS[snapshot.arena] || ARENAS.classic;
+        const shape = (r) => {
+            ctx.beginPath();
+            if (spec.shape === 'square') { const h = r * 0.89; ctx.rect(cx - h, cy - h, h * 2, h * 2); }
+            else ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        };
+        ctx.fillStyle = 'rgba(255,255,255,0.03)'; shape(rad); ctx.fill();
+        ctx.fillStyle = spec.ice ? 'rgba(170,220,255,0.18)' : 'rgba(255,255,255,0.06)'; shape(rad * cur); ctx.fill();
         ctx.strokeStyle = snapshot.suddenDeath ? 'rgba(79,216,255,0.9)' : 'rgba(232,160,48,0.6)'; ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(cx, cy, rad * cur, 0, Math.PI * 2); ctx.stroke();
+        shape(rad * cur); ctx.stroke();
+        if (spec.pit) {
+            ctx.fillStyle = '#000'; ctx.strokeStyle = '#ffc21a'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.arc(cx, cy, rad * cur * spec.pit, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        }
+        if (spec.bar) {
+            const a = snapshot.barAngle || 0, l = rad * cur * spec.bar.len;
+            ctx.strokeStyle = '#c9ced6'; ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.moveTo(cx - Math.cos(a) * l, cy - Math.sin(a) * l); ctx.lineTo(cx + Math.cos(a) * l, cy + Math.sin(a) * l); ctx.stroke();
+        }
 
         for (const p of (snapshot.players || [])) {
             if (!p.alive) continue;
