@@ -58,7 +58,7 @@ export function RoundRewards({ compact = false }) {
         <div style={{
             margin: '0 0 12px', padding: compact ? '8px 12px' : '10px 14px', borderRadius: 14,
             background: 'linear-gradient(180deg, rgba(255,216,77,0.12), rgba(255,216,77,0.04))', border: '1px solid rgba(255,216,77,0.3)',
-            animation: 'bannerIn 0.4s ease-out', textAlign: 'left',
+            animation: 'popIn 0.4s ease-out', textAlign: 'left',
         }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span className="gtitle" style={{ color: '#ffd84d', fontSize: compact ? '1rem' : '1.15rem' }}>+{r.coins} <Coin size={16} /></span>
@@ -97,7 +97,7 @@ export function DailyRewardModal({ onClose }) {
     };
     return (
         <div className="full-screen center" style={{ background: 'rgba(0,0,0,0.7)', zIndex: 60, padding: 16, boxSizing: 'border-box' }}>
-            <div className="gpanel" style={{ padding: '16px 18px', width: 'min(560px, 94vw)', textAlign: 'center', animation: 'bannerIn 0.35s ease-out' }}>
+            <div className="gpanel" style={{ padding: '16px 18px', width: 'min(560px, 94vw)', textAlign: 'center', animation: 'popIn 0.35s ease-out' }}>
                 <div className="gtitle" style={{ fontSize: '1.4rem', color: '#ffd84d' }}>DAILY REWARD</div>
                 <div style={{ fontSize: '0.8rem', color: '#8fa1b8', margin: '2px 0 12px' }}>Come back every day — day 7 pays the most</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 6 }}>
@@ -117,7 +117,7 @@ export function DailyRewardModal({ onClose }) {
                     })}
                 </div>
                 {claimed ? (
-                    <div className="gtitle" style={{ marginTop: 14, fontSize: '1.3rem', color: '#ffd84d', animation: 'bannerIn 0.3s ease-out' }}>+{claimed} <Coin size={20} /></div>
+                    <div className="gtitle" style={{ marginTop: 14, fontSize: '1.3rem', color: '#ffd84d', animation: 'popIn 0.3s ease-out' }}>+{claimed} <Coin size={20} /></div>
                 ) : (
                     <button className="gbtn yellow" onClick={claim} style={{ width: '100%', marginTop: 14, fontSize: '1.15rem', padding: 12 }}>
                         CLAIM {s.reward} <Coin size={18} />

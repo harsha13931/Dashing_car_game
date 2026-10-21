@@ -77,6 +77,43 @@ class NetClient {
         this.err = { x: 0, y: 0, a: 0 };
         this.remote.clear();
         this.acc = 0;
+        this.history = [];
+        this.replay = null;
+    }
+
+    // ─── Replays: the last few seconds of snapshots, played back in slow-mo ─
+    record(snap) {
+        if (!this.history) this.history = [];
+        this.history.push(snap);
+        while (this.history.length && snap.timestamp - this.history[0].timestamp > 5000) this.history.shift();
+    }
+    // Play server time [from, to] at `speed`× (e.g. 0.5 = half speed)
+    startReplay(from, to, speed = 0.5) {
+        const frames = (this.history || []).filter(f => f.timestamp >= from - 100 && f.timestamp <= to + 100);
+        if (frames.length < 4) return 0;
+        this.replay = { frames, from: frames[0].timestamp, to: frames[frames.length - 1].timestamp, speed, start: performance.now() };
+        return (this.replay.to - this.replay.from) / speed;
+    }
+    stopReplay() { this.replay = null; }
+    // The snapshot to draw: the replay frame while one is playing
+    view() {
+        const r = this.replay;
+        if (!r) return this.snap;
+        const t = r.from + (performance.now() - r.start) * r.speed;
+        if (t > r.to) { this.replay = null; return this.snap; }
+        let i = 1;
+        while (i < r.frames.length - 1 && r.frames[i].timestamp < t) i++;
+        const a = r.frames[i - 1], b = r.frames[i];
+        const k = Math.max(0, Math.min(1, (t - a.timestamp) / Math.max(1, b.timestamp - a.timestamp)));
+        r.cur = { a, b, k };
+        return { ...a, replay: true, players: a.players.map(p => {
+            const q = b.players.find(o => o.id === p.id);
+            if (!q || !q.alive) return p;
+            let da = q.angle - p.angle;
+            while (da > Math.PI) da -= Math.PI * 2;
+            while (da < -Math.PI) da += Math.PI * 2;
+            return { ...p, x: p.x + (q.x - p.x) * k, y: p.y + (q.y - p.y) * k, angle: p.angle + da * k };
+        }) };
     }
 
     // ─── Inputs: remember when each control change happened ──────────────
@@ -133,6 +170,7 @@ class NetClient {
             barAngle: m.ba || 0,
         };
         this.snap = snap;
+        if (snap.live) this.record(snap);
 
         const myId = socket.id;
         for (const p of players) {
@@ -256,6 +294,11 @@ class NetClient {
 
     // Where to draw a car this frame
     renderState(id, deltaMs) {
+        if (this.replay) {
+            const v = this._replayView;
+            const p = v && v.players.find(o => o.id === id);
+            return p ? { x: p.x, y: p.y, angle: p.angle } : null;
+        }
         if (id === socket.id && this.local) return this.renderLocal();
         const e = this.remote.get(id);
         if (!e || !e.st) return null;
