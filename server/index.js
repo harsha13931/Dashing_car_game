@@ -58,6 +58,17 @@ app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', rooms: roomCount, players: playerCount, uptime: process.uptime() });
 });
 
+// Voice chat connection servers. Phones try to connect directly (STUN); a TURN
+// relay can be added with TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL env vars.
+// If neither works, voice falls back to being relayed through this server.
+app.get('/api/ice', (_req, res) => {
+    const ice = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+    if (process.env.TURN_URLS) {
+        ice.push({ urls: process.env.TURN_URLS.split(',').map(u => u.trim()), username: process.env.TURN_USERNAME || '', credential: process.env.TURN_CREDENTIAL || '' });
+    }
+    res.json({ iceServers: ice });
+});
+
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: '*' },
@@ -923,6 +934,24 @@ io.on('connection', socket => {
         p.voiceMuted = !!muted;
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
+    // Fallback when two phones can't connect directly: small compressed audio
+    // packets (8 kHz, μ-law, ~60 ms each) passed on to the listed players
+    socket.on('voice:pcm', ({ roomId, to, data } = {}) => {
+        const room = rooms[roomId];
+        if (!room || !room.voice || !room.voice.has(socket.id) || !Array.isArray(to)) return;
+        const size = data && (data.byteLength ?? data.length);
+        if (!size || size > 2000) return;
+        const t = Date.now();
+        const p = room.players[socket.id];
+        if (!p || p.voiceMuted) return;
+        p._pcmWin = t - (p._pcmT || 0) > 1000 ? 0 : (p._pcmWin || 0);
+        if (p._pcmWin === 0) p._pcmT = t;
+        if (++p._pcmWin > 40) return;                       // ≤ 40 packets a second
+        for (const id of to.slice(0, 8)) {
+            if (id !== socket.id && room.voice.has(id)) io.to(id).emit('voice:pcm', { from: socket.id, data });
+        }
+    });
+
     socket.on('voice:leave', ({ roomId }) => {
         const room = rooms[roomId];
         if (!room || !room.voice || !room.voice.delete(socket.id)) return;
