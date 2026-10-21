@@ -8,6 +8,7 @@ import {
 import { renderCar, lookKey } from '../carRender';
 import { CAR_TYPES as PHYS_CARS } from '../../../shared/physics.mjs';
 import { getToken, saveRoom, clearRoom } from '../net/session';
+import { useInstall, promptInstall, isIOS } from '../pwa';
 
 // ─── Menus: home (car stage), garage, play sheets, settings, room ─────────
 
@@ -718,6 +719,12 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
         try { return localStorage.getItem('dasharena.ctrlmode') || 'joystick'; } catch (_) { return 'joystick'; }
     });
 
+    const install = useInstall();
+    const onInstall = async () => {
+        if (install.canPrompt) await promptInstall();
+        else setSheet('install');
+    };
+
     const cosmetics = cosmeticsFor(garage, carType);
     const car = CAR_TYPES.find(c => c.key === carType) || CAR_TYPES[0];
     const carIdx = CAR_TYPES.indexOf(car);
@@ -861,7 +868,12 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
             </div>
         );
         const settingsBtn = (
-            <TopButton onClick={() => setSheet('settings')} label="Settings" style={{ width: 44, height: 40, padding: 0, fontSize: '1.1rem' }}>⚙</TopButton>
+            <div style={{ display: 'flex', gap: 8 }}>
+                {!install.installed && (
+                    <TopButton onClick={onInstall} color="green" label="Install app" style={{ height: 40, padding: '0 12px', fontSize: '0.78rem' }}>📲 GET APP</TopButton>
+                )}
+                <TopButton onClick={() => setSheet('settings')} label="Settings" style={{ width: 44, height: 40, padding: 0, fontSize: '1.1rem' }}>⚙</TopButton>
+            </div>
         );
         const topBar = (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
@@ -967,6 +979,32 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
             {askName && !room && (
                 <NameScreen initial={NAME_OK(name) ? name : ''} canClose={!askName.first && NAME_OK(name)}
                     onSave={saveName} onClose={() => setAskName(null)} />
+            )}
+
+            {sheet === 'install' && (
+                <Sheet title="Install Dash Arena" onClose={() => setSheet(null)}>
+                    <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 12 }}>
+                        <img src="/icons/icon-192.png" alt="" style={{ width: 64, height: 64, borderRadius: 14 }} />
+                        <div style={{ fontSize: '0.85rem', color: '#c8d4e3', lineHeight: 1.4 }}>
+                            Play full screen from your home screen — opens instantly, no browser bars.
+                        </div>
+                    </div>
+                    {isIOS() ? (
+                        <ol style={{ margin: 0, paddingLeft: 20, color: '#fff', fontSize: '0.9rem', lineHeight: 1.8 }}>
+                            <li>Open this page in <b>Safari</b></li>
+                            <li>Tap the <b>Share</b> button <span style={{ fontSize: '1.1rem' }}>⎋</span> at the bottom</li>
+                            <li>Choose <b>Add to Home Screen</b></li>
+                        </ol>
+                    ) : (
+                        <ol style={{ margin: 0, paddingLeft: 20, color: '#fff', fontSize: '0.9rem', lineHeight: 1.8 }}>
+                            <li>Open this page in <b>Chrome</b></li>
+                            <li>Tap the <b>⋮ menu</b> (top right)</li>
+                            <li>Choose <b>Install app</b> or <b>Add to Home screen</b></li>
+                        </ol>
+                    )}
+                    <button className="gbtn yellow" onClick={() => { click(); setSheet(null); }}
+                        style={{ width: '100%', fontSize: '1rem', padding: 12, marginTop: 16 }}>GOT IT</button>
+                </Sheet>
             )}
 
             {sheet === 'settings' && (
