@@ -3,7 +3,7 @@ import PhaserGame from './PhaserGame';
 import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
 import { net } from '../net/netcode';
-import { NITRO_COOLDOWN, CAR_TYPES, ARENAS } from '../../../shared/physics.mjs';
+import { NITRO_COOLDOWN, CAR_TYPES, ARENAS, GAME_MODES, HILL_TARGET } from '../../../shared/physics.mjs';
 import { RoundRewards, Coin } from './Rewards';
 import { completeTutorial, TUTORIAL_REWARD } from '../progress';
 
@@ -31,6 +31,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     const [goFlash, setGoFlash] = useState(false);
     const [spectateId, setSpectateId] = useState(null);
     const [soloOut, setSoloOut] = useState(null);     // solo run ended → heading back to lobby
+    const [modeKey, setModeKey] = useState(() => (early && GAME_MODES[early.mode] ? early.mode : 'ffa'));
     const [arenaInfo, setArenaInfo] = useState(() => (early && ARENAS[early.arena] ? { ...ARENAS[early.arena], key: early.arena } : null));
     const followRef = useRef(null);
     const [emoteOpen, setEmoteOpen] = useState(false);
@@ -152,6 +153,11 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         window.addEventListener('dash-gfx-low', onGfxLow);
         cleanups.push(() => window.removeEventListener('dash-gfx-low', onGfxLow));
 
+        socket.on('bombPass', ({ to, from }) => {
+            if (to === socket.id) { soundManager.playArenaWarning(); soundManager.vibrate([60, 40, 60]); }
+            else if (from === socket.id) soundManager.playPowerup();
+        });
+
         socket.on('arenaEvent', ({ type }) => {
             const b = type === 'suddenDeath'
                 ? { title: 'SUDDEN DEATH', sub: 'The fence is electric — hit it and you\'re out, lean on it and it burns', color: '#4fd8ff' }
@@ -171,7 +177,8 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             }
         });
 
-        socket.on('matchStart', ({ count, round: r, maxRounds: mr, arena }) => {
+        socket.on('matchStart', ({ count, round: r, maxRounds: mr, arena, mode }) => {
+            setModeKey(GAME_MODES[mode] ? mode : 'ffa');
             setRankings([]);
             net.reset();
             setMatchData(null);
@@ -222,6 +229,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             socket.off('powerupCollected');
             socket.off('playerEliminated');
             socket.off('arenaEvent');
+            socket.off('bombPass');
             socket.off('soloOut');
             socket.off('countdown');
             socket.off('matchStart');
@@ -400,6 +408,16 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         return () => window.removeEventListener('keydown', onKey);
     });
 
+    // Hot Bomb: beep the last seconds while you're holding it
+    const bombBeep = useRef(null);
+    useEffect(() => {
+        const b = snapshot.bomb;
+        const holder = b && snapshot.players?.find(p => p.num === b.holder);
+        if (!holder || holder.id !== socket.id) { bombBeep.current = null; return; }
+        const sec = Math.ceil(b.fuse);
+        if (sec <= 4 && sec !== bombBeep.current) { bombBeep.current = sec; soundManager.playCountdown(); }
+    }, [snapshot]);
+
     const formatTime = (ms) => {
         const s = Math.max(0, Math.floor(ms / 1000));
         return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
@@ -442,6 +460,9 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                     </div>
                 </div>
 
+                {/* Game-mode status (teams count / hill progress / who has the bomb) */}
+                {countdown <= 0 && !matchData && <ModeStatus snapshot={snapshot} touchUI={touchUI} />}
+
                 {/* Arena phase: shrink warning / sudden death */}
                 {countdown <= 0 && !matchData && snapshot.fenceLock > 0 && (
                     <div style={{
@@ -480,7 +501,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         }}>
                             {e.by ? <><b style={{ color: e.byId === socket.id ? '#4f4' : '#fff' }}>{e.byId === socket.id ? 'You' : e.by}</b>{e.reason === 'wrecked' ? ' wrecked ' : ' knocked out '}</> : ''}
                             <b style={{ color: e.id === socket.id ? '#ff5566' : '#fff' }}>{e.id === socket.id ? 'you' : e.name}</b>
-                            {!e.by && (e.reason === 'electric' ? ' got zapped ⚡' : e.reason === 'wrecked' ? ' blew up' : e.reason === 'pit' ? ' fell in the sinkhole 🕳️' : ' crashed out')}
+                            {!e.by && (e.reason === 'electric' ? ' got zapped ⚡' : e.reason === 'wrecked' ? ' blew up' : e.reason === 'pit' ? ' fell in the sinkhole 🕳️' : e.reason === 'bomb' ? ' was holding the bomb 💣' : ' crashed out')}
                             {e.reason === 'wrecked' ? ' 💥' : ''}
                         </div>
                     ))}
@@ -547,12 +568,12 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                 {/* Status pills (active effects) — under the timer, away from thumbs */}
                 {me && meAlive && (
                     <div style={{
-                        position: 'absolute', top: `calc(${EDGE_TOP} + ${touchUI ? 40 : 52}px)`,
+                        position: 'absolute', top: `calc(${EDGE_TOP} + ${snapshot.mode && snapshot.mode !== 'ffa' ? (touchUI ? 98 : 118) : (touchUI ? 40 : 52)}px)`,
                         left: '50%', transform: 'translateX(-50%)',
                         display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'center', maxWidth: '60vw',
                     }}>
                         {me.shield && <StatusPill label="SHIELD" color="#00ddff" />}
-                        {me.speedMult > 1 && <StatusPill label="SPEED" color="#00ff88" />}
+                        {me.speedMult > 1 && !(snapshot.bomb && snapshot.bomb.holder === me.num) && <StatusPill label="SPEED" color="#00ff88" />}
                         {me.scale > 1.1 && <StatusPill label="MEGA" color="#ff3366" />}
                         {me.slip > 0 && <StatusPill label="OIL!" color="#ff8800" />}
                         {me.magnetTimer > 0 && <StatusPill label="MAGNET" color="#ffaa00" />}
@@ -617,6 +638,12 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                                 {round >= maxRounds && maxRounds > 1 ? 'FINAL ROUND' : `ROUND ${round} OF ${maxRounds}`}
                             </div>
                         )}
+                        {modeKey !== 'ffa' && (
+                            <div className="gtitle" style={{ fontSize: '1.15rem', color: '#ff7ab6', marginTop: 6, letterSpacing: 2, textShadow: '0 2px 6px #000' }}>
+                                {GAME_MODES[modeKey].icon} {GAME_MODES[modeKey].name.toUpperCase()}
+                                <div style={{ fontSize: '0.75rem', color: '#ffd6ea', letterSpacing: 0, fontFamily: 'inherit' }}>{GAME_MODES[modeKey].tip}</div>
+                            </div>
+                        )}
                         {arenaInfo && (
                             <div className="gtitle" style={{ fontSize: '1.05rem', color: arenaInfo.ice ? '#9fe0ff' : '#ffc53d', marginTop: 6, letterSpacing: 2, textShadow: '0 2px 6px #000' }}>
                                 {{ classic: '🏟️', ice: '❄️', box: '⬛', sinkhole: '🕳️', windmill: '🌀' }[arenaInfo.key] || ''} {arenaInfo.name.toUpperCase()}
@@ -664,8 +691,9 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         )}
 
                         {matchData.winnerName && (
-                            <p style={{ textAlign: 'center', color: 'gold', fontSize: '1.1rem', margin: '0 0 1rem 0' }}>
-                                Winner: {matchData.winnerName} {matchData.winnerId === socket.id ? '(You!)' : ''}
+                            <p style={{ textAlign: 'center', color: matchData.winTeam ? (matchData.winTeam === 1 ? '#ff6b5e' : '#5ea2ff') : 'gold', fontSize: '1.1rem', margin: '0 0 1rem 0' }}>
+                                {matchData.winTeam ? `${matchData.winTeam === 1 ? '🔴' : '🔵'} ${matchData.winnerName} WINS` : `Winner: ${matchData.winnerName}`}
+                                {matchData.winTeam ? (rankings.find(r => r.id === socket.id)?.team === matchData.winTeam ? ' (your team!)' : '') : (matchData.winnerId === socket.id ? ' (You!)' : '')}
                             </p>
                         )}
 
@@ -685,7 +713,8 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                                 }}>
                                     <span style={{ color: r.rank === 1 ? 'gold' : r.rank === 2 ? '#ccc' : r.rank === 3 ? '#cd7f32' : '#888' }}>
                                         {r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : `#${r.rank}`}
-                                        {' '}{r.name} {r.id === socket.id ? '(You)' : ''}
+                                        {' '}{r.team ? (r.team === 1 ? '🔴 ' : '🔵 ') : ''}{r.name} {r.id === socket.id ? '(You)' : ''}
+                                        {r.hill !== undefined && <span style={{ color: '#ffc53d', fontSize: '0.75rem' }}> 👑 {r.hill}s</span>}
                                     </span>
                                     <span style={{ color: '#00ddff', fontSize: '0.85rem' }}>+{r.score} pts</span>
                                 </div>
@@ -979,6 +1008,54 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     );
 }
 
+// ─── Game-mode status line under the timer ────────────────────────────────
+function ModeStatus({ snapshot, touchUI }) {
+    const mode = snapshot.mode;
+    if (!mode || mode === 'ffa') return null;
+    const players = snapshot.players || [];
+    const me = players.find(p => p.id === socket.id);
+    const box = (children, color = '#fff', border = 'rgba(255,255,255,0.2)', extra = {}) => (
+        <div style={{
+            position: 'absolute', top: `calc(${EDGE_TOP} + ${touchUI ? 38 : 48}px)`, left: '50%', transform: 'translateX(-50%)',
+            whiteSpace: 'nowrap', padding: '3px 12px', borderRadius: 14, fontWeight: 800, fontSize: touchUI ? '0.74rem' : '0.85rem',
+            color, background: 'rgba(0,0,0,0.65)', border: `1px solid ${border}`, ...extra,
+        }}>{children}</div>
+    );
+    if (mode === 'teams') {
+        const n = (t) => players.filter(p => p.alive && p.team === t).length;
+        return box(<>
+            <span style={{ color: '#ff6b5e' }}>🔴 {n(1)}</span>
+            <span style={{ color: '#aaa', margin: '0 8px' }}>vs</span>
+            <span style={{ color: '#5ea2ff' }}>🔵 {n(2)}</span>
+            {me && me.team ? <span style={{ color: '#aaa', marginLeft: 10, fontWeight: 600 }}>you're {me.team === 1 ? 'RED' : 'BLUE'}</span> : null}
+        </>);
+    }
+    if (mode === 'koth') {
+        const leader = players.reduce((b, p) => ((p.hill || 0) > (b ? b.hill || 0 : -1) ? p : b), null);
+        const mine = me ? me.hill || 0 : 0;
+        const holder = snapshot.hill && players.find(p => p.num === snapshot.hill.holder);
+        return box(<>
+            👑 You {Math.floor(mine)}/{HILL_TARGET}s
+            {leader && leader.id !== socket.id && leader.hill > 0 && <span style={{ color: '#ffc53d' }}> · {leader.name} {Math.floor(leader.hill)}s</span>}
+            <span style={{ color: snapshot.hill?.contested ? '#ff6b5e' : holder ? '#7dffb0' : '#888', marginLeft: 8 }}>
+                {snapshot.hill?.contested ? 'CONTESTED' : holder ? (holder.id === socket.id ? 'HOLDING!' : `${holder.name} holds it`) : 'zone free'}
+            </span>
+        </>, '#fff', 'rgba(255,197,61,0.5)');
+    }
+    if (mode === 'bomb') {
+        const b = snapshot.bomb;
+        if (!b) return box('💣 Bomb incoming…', '#ffb3b3', 'rgba(255,80,80,0.4)');
+        const holder = players.find(p => p.num === b.holder);
+        const mine = holder && holder.id === socket.id;
+        if (mine) {
+            return box(<>💣 YOU HAVE THE BOMB — {b.fuse.toFixed(0)}s! Bump someone!</>, '#fff', '#ff3b3b',
+                { background: 'rgba(200,20,20,0.85)', fontSize: touchUI ? '0.9rem' : '1rem', animation: 'tapPulse 0.6s ease-in-out infinite' });
+        }
+        return box(<>💣 {holder ? holder.name : '?'} has the bomb · {b.fuse.toFixed(0)}s</>, '#ffb3b3', 'rgba(255,80,80,0.4)');
+    }
+    return null;
+}
+
 // ─── Training: step-by-step tips that tick off as you do them ─────────────
 function TrainingCoach({ me, touchUI, live, over }) {
     const [step, setStep] = useState(0);
@@ -1036,6 +1113,7 @@ function TrainingCoach({ me, touchUI, live, over }) {
 function outReason(e) {
     if (!e) return 'You left the arena';
     if (e.reason === 'wrecked') return e.by ? `Wrecked by ${e.by} 💥` : 'Your car blew up 💥';
+    if (e.reason === 'bomb') return 'The bomb went off while you had it 💣';
     if (e.reason === 'pit') return e.by ? `${e.by} shoved you into the sinkhole 🕳️` : 'You fell into the sinkhole 🕳️';
     if (e.by) return `Knocked out by ${e.by}`;
     return e.reason === 'electric' ? 'Zapped by the electric fence' : 'You left the arena';

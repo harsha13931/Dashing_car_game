@@ -5,7 +5,7 @@ import { trailColor, drawTopper, TOPPERS } from '../cosmetics';
 import { renderCar, renderShadow, renderBrakeGlow, lookKey, resolveLook, CAR_TEX_H } from '../carRender';
 import { PAINTS, underglowColor } from '../cosmetics';
 import { net, PLANE_SPEED, DROP_FALL_MS } from '../net/netcode';
-import { pickRocketTarget, CAR_TYPES, ARENAS, arenaEnv } from '../../../shared/physics.mjs';
+import { pickRocketTarget, CAR_TYPES, ARENAS, arenaEnv, HILL_RADIUS } from '../../../shared/physics.mjs';
 import { isLowGfx, switchToLowAuto } from '../gfx';
 
 function hexToInt(hex) {
@@ -211,6 +211,25 @@ function makeHubCanvas() {
     g.fillStyle = '#ffc21a'; g.beginPath(); g.arc(S / 2, S / 2, 14, 0, Math.PI * 2); g.fill();
     g.fillStyle = '#1a1a1a';
     for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3; g.beginPath(); g.arc(S / 2 + Math.cos(a) * 30, S / 2 + Math.sin(a) * 30, 4, 0, Math.PI * 2); g.fill(); }
+    return c;
+}
+
+function makeBombCanvas() {
+    const S = 64, c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    // fuse
+    g.strokeStyle = '#c9a36b'; g.lineWidth = 4; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(40, 14); g.quadraticCurveTo(48, 4, 56, 8); g.stroke();
+    // body
+    const rg = g.createRadialGradient(24, 30, 3, 30, 36, 24);
+    rg.addColorStop(0, '#6b6f78'); rg.addColorStop(0.5, '#25272c'); rg.addColorStop(1, '#0b0c0e');
+    g.fillStyle = rg; g.beginPath(); g.arc(30, 38, 22, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#3a3d44'; g.fillRect(34, 12, 10, 8);
+    g.fillStyle = 'rgba(255,255,255,0.35)'; g.beginPath(); g.ellipse(22, 29, 6, 4, -0.6, 0, Math.PI * 2); g.fill();
+    // spark
+    g.fillStyle = '#ffdd55'; g.beginPath(); g.arc(57, 8, 5, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff'; g.beginPath(); g.arc(57, 8, 2, 0, Math.PI * 2); g.fill();
     return c;
 }
 
@@ -503,6 +522,12 @@ class ArenaScene extends Phaser.Scene {
         this.textures.addCanvas('saw', makeSawCanvas());
         this.textures.addCanvas('sawBlur', makeSawBlurCanvas());
         this.textures.addCanvas('balloon', makeBalloonCanvas());
+        this.textures.addCanvas('bomb', makeBombCanvas());
+        this.bombImg = this.add.image(0, 0, 'bomb').setDepth(19).setVisible(false);
+        this.bombText = this.add.text(0, 0, '', {
+            fontFamily: 'Arial, sans-serif', fontStyle: 'bold', fontSize: '22px', color: '#ff4d4d', stroke: '#000', strokeThickness: 5,
+        }).setOrigin(0.5, 0.5).setDepth(19).setVisible(false);
+        this.hillText = this.add.text(0, 0, '👑', { fontSize: '44px' }).setOrigin(0.5).setDepth(2.9).setAlpha(0.55).setVisible(false);
         this.bladeGfx = this.add.graphics().setDepth(5.05);
         this.rocketSprites = new Map();
 
@@ -936,6 +961,7 @@ class ArenaScene extends Phaser.Scene {
             e.hp = hp; e.wrecked = wrecked;
             e.alive = p.alive;
             e.isMe = p.id === this.store.localId;
+            e.team = p.team || 0;
             e.sizeMult = sizeMult;
 
             // Topper (hat) overlay
@@ -1111,17 +1137,46 @@ class ArenaScene extends Phaser.Scene {
             cam.centerOn(this.camX, this.camY);
         }
 
-        // Glow ring under each car: cyan = you, red = rivals
+        // Glow ring under each car: cyan = you, red = rivals (Team Battle: team colours)
         const rg = this.ringGfx;
         rg.clear();
+        // King of the Hill zone
+        const koth = snap.mode === 'koth';
+        this.hillText.setVisible(koth);
+        if (koth) {
+            const h = snap.hill || {};
+            const mine = h.holder && snap.players.some(p => p.num === h.holder && p.id === this.store.localId);
+            const col = h.contested ? 0xff4d3d : h.holder ? (mine ? 0x4dff88 : 0xffc53d) : 0xffffff;
+            const pulse = 0.5 + 0.5 * Math.sin(time * 0.006);
+            rg.fillStyle(col, 0.1 + (h.holder || h.contested ? 0.08 * pulse : 0));
+            rg.fillCircle(0, 0, HILL_RADIUS);
+            rg.lineStyle(6, col, 0.55 + 0.3 * pulse);
+            rg.strokeCircle(0, 0, HILL_RADIUS);
+        }
         for (const [, e] of this.carSprites) {
             if (!e.alive) continue;
             const r = 50 * (e.sizeMult || 1);
-            const col = e.isMe ? 0x4fd8ff : 0xff4d3d;
-            rg.fillStyle(col, e.isMe ? 0.16 : 0.12);
+            const col = e.team ? (e.team === 1 ? 0xff4d3d : 0x3d8bff) : (e.isMe ? 0x4fd8ff : 0xff4d3d);
+            rg.fillStyle(col, e.isMe ? 0.18 : 0.12);
             rg.fillCircle(e.x, e.y, r);
-            rg.lineStyle(3 / this.zoom, col, e.isMe ? 0.75 : 0.55);
+            rg.lineStyle((e.isMe && e.team ? 5 : 3) / this.zoom, col, e.isMe ? 0.8 : 0.55);
             rg.strokeCircle(e.x, e.y, r);
+            if (e.isMe && e.team) { rg.lineStyle(2 / this.zoom, 0xffffff, 0.8); rg.strokeCircle(e.x, e.y, r + 5); }
+        }
+        // Hot Bomb: the bomb rides above its carrier, ticking faster as the fuse burns
+        const bomb = snap.mode === 'bomb' && snap.bomb;
+        const carrier = bomb && snap.players.find(p => p.num === bomb.holder);
+        const ce = carrier && this.carSprites.get(carrier.id);
+        this.bombImg.setVisible(!!ce); this.bombText.setVisible(!!ce);
+        if (ce) {
+            const fuse = Math.max(0, bomb.fuse - (snap.live ? Math.min(0.3, (net.serverNow() - snap.timestamp) / 1000) : 0));
+            const beat = 1 + 0.12 * Math.max(0, Math.sin(time * (fuse < 3 ? 0.03 : 0.012)));
+            const z = 1 / this.cameras.main.zoom;
+            this.bombImg.setPosition(ce.x, ce.y - 70 * z).setScale(beat * 0.9 * z);
+            this.bombText.setPosition(ce.x + 40 * z, ce.y - 78 * z).setScale(z).setText(fuse.toFixed(fuse < 3 ? 1 : 0));
+            const flash = 0.35 + 0.35 * Math.sin(time * 0.02);
+            rg.lineStyle(6 / this.zoom, 0xff2222, flash);
+            rg.strokeCircle(ce.x, ce.y, 62 * (ce.sizeMult || 1));
         }
 
         // Steel arms holding the saw blades (+ strings for balloons)
@@ -1161,8 +1216,8 @@ class ArenaScene extends Phaser.Scene {
         const meSnap = snap.players.find(q => q.id === this.store.localId);
         if (meCar && meSnap && meSnap.alive && snap.live) {
             const cars = [];
-            for (const [id, e] of this.carSprites) cars.push({ id, x: e.x, y: e.y, alive: e.alive });
-            const tgt = pickRocketTarget({ id: this.store.localId, x: meCar.x, y: meCar.y, angle: meCar.a }, cars);
+            for (const [id, e] of this.carSprites) cars.push({ id, x: e.x, y: e.y, alive: e.alive, team: e.team });
+            const tgt = pickRocketTarget({ id: this.store.localId, x: meCar.x, y: meCar.y, angle: meCar.a, team: meSnap.team }, cars);
             if (tgt) {
                 const ready = !(meSnap.shootCooldown > 0);
                 const col = ready ? 0xff3d5a : 0x9aa3ad;

@@ -6,7 +6,7 @@ import {
     loadGarage, saveGarage, cosmeticsFor, drawTopper, underglowColor,
 } from '../cosmetics';
 import { renderCar, lookKey } from '../carRender';
-import { CAR_TYPES as PHYS_CARS, ARENAS } from '../../../shared/physics.mjs';
+import { CAR_TYPES as PHYS_CARS, ARENAS, GAME_MODES, MODE_KEYS } from '../../../shared/physics.mjs';
 
 const ARENA_ICON = { random: '🎲', classic: '🏟️', ice: '❄️', box: '⬛', sinkhole: '🕳️', windmill: '🌀' };
 const ARENA_CHOICES = ['random', ...Object.keys(ARENAS)];
@@ -687,6 +687,14 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
                         onChange={n => update({ botCount: n })} />
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="gtitle" style={{ fontSize: '0.65rem', color: '#8fa1b8' }}>MODE</span>
+                    <Pill active disabled={!isHost} onClick={() => {
+                        if (!isHost) return;
+                        const cur = (room.settings && room.settings.mode) || 'ffa';
+                        update({ mode: MODE_KEYS[(MODE_KEYS.indexOf(cur) + 1) % MODE_KEYS.length] }); click();
+                    }}>{GAME_MODES[(room.settings && room.settings.mode) || 'ffa'].icon} {GAME_MODES[(room.settings && room.settings.mode) || 'ffa'].name} ▸</Pill>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span className="gtitle" style={{ fontSize: '0.65rem', color: '#8fa1b8' }}>ARENA</span>
                     <Pill active disabled={!isHost} onClick={() => {
                         if (!isHost) return;
@@ -780,6 +788,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
     const [botCount, setBotCount] = useState(3);
     const [botDifficulty, setBotDifficulty] = useState('medium');
     const [arena, setArena] = useState('random');
+    const [gameMode, setGameMode] = useState('ffa');
     const [gfx, setGfx] = useState(gfxSetting);
     const [error, setError] = useState('');
     const [copied, setCopied] = useState(false);
@@ -848,7 +857,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
         socket.emit('createRoom', {
             name: playerName(), botCount: mode === 'bots' ? botCount : 0, botDifficulty,
             carType: training && !ownsCar(carType) ? 'sports' : carType, cosmetics, token: getToken(),
-            arena: mode === 'bots' ? arena : 'random', training,
+            arena: mode === 'bots' ? arena : 'random', training, mode: mode === 'bots' ? gameMode : 'ffa',
         }, (res) => {
             if (!res || res.error) return setError(res?.error || 'Could not create a room');
             saveRoom(res.roomId);
@@ -1086,6 +1095,13 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
                                 onClick={() => { setBotDifficulty(d.key); click(); }}>{d.label}</Pill>
                         ))}
                     </div>
+                    <Label>Mode</Label>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
+                        {MODE_KEYS.map(k => (
+                            <Pill key={k} active={gameMode === k} onClick={() => { setGameMode(k); click(); }}>{GAME_MODES[k].icon} {GAME_MODES[k].name}</Pill>
+                        ))}
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: '#8fa1b8', textAlign: 'center', marginTop: 4 }}>{GAME_MODES[gameMode].tip}</div>
                     <Label>Arena</Label>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
                         {ARENA_CHOICES.map(k => (
