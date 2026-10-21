@@ -60,6 +60,21 @@ export const GAME_MODES = {
     bomb:  { name: 'Hot Bomb',          icon: '💣', tip: 'Bump someone to pass the bomb before it blows!' },
 };
 export const MODE_KEYS = Object.keys(GAME_MODES);
+// Team Battle line-up: players who picked a team keep it, everyone else (then
+// the bots) goes to whichever side is smaller. picks: 0 = auto, 1 = red, 2 = blue.
+// Returns { humans: [team per pick], bots: [team per bot] }.
+export function planTeams(picks, botCount) {
+    const n = { 1: 0, 2: 0 };
+    const humans = picks.map(t => (t === 1 || t === 2 ? t : 0));
+    humans.forEach(t => { if (t) n[t]++; });
+    for (let i = 0; i < humans.length; i++) {
+        if (!humans[i]) { humans[i] = n[1] <= n[2] ? 1 : 2; n[humans[i]]++; }
+    }
+    const bots = [];
+    for (let i = 0; i < botCount; i++) { const t = n[2] <= n[1] ? 2 : 1; bots.push(t); n[t]++; }
+    return { humans, bots, red: n[1], blue: n[2] };
+}
+
 export const HILL_RADIUS = 150;       // px — the King of the Hill zone
 export const HILL_TARGET = 15;        // s held to win the round
 const SQUARE_HALF = 0.89;           // square arenas have about the same floor area as the ring

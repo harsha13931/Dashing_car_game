@@ -226,7 +226,7 @@ function roomSummary(room) {
         players: Object.values(room.players).map(p => ({
             id: p.id, name: p.name, alive: p.alive, isBot: p.isBot,
             carType: p.carType, connected: p.connected !== false, cosmetics: p.cosmetics,
-            kills: p.kills, powerupsCollected: p.powerupsCollected
+            kills: p.kills, powerupsCollected: p.powerupsCollected, teamPick: p.teamPick || 0,
         })),
         running: room.running,
         round: room.round,
@@ -681,10 +681,14 @@ function beginRound(room) {
 function setupMode(room) {
     const players = Object.values(room.players);
     if (room.mode === 'teams') {
-        // Keep teams for the whole match; balance humans first, then bots
+        // Keep teams for the whole match: players' own picks first, then the
+        // rest (and the bots) balance out the sides
         if (room.round <= 1 || players.some(p => !p.team)) {
-            const order = [...players.filter(p => !p.isBot), ...players.filter(p => p.isBot)];
-            order.forEach((p, i) => { p.team = (i % 2) + 1; });
+            const humans = players.filter(p => !p.isBot), bots = players.filter(p => p.isBot);
+            let plan = PHYS.planTeams(humans.map(p => p.teamPick || 0), bots.length);
+            if (!plan.red || !plan.blue) plan = PHYS.planTeams(humans.map(() => 0), bots.length);   // never an empty side
+            humans.forEach((p, i) => { p.team = plan.humans[i]; });
+            bots.forEach((p, i) => { p.team = plan.bots[i]; });
         }
     } else {
         for (const p of players) p.team = 0;
@@ -810,6 +814,16 @@ io.on('connection', socket => {
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
 
+    // Team Battle: pick your side in the room (0 = auto)
+    socket.on('chooseTeam', ({ roomId, team }) => {
+        const room = rooms[roomId];
+        const p = room && room.players[socket.id];
+        if (!p || room.running) return;
+        p.teamPick = team === 1 || team === 2 ? team : 0;
+        p.team = 0;                                   // re-plan at the next match start
+        io.to(room.id).emit('roomUpdate', roomSummary(room));
+    });
+
     // Quick emotes (rate-limited)
     socket.on('emote', ({ roomId, e }) => {
         const room = rooms[roomId];
@@ -858,6 +872,14 @@ io.on('connection', socket => {
         if (humanCount + room.settings.botCount < 2) {
             socket.emit('notice', { text: 'You need at least 2 players — invite a friend or add bots.' });
             return;
+        }
+        if (room.settings.mode === 'teams') {
+            const humansNow = Object.values(room.players).filter(p => !p.isBot);
+            const plan = PHYS.planTeams(humansNow.map(p => p.teamPick || 0), Math.min(room.settings.botCount, MAX_PLAYERS_PER_ROOM - humanCount));
+            if (!plan.red || !plan.blue) {
+                socket.emit('notice', { text: 'Both teams need at least one car — add a bot or have someone switch team.' });
+                return;
+            }
         }
 
         // Add bots
