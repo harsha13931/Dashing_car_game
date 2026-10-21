@@ -1,5 +1,9 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, Suspense, lazy } from 'react';
 import PhaserGame from './PhaserGame';
+import { viewSetting, webglOK } from '../gfx';
+
+// The 3D arena loads on demand (keeps the menus quick to open)
+const Arena3D = lazy(() => import('../three/Arena3D'));
 import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
 import { net } from '../net/netcode';
@@ -32,12 +36,15 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     const [nextIn, setNextIn] = useState(0);
     const [goFlash, setGoFlash] = useState(false);
     const [spectateId, setSpectateId] = useState(null);
+    const [USE_3D] = useState(() => viewSetting() === '3d' && webglOK());
     const [soloOut, setSoloOut] = useState(null);     // solo: you're out → choose spectate or lobby
     const [sawOutCard, setSawOutCard] = useState(false);
     const [modeKey, setModeKey] = useState(() => (early && GAME_MODES[early.mode] ? early.mode : 'ffa'));
     const [arenaInfo, setArenaInfo] = useState(() => (early && ARENAS[early.arena] ? { ...ARENAS[early.arena], key: early.arena } : null));
     const followRef = useRef(null);
     const [emoteOpen, setEmoteOpen] = useState(false);
+    const [menuOpen, setMenuOpen] = useState(false);
+    const [teamPts, setTeamPts] = useState({ 1: 0, 2: 0 });
     const lastElim = useRef(null);
     const [emoteFeed, setEmoteFeed] = useState([]);
     const [chatOpen, setChatOpen] = useState(false);
@@ -196,6 +203,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         });
 
         socket.on('matchStart', ({ count, round: r, maxRounds: mr, arena, mode }) => {
+            if (r <= 1) setTeamPts({ 1: 0, 2: 0 });
             setModeKey(GAME_MODES[mode] ? mode : 'ffa');
             setRankings([]);
             net.reset();
@@ -218,6 +226,11 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
         socket.on('matchEnd', (data) => {
             soundManager.stopEngine();
+            if (data.mode === 'teams' && data.scores) {
+                const pts = { 1: 0, 2: 0 };
+                for (const r of data.rankings || []) if (r.team) pts[r.team] += data.scores[r.id] || 0;
+                setTeamPts(pts);
+            }
             setSoloOut(null);
             // Winning hit: replay the last knock-out in slow motion before the results
             const le = lastElim.current;
@@ -285,7 +298,9 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         const js = joystickInput.current;
         if (js.mag > 0.18) {
             const carA = net.local ? net.local.angle : (net.snap?.players?.find(p => p.id === socket.id)?.angle || 0);
-            let diff = Math.atan2(js.dy, js.dx) - carA;
+            // (the 3D camera is tilted, so it converts the stick direction onto the ground)
+            const want = window.__dashView && window.__dashView.screenToWorldAngle ? window.__dashView.screenToWorldAngle(js.dx, js.dy) : Math.atan2(js.dy, js.dx);
+            let diff = want - carA;
             while (diff > Math.PI) diff -= Math.PI * 2;
             while (diff < -Math.PI) diff += Math.PI * 2;
             const speed = net.localSpeed();
@@ -453,39 +468,24 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             background: '#030308', touchAction: 'none',
             userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
         }}>
-            <PhaserGame snapshot={snapshot} localId={socket.id} followId={followId} />
+            {USE_3D ? (
+                <Suspense fallback={<div className="full-screen center" style={{ color: '#9ab', fontSize: '0.9rem' }}>Loading 3D arena…</div>}>
+                    <Arena3D snapshot={snapshot} localId={socket.id} followId={followId} />
+                </Suspense>
+            ) : (
+                <PhaserGame snapshot={snapshot} localId={socket.id} followId={followId} />
+            )}
 
             {/* ─── HUD Overlay ──────────────────────────────────────────── */}
             <div className="full-screen" style={{ pointerEvents: 'none', zIndex: 4 }}>
 
                 <Minimap snapshot={snapshot} localId={socket.id} size={touchUI ? 84 : 116} />
 
-                {/* Top Center: Timer + Round */}
-                <div style={{
-                    position: 'absolute', top: EDGE_TOP, left: '50%', transform: 'translateX(-50%)',
-                    display: 'flex', gap: '8px', alignItems: 'center'
-                }}>
-                    {round > 0 && (
-                        <div style={{
-                            background: 'rgba(0,0,0,0.6)', padding: touchUI ? '4px 10px' : '6px 14px', borderRadius: '16px',
-                            border: '1px solid rgba(232,160,48,0.25)', color: '#aaa',
-                            fontSize: touchUI ? '0.72rem' : '0.85rem', fontWeight: '600'
-                        }}>
-                            ROUND {round}/{maxRounds}
-                        </div>
-                    )}
-                    <div style={{
-                        background: 'rgba(0,0,0,0.6)', padding: touchUI ? '5px 14px' : '8px 20px', borderRadius: '20px',
-                        border: '1px solid rgba(232,160,48,0.25)', color: '#fff',
-                        fontSize: touchUI ? '1.05rem' : '1.3rem',
-                        fontWeight: 'bold', fontVariantNumeric: 'tabular-nums',
-                    }}>
-                        {formatTime(snapshot.elapsed || 0)}
-                    </div>
-                </div>
+                {/* Top centre: arcade score bar (teams / round, timer, cars left) */}
+                <ScoreBar snapshot={snapshot} round={round} maxRounds={maxRounds} teamPts={teamPts} touchUI={touchUI} time={formatTime(snapshot.elapsed || 0)} />
 
                 {/* Game-mode status (teams count / hill progress / who has the bomb) */}
-                {countdown <= 0 && !matchData && <ModeStatus snapshot={snapshot} touchUI={touchUI} />}
+                {countdown <= 0 && !matchData && snapshot.mode !== 'teams' && <ModeStatus snapshot={snapshot} touchUI={touchUI} />}
 
                 {/* Arena phase: shrink warning / sudden death */}
                 {countdown <= 0 && !matchData && snapshot.fenceLock > 0 && (
@@ -513,7 +513,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
                 {/* Elimination feed */}
                 <div style={{
-                    position: 'absolute', left: EDGE_LEFT, top: `calc(${EDGE_TOP} + ${touchUI ? 174 : 206}px)`,
+                    position: 'absolute', left: EDGE_LEFT, top: `calc(${EDGE_TOP} + ${emoteOpen ? 104 : 56}px)`,
                     display: 'flex', flexDirection: 'column', gap: 4, maxWidth: '46vw',
                 }}>
                     {feed.map(e => (
@@ -544,50 +544,6 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         <div style={{ color: '#ddd', fontSize: touchUI ? '0.85rem' : '1rem', textShadow: '0 2px 4px #000' }}>{banner.sub}</div>
                     </div>
                 )}
-
-                {/* Top Right: Alive count + leaderboard (folds into a chip on touch) */}
-                <div style={{
-                    position: 'absolute', top: EDGE_TOP, right: EDGE_RIGHT,
-                    width: touchUI ? (listOpen ? 150 : 'auto') : 180,
-                    background: 'rgba(0,0,0,0.6)', padding: touchUI ? '6px 10px' : '12px', borderRadius: '10px',
-                    border: '1px solid rgba(255,255,255,0.08)',
-                    pointerEvents: touchUI ? 'auto' : 'none',
-                }}>
-                    <div
-                        onClick={touchUI ? () => setListOpen(o => !o) : undefined}
-                        style={{
-                            display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px',
-                            marginBottom: touchUI && !listOpen ? 0 : '8px', cursor: touchUI ? 'pointer' : 'default',
-                        }}
-                    >
-                        <span style={{ color: '#888', fontSize: '0.72rem', textTransform: 'uppercase', fontWeight: 600 }}>
-                            {touchUI ? '👥' : 'Players'}
-                        </span>
-                        <span style={{ color: '#e8a030', fontSize: touchUI ? '0.78rem' : '0.85rem', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                            {snapshot.players?.filter(p => p.alive).length || 0} alive{touchUI ? (listOpen ? ' ▴' : ' ▾') : ''}
-                        </span>
-                    </div>
-                    {(!touchUI || listOpen) && <div style={{ maxHeight: touchUI ? '40vh' : '200px', overflowY: 'auto' }}>
-                        {snapshot.players?.slice()
-                            .sort((a, b) => (b.alive === a.alive ? 0 : b.alive ? 1 : -1))
-                            .map(p => (
-                                <div key={p.id} style={{
-                                    display: 'flex', justifyContent: 'space-between', padding: '3px 0',
-                                    opacity: p.alive ? 1 : 0.4,
-                                    color: p.id === socket.id ? '#00ddff' : '#ccc',
-                                    fontSize: '0.8rem'
-                                }}>
-                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '110px' }}>
-                                        {p.id === socket.id ? '★ ' : ''}{p.name || p.id.slice(0, 4)}
-                                        {p.isBot ? ' 🤖' : ''}
-                                    </span>
-                                    <span style={{ fontSize: '0.7rem', color: p.alive ? '#4f4' : '#f44' }}>
-                                        {p.alive ? '●' : '✕'}
-                                    </span>
-                                </div>
-                            ))}
-                    </div>}
-                </div>
 
                 {/* Status pills (active effects) — under the timer, away from thumbs */}
                 {me && meAlive && (
@@ -863,7 +819,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
             {/* Emote feed: who said what (works while you're spectating too) */}
             {emoteFeed.length > 0 && (
-                <div style={{ position: 'absolute', top: `calc(${EDGE_TOP} + 52px)`, right: EDGE_RIGHT, zIndex: 8, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, pointerEvents: 'none' }}>
+                <div style={{ position: 'absolute', top: `calc(${EDGE_TOP} + ${touchUI ? 100 : 134}px)`, right: EDGE_RIGHT, zIndex: 8, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, pointerEvents: 'none' }}>
                     {emoteFeed.map(m => (
                         <div key={m.key} style={{
                             background: 'rgba(0,0,0,0.7)', borderRadius: 14, padding: '3px 10px', color: '#fff', fontSize: '0.8rem', fontWeight: 700, maxWidth: '40vw',
@@ -878,27 +834,46 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
             {chatOpen && <ChatPanel roomId={room?.id} onClose={() => setChatOpen(false)} />}
 
-            {/* ─── Emotes ───────────────────────────────────────────────── */}
+            {/* ─── Top-left: chat & emotes, menu, mic ───────────────────── */}
             {!matchData && (
-                <div style={{ position: 'absolute', top: `calc(${EDGE_TOP} + ${touchUI ? 128 : 160}px)`, left: EDGE_LEFT, zIndex: 8, display: 'flex', gap: 6, pointerEvents: 'auto' }}>
-                    <button onClick={() => setEmoteOpen(o => !o)} aria-label="Emotes" style={{
-                        width: 38, height: 38, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.2)',
-                        background: emoteOpen ? 'rgba(255,216,77,0.25)' : 'rgba(0,0,0,0.55)', fontSize: '1.15rem', cursor: 'pointer',
-                    }}>💬</button>
-                    <VoiceControls roomId={room?.id} round />
+                <div style={{ position: 'absolute', top: EDGE_TOP, left: EDGE_LEFT, zIndex: 8, pointerEvents: 'auto' }}>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                        <HudButton onClick={() => { setEmoteOpen(o => !o); setMenuOpen(false); }} active={emoteOpen} label="Chat and emotes">
+                            <svg width="20" height="20" viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" fill="#fff" /><circle cx="8" cy="10.5" r="1.4" fill="#1f6fe0" /><circle cx="12" cy="10.5" r="1.4" fill="#1f6fe0" /><circle cx="16" cy="10.5" r="1.4" fill="#1f6fe0" /></svg>
+                        </HudButton>
+                        <HudButton onClick={() => { setMenuOpen(o => !o); setEmoteOpen(false); }} active={menuOpen} label="Menu">
+                            <svg width="20" height="20" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" stroke="#fff" strokeWidth="2.8" strokeLinecap="round" /></svg>
+                        </HudButton>
+                        <VoiceControls roomId={room?.id} round />
+                    </div>
                     {emoteOpen && (
-                        <button onClick={() => { setEmoteOpen(false); setChatOpen(true); }} aria-label="Type a message" style={{
-                            minWidth: 38, height: 38, borderRadius: 19, border: '1px solid rgba(255,255,255,0.2)', padding: '0 8px',
-                            background: 'rgba(0,0,0,0.7)', color: '#fff', fontSize: '1.05rem', cursor: 'pointer', animation: 'popIn 0.2s ease-out',
-                        }}>⌨️</button>
+                        <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', maxWidth: '60vw' }}>
+                            <button onClick={() => { setEmoteOpen(false); setChatOpen(true); }} aria-label="Type a message" style={emoteChip}>⌨️</button>
+                            {EMOTES.map((em, i) => (
+                                <button key={em} onClick={() => sendEmote(i)} style={{ ...emoteChip, fontSize: em.length > 2 ? '0.85rem' : '1.15rem' }}>{em}</button>
+                            ))}
+                        </div>
                     )}
-                    {emoteOpen && EMOTES.map((em, i) => (
-                        <button key={em} onClick={() => sendEmote(i)} style={{
-                            minWidth: 38, height: 38, borderRadius: 19, border: '1px solid rgba(255,255,255,0.2)', padding: '0 8px',
-                            background: 'rgba(0,0,0,0.7)', color: '#fff', fontSize: em.length > 2 ? '0.85rem' : '1.15rem', fontWeight: 800,
-                            fontFamily: 'inherit', cursor: 'pointer', animation: 'popIn 0.2s ease-out',
-                        }}>{em}</button>
-                    ))}
+                    {menuOpen && (
+                        <div className="gpanel" style={{ marginTop: 6, padding: '10px 12px', width: 220, maxHeight: '62vh', overflowY: 'auto', animation: 'popIn 0.2s ease-out' }}>
+                            {touchUI && (
+                                <button onClick={() => { switchCtrl(); }} className="gbtn dark" style={{ width: '100%', marginBottom: 6, fontSize: '0.75rem', padding: '7px' }}>
+                                    ⇄ {ctrlMode === 'joystick' ? 'Switch to pedals' : 'Switch to joystick'}
+                                </button>
+                            )}
+                            <button onClick={() => { socket.emit('leaveRoom', { roomId: room?.id }); onBack(); }} className="gbtn dark"
+                                style={{ width: '100%', marginBottom: 8, fontSize: '0.75rem', padding: '7px', color: '#ff8899' }}>🚪 Leave match</button>
+                            <div className="gtitle" style={{ fontSize: '0.7rem', color: '#8fb8ff', marginBottom: 6 }}>PLAYERS · {snapshot.players?.filter(p => p.alive).length || 0} LEFT</div>
+                            {(snapshot.players || []).slice().sort((a, b) => (b.alive - a.alive) || ((a.team || 0) - (b.team || 0))).map(p => (
+                                <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0', opacity: p.alive ? 1 : 0.4, fontSize: '0.8rem', color: p.id === socket.id ? '#8fe3ff' : '#dfe6ee' }}>
+                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 150 }}>
+                                        {p.team ? (p.team === 1 ? '🔴 ' : '🔵 ') : ''}{p.id === socket.id ? '★ ' : ''}{p.name}{p.isBot ? ' 🤖' : ''}
+                                    </span>
+                                    <span style={{ fontSize: '0.7rem', color: p.alive ? '#4ade80' : '#f87171' }}>{p.alive ? '●' : '✕'}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -1014,27 +989,26 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                     </div>
                     )}
 
-                    {/* Control-scheme toggle (under the minimap) */}
-                    <button
-                        onClick={switchCtrl}
-                        style={{
-                            position: 'absolute', top: `calc(${EDGE_TOP} + 92px)`, left: EDGE_LEFT,
-                            zIndex: 7, pointerEvents: 'auto',
-                            background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(232,160,48,0.5)',
-                            color: '#e8a030', borderRadius: 16, padding: '5px 10px',
-                            fontSize: '0.66rem', fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
-                        }}
-                    >
-                        {ctrlMode === 'joystick' ? '⇄ Pedals' : '⇄ Joystick'}
-                    </button>
                 </div>
             )}
 
             {/* ─── Your health ──────────────────────────────────────────── */}
             {me && meAlive && !matchData && <HealthHud hp={me.hp ?? 100} max={(CAR_TYPES[me.carType] || {}).hp || 100} touchUI={touchUI} />}
 
+            {/* Desktop: action buttons with their keys */}
+            {!touchUI && me && meAlive && !matchData && (
+                <div style={{ position: 'absolute', inset: 0, zIndex: 6, pointerEvents: 'none' }}>
+                    <PowerButton kind="fire" action="shoot" onAction={handleBtn} size="76px" keyHint="F"
+                        cooldown={me?.shootCooldown} maxCooldown={1.4} style={{ right: 128, bottom: 26 }} />
+                    <PowerButton kind="nitro" action="nitro" onAction={handleBtn} size="92px" keyHint="SPACE"
+                        cooldown={net.local ? net.local.dashCooldown : me?.dashCooldown} maxCooldown={NITRO_COOLDOWN}
+                        active={net.local ? net.local.nitro > 0 : me?.isDashing} style={{ right: 24, bottom: 22 }} />
+                    {me?.weapon && <PowerButton kind={me.weapon === 'oil' ? 'oil' : 'flip'} action="drop" onAction={handleBtn} size="62px" keyHint="Q" style={{ right: 222, bottom: 30 }} />}
+                </div>
+            )}
+
             {/* Desktop keyboard hint */}
-            {!touchUI && (
+            {!touchUI && !spectating && (
                 <div style={{
                     position: 'absolute', bottom: 14, left: '50%', transform: 'translateX(-50%)',
                     zIndex: 5, pointerEvents: 'none',
@@ -1208,12 +1182,17 @@ function Minimap({ snapshot, localId, size = 116 }) {
             ctx.beginPath(); ctx.moveTo(cx - Math.cos(a) * l, cy - Math.sin(a) * l); ctx.lineTo(cx + Math.cos(a) * l, cy + Math.sin(a) * l); ctx.stroke();
         }
 
+        for (const pu of (snapshot.powerups || [])) {
+            ctx.fillStyle = '#ffd84d';
+            ctx.fillRect(cx + (pu.x / R) * rad - 1.8, cy + (pu.y / R) * rad - 1.8, 3.6, 3.6);
+        }
+        const meTeam = (snapshot.players || []).find(p => p.id === localId)?.team || 0;
         for (const p of (snapshot.players || [])) {
             if (!p.alive) continue;
             const px = cx + (p.x / R) * rad;
             const py = cy + (p.y / R) * rad;
             const me = p.id === localId;
-            ctx.fillStyle = me ? '#8fe3ff' : (p.isBot ? '#e8a030' : '#4ade80');
+            ctx.fillStyle = me ? '#4dff88' : p.team ? (p.team === meTeam ? '#5ea2ff' : '#ff4d5e') : '#ff4d5e';
             ctx.beginPath(); ctx.arc(px, py, me ? 3.5 : 2.5, 0, Math.PI * 2); ctx.fill();
             if (me) {
                 ctx.strokeStyle = '#8fe3ff'; ctx.lineWidth = 1;
@@ -1224,9 +1203,10 @@ function Minimap({ snapshot, localId, size = 116 }) {
 
     return (
         <div style={{
-            position: 'absolute', top: EDGE_TOP, left: EDGE_LEFT, width: size, height: size,
+            position: 'absolute', top: EDGE_TOP, right: EDGE_RIGHT, width: size, height: size,
             borderRadius: '50%', overflow: 'hidden',
-            background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.1)',
+            background: 'radial-gradient(circle, rgba(20,32,56,0.78), rgba(8,12,22,0.85))', border: '3px solid #3d8bff',
+            boxShadow: '0 0 0 2px rgba(255,255,255,0.75), 0 4px 10px rgba(0,0,0,0.4)',
         }}>
             <canvas ref={ref} style={{ width: size, height: size }} />
         </div>
@@ -1316,48 +1296,116 @@ const POWER_LOOK = {
 };
 
 // Round power button with an icon and a ring that fills up as it recharges
-function PowerButton({ kind, action, onAction, cooldown = 0, maxCooldown = 1, active = false, size, style }) {
+function PowerButton({ kind, action, onAction, cooldown = 0, maxCooldown = 1, active = false, size, style, keyHint }) {
     const [down, handlers] = useHold(action, onAction);
     const look = POWER_LOOK[kind] || POWER_LOOK.fire;
     const ready = !cooldown || cooldown <= 0;
     const frac = ready ? 1 : Math.max(0, 1 - cooldown / maxCooldown);
-    const C = 2 * Math.PI * 45;
+    const C = 2 * Math.PI * 44;
     return (
         <div {...handlers} style={{
             position: 'absolute', pointerEvents: 'auto', width: size, height: size, borderRadius: '50%',
-            background: `radial-gradient(circle at 50% 30%, ${look.color}55, rgba(14,18,26,0.92) 70%)`,
-            boxShadow: ready
-                ? `0 6px 0 rgba(0,0,0,0.5), 0 0 ${active ? 30 : 16}px ${look.color}${active ? 'cc' : '66'}`
-                : '0 6px 0 rgba(0,0,0,0.5)',
-            transform: down ? 'translateY(4px) scale(0.96)' : 'none', transition: 'transform 0.05s',
+            background: ready
+                ? 'radial-gradient(circle at 50% 26%, #7cc8ff 0%, #2f86f0 45%, #1550b8 100%)'
+                : 'radial-gradient(circle at 50% 26%, #5d6b80 0%, #2c3646 60%, #1b222d 100%)',
+            border: `3px solid ${ready ? '#ffffff' : 'rgba(255,255,255,0.35)'}`,
+            boxShadow: `0 5px 0 ${ready ? '#0b2f6e' : '#11161d'}, 0 0 ${active ? 28 : 10}px ${active ? look.color : 'rgba(0,0,0,0.35)'}`,
+            transform: down ? 'translateY(4px) scale(0.95)' : 'none', transition: 'transform 0.05s',
             animation: active ? 'powerPulse 0.5s ease-in-out infinite alternate' : 'none',
-            userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none',
+            userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none', boxSizing: 'border-box',
             ...style,
         }}>
             <svg viewBox="0 0 100 100" width="100%" height="100%" style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-                <circle cx="50" cy="50" r="45" fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="6" />
-                <circle cx="50" cy="50" r="45" fill="none" stroke={ready ? look.color : `${look.color}99`} strokeWidth="6"
-                    strokeLinecap="round" strokeDasharray={`${C * frac} ${C}`} transform="rotate(-90 50 50)" />
-                <g transform="translate(27 17) scale(1.9)">
+                {!ready && (
+                    /* recharge: the button fills back up clockwise */
+                    <circle cx="50" cy="50" r="22" fill="none" stroke="rgba(0,0,0,0.45)" strokeWidth="44"
+                        strokeDasharray={`${2 * Math.PI * 22 * (1 - frac)} ${2 * Math.PI * 22}`} transform="rotate(-90 50 50) scale(-1 1) translate(-100 0)" />
+                )}
+                <circle cx="50" cy="50" r="44" fill="none" stroke={ready ? '#bfe8ff' : '#8fb8ff'} strokeWidth="4"
+                    strokeLinecap="round" strokeDasharray={`${C * frac} ${C}`} transform="rotate(-90 50 50)" opacity={ready ? 0.9 : 1} />
+                <g transform="translate(27 15) scale(1.9)">
                     {kind === 'fire' ? (
-                        /* crosshair */
-                        <g fill="none" stroke={ready ? look.color : '#59606b'} strokeWidth="2.2" strokeLinecap="round">
+                        <g fill="none" stroke={ready ? '#fff' : '#9aa6b5'} strokeWidth="2.4" strokeLinecap="round">
                             <circle cx="12" cy="12" r="7" />
                             <path d="M12 1.5 V6 M12 18 V22.5 M1.5 12 H6 M18 12 H22.5" />
-                            <circle cx="12" cy="12" r="1.6" fill={ready ? look.color : '#59606b'} stroke="none" />
+                            <circle cx="12" cy="12" r="1.8" fill={ready ? '#ff4d5e' : '#9aa6b5'} stroke="none" />
                         </g>
                     ) : (
-                        <path d={look.icon} fill={ready ? look.color : '#59606b'} stroke={ready ? '#ffffff88' : 'none'} strokeWidth="0.8" strokeLinejoin="round" />
+                        <path d={look.icon} fill={ready ? look.color : '#9aa6b5'} stroke="#fff" strokeWidth={ready ? 1.1 : 0} strokeLinejoin="round" />
                     )}
                 </g>
-                <text x="50" y="83" textAnchor="middle" fontSize="13" fontFamily="Russo One, Arial Black, sans-serif"
-                    fill={ready ? '#fff' : '#8a93a0'}>{look.label}</text>
+                <text x="50" y="82" textAnchor="middle" fontSize="12.5" fontFamily="Russo One, Arial Black, sans-serif"
+                    fill="#fff" stroke="#0b2f6e" strokeWidth="0.8" paintOrder="stroke">{look.label}</text>
             </svg>
+            {keyHint && (
+                <div className="gtitle" style={{
+                    position: 'absolute', left: '50%', top: -12, transform: 'translateX(-50%)', padding: '1px 7px', borderRadius: 6,
+                    background: '#1f6fe0', border: '2px solid #fff', color: '#fff', fontSize: '0.6rem', whiteSpace: 'nowrap', pointerEvents: 'none',
+                }}>{keyHint}</div>
+            )}
         </div>
     );
 }
 
-// Your health bar (bottom centre, between the thumbs)
+// Square blue arcade button for the top-left corner
+function HudButton({ children, onClick, active, label }) {
+    return (
+        <button onClick={() => { soundManager.playClick(); onClick(); }} aria-label={label} style={{
+            width: 42, height: 38, borderRadius: 10, cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: active ? 'linear-gradient(180deg,#7cc8ff,#2f86f0)' : 'linear-gradient(180deg,#3d9bff,#1f62d6)',
+            border: '2px solid #ffffff', boxShadow: '0 3px 0 #0b2f6e',
+        }}>{children}</button>
+    );
+}
+const emoteChip = {
+    minWidth: 38, height: 36, borderRadius: 10, border: '2px solid rgba(255,255,255,0.85)', padding: '0 8px',
+    background: 'linear-gradient(180deg,#2d3a52,#1a2232)', color: '#fff', fontSize: '1.05rem', fontWeight: 800,
+    fontFamily: 'inherit', cursor: 'pointer', animation: 'popIn 0.2s ease-out',
+};
+
+// ─── Top-centre arcade score bar ──────────────────────────────────────────
+function ScoreBar({ snapshot, round, maxRounds, teamPts, touchUI, time }) {
+    const players = snapshot.players || [];
+    const teams = snapshot.mode === 'teams';
+    const Diamond = ({ col, on }) => (
+        <span style={{
+            width: touchUI ? 8 : 10, height: touchUI ? 8 : 10, transform: 'rotate(45deg)', display: 'inline-block', margin: '0 2.5px',
+            background: on ? col : 'transparent', border: `1.5px solid ${col}`, opacity: on ? 1 : 0.4,
+            boxShadow: on ? `0 0 6px ${col}` : 'none', flexShrink: 0,
+        }} />
+    );
+    const side = (children, align) => (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: align, gap: 6, minWidth: touchUI ? 'min(120px, 14vw)' : 170 }}>{children}</div>
+    );
+    const num = (v, col) => <span className="gtitle" style={{ color: col, fontSize: touchUI ? '0.95rem' : '1.1rem', textShadow: '0 2px 0 rgba(0,0,0,0.5)' }}>{v}</span>;
+    let left, right;
+    if (teams) {
+        const team = (t) => players.filter(p => p.team === t).sort((a, b) => b.alive - a.alive);
+        left = side(<>{team(1).map(p => <Diamond key={p.id} col="#ff4d5e" on={p.alive} />)}{num(teamPts[1] || 0, '#ff8a8a')}</>, 'flex-end');
+        right = side(<>{num(teamPts[2] || 0, '#8ab8ff')}{team(2).map(p => <Diamond key={p.id} col="#3d8bff" on={p.alive} />)}</>, 'flex-start');
+    } else {
+        left = side(<span className="gtitle" style={{ color: '#cfe3ff', fontSize: touchUI ? '0.72rem' : '0.82rem' }}>{round > 0 ? `ROUND ${round}/${maxRounds}` : ''}</span>, 'flex-end');
+        const sorted = players.slice().sort((a, b) => (b.id === socket.id) - (a.id === socket.id) || b.alive - a.alive);
+        right = side(<>{sorted.map(p => <Diamond key={p.id} col={p.id === socket.id ? '#4dff88' : '#ffb03d'} on={p.alive} />)}
+            {num(players.filter(p => p.alive).length, '#ffd27a')}</>, 'flex-start');
+    }
+    return (
+        <div style={{
+            position: 'absolute', top: EDGE_TOP, left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 10,
+            pointerEvents: 'none', padding: touchUI ? '3px 10px' : '5px 14px', borderRadius: 14,
+            background: 'linear-gradient(90deg, rgba(10,16,30,0) 0%, rgba(10,16,30,0.72) 18%, rgba(10,16,30,0.72) 82%, rgba(10,16,30,0) 100%)',
+        }}>
+            {left}
+            <div className="gtitle" style={{
+                padding: touchUI ? '3px 12px' : '5px 16px', borderRadius: 10, color: '#fff', fontSize: touchUI ? '1rem' : '1.25rem',
+                background: 'linear-gradient(180deg,#3d9bff,#1f62d6)', border: '2px solid #fff', boxShadow: '0 3px 0 #0b2f6e',
+                fontVariantNumeric: 'tabular-nums', minWidth: touchUI ? 52 : 64, textAlign: 'center',
+            }}>{time}</div>
+            {right}
+        </div>
+    );
+}
+
 function HealthHud({ hp, max = 100, touchUI }) {
     const v = Math.max(0, Math.min(100, (hp / max) * 100));
     const col = v > 60 ? '#3ddc84' : v > 30 ? '#ffc93d' : '#ff4d4d';
@@ -1365,8 +1413,9 @@ function HealthHud({ hp, max = 100, touchUI }) {
         <div style={{
             position: 'absolute', left: '50%', transform: 'translateX(-50%)', zIndex: 6, pointerEvents: 'none',
             bottom: `calc(${EDGE_BOTTOM} + ${touchUI ? '6px' : '40px'})`,
-            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
-            background: 'rgba(0,0,0,0.55)', borderRadius: 20, border: `1px solid ${col}66`,
+            display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px',
+            background: 'linear-gradient(180deg, rgba(20,32,56,0.85), rgba(10,16,30,0.85))', borderRadius: 14,
+            border: '2px solid rgba(143,184,255,0.55)', boxShadow: '0 3px 0 rgba(0,0,0,0.35)',
             animation: v <= 30 ? 'lowHp 0.6s ease-in-out infinite alternate' : 'none',
         }}>
             <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 21 C5 15 2 12 2 8 A5 5 0 0 1 12 6 A5 5 0 0 1 22 8 C22 12 19 15 12 21 Z" fill={col} /></svg>
