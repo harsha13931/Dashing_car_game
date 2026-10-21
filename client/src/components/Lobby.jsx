@@ -9,6 +9,10 @@ import { renderCar, lookKey } from '../carRender';
 import { CAR_TYPES as PHYS_CARS } from '../../../shared/physics.mjs';
 import { getToken, saveRoom, clearRoom } from '../net/session';
 import { useInstall, promptInstall, isIOS } from '../pwa';
+import {
+    useProfile, ownsCar, ownsItem, itemPrice, buyCar, buyItem, CAR_PRICES, dailyStatus,
+} from '../progress';
+import { Coin, CoinPill, LevelBadge, DailyRewardModal, ChallengeList, fmt } from './Rewards';
 
 // ─── Menus: home (car stage), garage, play sheets, settings, room ─────────
 
@@ -367,11 +371,11 @@ const PART_ICON = {
     stripes: '‖', side: '⫴', flames: '🔥', number: '#', checker: '🏁',
 };
 
-function ChipGrid({ items, value, onPick }) {
+function ChipGrid({ items, value, onPick, field }) {
     return (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(76px, 1fr))', gap: 8 }}>
             {items.map(it => (
-                <Swatch key={it.key} active={value === it.key} title={it.name} onClick={() => onPick(it.key)}>
+                <Swatch key={it.key} active={value === it.key} title={it.name} onClick={() => onPick(it.key)} price={lockPrice(field, it.key)}>
                     <div style={{ height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.3rem', color: '#e6edf5' }}>
                         {it.color ? <div style={{ width: 26, height: 26, borderRadius: '50%', background: it.color, boxShadow: `0 0 10px ${it.color}` }} />
                             : (PART_ICON[it.key] || '•')}
@@ -386,16 +390,27 @@ const Section = ({ children }) => (
     <div className="gtitle" style={{ fontSize: '0.62rem', color: '#8fa1b8', margin: '10px 0 6px' }}>{children}</div>
 );
 
-function Swatch({ active, onClick, title, children }) {
+// Price tag for items you haven't bought yet (0 = owned / free)
+const lockPrice = (field, key) => (field && !ownsItem(field, key) ? itemPrice(field, key) : 0);
+const LockTag = ({ price }) => (
+    <span className="gtitle" style={{
+        position: 'absolute', top: -6, right: -4, background: '#1a1f2b', border: '1px solid rgba(255,216,77,0.5)',
+        borderRadius: 8, padding: '1px 5px', fontSize: '0.55rem', color: '#ffd84d', display: 'flex', alignItems: 'center', gap: 2,
+    }}>🔒{price}</span>
+);
+
+function Swatch({ active, onClick, title, children, price = 0 }) {
     return (
         <button onClick={onClick} title={title} style={{
+            position: 'relative',
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
             padding: '8px 4px', cursor: 'pointer', fontFamily: 'inherit',
             background: active ? 'rgba(255,216,77,0.14)' : 'rgba(0,0,0,0.25)',
             border: `2px solid ${active ? '#ffd84d' : 'rgba(255,255,255,0.08)'}`,
             borderRadius: 12, boxShadow: active ? '0 0 12px rgba(255,216,77,0.35)' : 'none',
         }}>
-            {children}
+            {price > 0 && <LockTag price={price} />}
+            <div style={{ opacity: price > 0 ? 0.55 : 1 }}>{children}</div>
             <span className="gtitle" style={{ fontSize: '0.55rem', color: active ? '#ffd84d' : '#8fa1b8' }}>{title}</span>
         </button>
     );
@@ -428,9 +443,30 @@ function Logo({ size = '1.9rem' }) {
 }
 
 // ─── Garage: paint / hat / trail for the selected car ─────────────────────
-function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
+function GarageScreen({ car, cos: savedCos, onChange, onBack, onCycle, vp }) {
     const [tab, setTab] = useState('paint');
-    const set = (field, value) => { onChange({ ...cos, [field]: value }); click(); };
+    const profile = useProfile();
+    // Tapping something you don't own previews it on the car until you buy it
+    const [preview, setPreview] = useState(null);     // { field, key }
+    const [buyMsg, setBuyMsg] = useState('');
+    useEffect(() => { setPreview(null); setBuyMsg(''); }, [car.key]);
+    const cos = preview ? { ...savedCos, [preview.field]: preview.key } : savedCos;
+    const set = (field, value) => {
+        click(); setBuyMsg('');
+        if (ownsItem(field, value)) { setPreview(null); onChange({ ...savedCos, [field]: value }); }
+        else setPreview({ field, key: value });
+    };
+    const buy = () => {
+        if (!preview) return;
+        if (buyItem(preview.field, preview.key)) {
+            soundManager.playPowerup();
+            onChange({ ...savedCos, [preview.field]: preview.key });
+            setPreview(null);
+        } else {
+            setBuyMsg(`Need ${fmt(itemPrice(preview.field, preview.key) - profile.coins)} more coins — win rounds & daily challenges to earn them`);
+        }
+    };
+    const pillLock = (field, key) => { const pr = lockPrice(field, key); return pr > 0 ? <span style={{ fontSize: '0.7em', color: '#ffd84d' }}> 🔒{pr}</span> : null; };
     const stageH = vp.landscape ? Math.max(180, vp.h - 120) : Math.max(170, Math.min(300, vp.h - 520));
 
     const items = (
@@ -438,7 +474,7 @@ function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
         {tab === 'paint' && <Section>Colour</Section>}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(64px, 1fr))', gap: 8 }}>
             {tab === 'paint' && PAINTS.map(p => (
-                <Swatch key={p.key} active={cos.paint === p.key} title={p.name} onClick={() => set('paint', p.key)}>
+                <Swatch key={p.key} active={cos.paint === p.key} title={p.name} onClick={() => set('paint', p.key)} price={lockPrice('paint', p.key)}>
                     <div style={{
                         width: 32, height: 32, borderRadius: '50%', background: p.color || car.color,
                         border: '2px solid rgba(255,255,255,0.2)',
@@ -447,14 +483,14 @@ function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
                 </Swatch>
             ))}
             {tab === 'topper' && TOPPERS.map(tp => (
-                <Swatch key={tp.key} active={cos.topper === tp.key} title={tp.name} onClick={() => set('topper', tp.key)}>
+                <Swatch key={tp.key} active={cos.topper === tp.key} title={tp.name} onClick={() => set('topper', tp.key)} price={lockPrice('topper', tp.key)}>
                     <div style={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         <TopperThumb topperKey={tp.key} />
                     </div>
                 </Swatch>
             ))}
             {tab === 'trail' && TRAILS.map(tr => (
-                <Swatch key={tr.key} active={cos.trail === tr.key} title={tr.name} onClick={() => set('trail', tr.key)}>
+                <Swatch key={tr.key} active={cos.trail === tr.key} title={tr.name} onClick={() => set('trail', tr.key)} price={lockPrice('trail', tr.key)}>
                     <div style={{
                         width: 36, height: 18, borderRadius: 9, margin: '7px 0',
                         background: tr.rainbow
@@ -467,12 +503,12 @@ function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
         {tab === 'paint' && <>
             <Section>Finish</Section>
             <div style={{ display: 'flex', gap: 6 }}>
-                {FINISHES.map(f => <Pill key={f.key} active={(cos.finish || 'gloss') === f.key} onClick={() => set('finish', f.key)}>{f.name}</Pill>)}
+                {FINISHES.map(f => <Pill key={f.key} active={(cos.finish || 'gloss') === f.key} onClick={() => set('finish', f.key)}>{f.name}{pillLock('finish', f.key)}</Pill>)}
             </div>
         </>}
         {tab === 'decal' && <>
             <Section>Livery</Section>
-            <ChipGrid items={DECALS} value={cos.decal || 'stock'} onPick={k => set('decal', k)} />
+            <ChipGrid field="decal" items={DECALS} value={cos.decal || 'stock'} onPick={k => set('decal', k)} />
             <Section>Decal colour</Section>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {DECAL_COLORS.map(d => (
@@ -485,21 +521,21 @@ function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
         </>}
         {tab === 'parts' && <>
             <Section>Spoiler</Section>
-            <ChipGrid items={SPOILERS} value={cos.spoiler || 'stock'} onPick={k => set('spoiler', k)} />
+            <ChipGrid field="spoiler" items={SPOILERS} value={cos.spoiler || 'stock'} onPick={k => set('spoiler', k)} />
             <Section>Bonnet</Section>
-            <ChipGrid items={HOODS} value={cos.hood || 'stock'} onPick={k => set('hood', k)} />
+            <ChipGrid field="hood" items={HOODS} value={cos.hood || 'stock'} onPick={k => set('hood', k)} />
         </>}
         {tab === 'wheels' && <>
             <Section>Rims</Section>
-            <ChipGrid items={WHEELS.map(w => ({ ...w, color: w.rim }))} value={cos.wheel || 'stock'} onPick={k => set('wheel', k)} />
+            <ChipGrid field="wheel" items={WHEELS.map(w => ({ ...w, color: w.rim }))} value={cos.wheel || 'stock'} onPick={k => set('wheel', k)} />
             <Section>Window tint</Section>
             <div style={{ display: 'flex', gap: 6 }}>
-                {TINTS.map(t => <Pill key={t.key} active={(cos.tint || 'stock') === t.key} onClick={() => set('tint', t.key)}>{t.name}</Pill>)}
+                {TINTS.map(t => <Pill key={t.key} active={(cos.tint || 'stock') === t.key} onClick={() => set('tint', t.key)}>{t.name}{pillLock('tint', t.key)}</Pill>)}
             </div>
         </>}
         {tab === 'glow' && <>
             <Section>Neon underglow</Section>
-            <ChipGrid items={UNDERGLOWS.map(u => ({ ...u, color: u.color || undefined }))} value={cos.underglow || 'none'} onPick={k => set('underglow', k)} />
+            <ChipGrid field="underglow" items={UNDERGLOWS.map(u => ({ ...u, color: u.color || undefined }))} value={cos.underglow || 'none'} onPick={k => set('underglow', k)} />
         </>}
         </div>
     );
@@ -512,7 +548,8 @@ function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
             <div style={{ flex: vp.landscape ? 1.1 : 'none', position: 'relative', minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <TopButton onClick={onBack} label="Back">‹ BACK</TopButton>
-                    <div className="gtitle" style={{ fontSize: '1.2rem', color: '#ffd84d' }}>BODY SHOP</div>
+                    <div className="gtitle" style={{ fontSize: '1.2rem', color: '#ffd84d', flex: 1 }}>BODY SHOP</div>
+                    <CoinPill />
                 </div>
                 <div style={{ position: 'relative', marginTop: 6 }}>
                     <CarShowroom car={car} cos={cos} height={stageH} scale={Math.min(3.2, stageH / 80)} showName={false} framed={false} />
@@ -533,7 +570,20 @@ function GarageScreen({ car, cos, onChange, onBack, onCycle, vp }) {
                     ))}
                 </div>
                 <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>{items}</div>
-                <button className="gbtn yellow" onClick={() => { click(); onBack(); }} style={{ fontSize: '1rem', padding: '12px' }}>DONE</button>
+                {preview ? (
+                    <div>
+                        {buyMsg && <div style={{ fontSize: '0.72rem', color: '#ff8899', textAlign: 'center', marginBottom: 6 }}>{buyMsg}</div>}
+                        <div style={{ display: 'flex', gap: 8 }}>
+                            <button className="gbtn dark" onClick={() => { click(); setPreview(null); setBuyMsg(''); }} style={{ fontSize: '1rem', padding: '12px 16px' }}>✕</button>
+                            <button className={`gbtn ${profile.coins >= itemPrice(preview.field, preview.key) ? 'green' : 'dark'}`} onClick={buy}
+                                style={{ flex: 1, fontSize: '1rem', padding: '12px' }}>
+                                BUY FOR {fmt(itemPrice(preview.field, preview.key))} <Coin size={16} />
+                            </button>
+                        </div>
+                    </div>
+                ) : (
+                    <button className="gbtn yellow" onClick={() => { click(); onBack(); }} style={{ fontSize: '1rem', padding: '12px' }}>DONE</button>
+                )}
             </div>
         </div>
     );
@@ -720,6 +770,9 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
     });
 
     const install = useInstall();
+    const profile = useProfile();
+    const [showDaily, setShowDaily] = useState(() => dailyStatus().canClaim);
+    const [buyErr, setBuyErr] = useState('');
     const onInstall = async () => {
         if (install.canPrompt) await promptInstall();
         else setSheet('install');
@@ -739,6 +792,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
     // Play buttons: make sure we know who you are first
     const openPlay = (which) => {
         click(); setError('');
+        if (!ownsCar(carType)) return;
         if (NAME_OK(name)) setSheet(which);
         else setAskName({ then: which });
     };
@@ -747,7 +801,13 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
         setCarTypeRaw(k);
         try { localStorage.setItem('dasharena.car', k); } catch (_) { /* ignore */ }
     };
+    const unlockCar = () => {
+        click();
+        if (buyCar(carType)) { soundManager.playPowerup(); setBuyErr(''); }
+        else setBuyErr(`Need ${fmt(CAR_PRICES[carType] - profile.coins)} more coins — play rounds & finish daily challenges`);
+    };
     const cycleCar = (dir) => {
+        setBuyErr('');
         const next = CAR_TYPES[(carIdx + dir + CAR_TYPES.length) % CAR_TYPES.length];
         setCarType(next.key);
         soundManager.playRev(next.key);
@@ -845,6 +905,9 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
                     <span className="gtitle" style={{ fontSize: '0.66rem', letterSpacing: 1, padding: '1px 7px', borderRadius: 8, background: `${car.color}33`, marginRight: 6 }}>{car.role}</span>
                     <span style={{ fontStyle: 'italic' }}>{car.desc}</span>
                 </div>
+                {!ownsCar(carType) && (
+                    <div className="gtitle" style={{ fontSize: '0.75rem', color: '#ffd84d', marginTop: 4 }}>🔒 LOCKED · {fmt(CAR_PRICES[carType])} <Coin size={13} /></div>
+                )}
                 <div style={{ display: 'flex', gap: 5, justifyContent: 'center', marginTop: 8 }}>
                     {CAR_TYPES.map((c, i) => (
                         <div key={c.key} onClick={() => { click(); setCarType(c.key); soundManager.playRev(c.key); }} style={{
@@ -855,12 +918,23 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
                 </div>
             </div>
         );
+        const owned = ownsCar(carType);
         const buttons = (
             <div style={{ display: 'flex', flexDirection: 'column', gap: L ? 12 : 14, width: '100%' }}>
-                <button className="gbtn yellow" onClick={() => openPlay('online')}
-                    style={{ fontSize: L ? '1.15rem' : '1.4rem', padding: L ? '12px' : '16px' }}>▶ PLAY ONLINE</button>
+                {owned ? (
+                    <button className="gbtn yellow" onClick={() => openPlay('online')}
+                        style={{ fontSize: L ? '1.15rem' : '1.4rem', padding: L ? '12px' : '16px' }}>▶ PLAY ONLINE</button>
+                ) : (
+                    <div>
+                        <button className={`gbtn ${profile.coins >= CAR_PRICES[carType] ? 'green' : 'dark'}`} onClick={unlockCar}
+                            style={{ width: '100%', fontSize: L ? '1.1rem' : '1.3rem', padding: L ? '12px' : '16px' }}>
+                            🔓 UNLOCK · {fmt(CAR_PRICES[carType])} <Coin size={18} />
+                        </button>
+                        {buyErr && <div style={{ fontSize: '0.7rem', color: '#ff8899', textAlign: 'center', marginTop: 4 }}>{buyErr}</div>}
+                    </div>
+                )}
                 <div style={{ display: 'flex', gap: 12 }}>
-                    <button className="gbtn blue" onClick={() => openPlay('bots')}
+                    <button className="gbtn blue" onClick={() => openPlay('bots')} disabled={!owned}
                         style={{ flex: 1, fontSize: '0.95rem', padding: L ? '10px 6px' : '13px 6px' }}>🤖 VS BOTS</button>
                     <button className="gbtn purple" onClick={() => { click(); setScreen('garage'); }}
                         style={{ flex: 1, fontSize: '0.95rem', padding: L ? '10px 6px' : '13px 6px' }}>🎨 GARAGE</button>
@@ -868,11 +942,22 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
             </div>
         );
         const settingsBtn = (
-            <div style={{ display: 'flex', gap: 8 }}>
+            <TopButton onClick={() => setSheet('settings')} label="Settings" style={{ width: 44, height: 40, padding: 0, fontSize: '1.1rem' }}>⚙</TopButton>
+        );
+        const todo = profile.challenges.list.filter(c => !c.done).length;
+        const statusRow = (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <LevelBadge />
+                <CoinPill />
+                <TopButton onClick={() => setSheet('challenges')} label="Daily challenges" style={{ position: 'relative', height: 36, padding: '0 10px', fontSize: '0.95rem' }}>
+                    🎯{todo > 0 && <span className="gtitle" style={{
+                        position: 'absolute', top: -6, right: -6, background: '#ff3b5c', color: '#fff', borderRadius: 9,
+                        minWidth: 18, height: 18, fontSize: '0.65rem', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>{todo}</span>}
+                </TopButton>
                 {!install.installed && (
-                    <TopButton onClick={onInstall} color="green" label="Install app" style={{ height: 40, padding: '0 12px', fontSize: '0.78rem' }}>📲 GET APP</TopButton>
+                    <TopButton onClick={onInstall} color="green" label="Install app" style={{ height: 36, padding: '0 10px', fontSize: '0.72rem', whiteSpace: 'nowrap' }}>📲 GET APP</TopButton>
                 )}
-                <TopButton onClick={() => setSheet('settings')} label="Settings" style={{ width: 44, height: 40, padding: 0, fontSize: '1.1rem' }}>⚙</TopButton>
             </div>
         );
         const topBar = (
@@ -880,7 +965,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
                 <button onClick={() => { click(); setAskName({ then: null }); }} aria-label="Change your name" style={{
                     display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(0,0,0,0.35)',
                     border: '2px solid rgba(255,255,255,0.1)', borderRadius: 24, padding: '4px 14px 4px 4px', cursor: 'pointer',
-                    maxWidth: '55vw',
+                    maxWidth: L ? 150 : '55vw', minWidth: 0,
                 }}>
                     <span className="gtitle" style={{
                         width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -888,6 +973,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
                     }}>{playerName()[0].toUpperCase()}</span>
                     <span className="gtitle" style={{ color: '#fff', fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{playerName()}</span>
                 </button>
+                {L && statusRow}
                 {!L && <Logo size="1.35rem" />}
                 {!L && settingsBtn}
             </div>
@@ -916,6 +1002,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
                 padding: `${SAFE_TOP} ${SAFE_X} ${SAFE_BOTTOM}`, boxSizing: 'border-box', maxWidth: 520, margin: '0 auto',
             }}>
                 {topBar}
+                <div style={{ display: 'flex', justifyContent: 'center' }}>{statusRow}</div>
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: 0 }}>
                     {stage}
                     {carInfo}
@@ -979,6 +1066,16 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
             {askName && !room && (
                 <NameScreen initial={NAME_OK(name) ? name : ''} canClose={!askName.first && NAME_OK(name)}
                     onSave={saveName} onClose={() => setAskName(null)} />
+            )}
+
+            {sheet === 'challenges' && (
+                <Sheet title="Daily Challenges" onClose={() => setSheet(null)}>
+                    <ChallengeList />
+                </Sheet>
+            )}
+
+            {showDaily && !askName && !room && screen === 'home' && (
+                <DailyRewardModal onClose={() => setShowDaily(false)} />
             )}
 
             {sheet === 'install' && (

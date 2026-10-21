@@ -4,6 +4,7 @@ import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
 import { net } from '../net/netcode';
 import { NITRO_COOLDOWN, CAR_TYPES } from '../../../shared/physics.mjs';
+import { RoundRewards } from './Rewards';
 
 // Screen-edge offsets that respect phone notches / home indicators
 const EDGE_TOP = 'max(10px, env(safe-area-inset-top))';
@@ -114,7 +115,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             setSoloOut(data);
             soundManager.stopEngine();
             soundManager.playLose();
-            setTimeout(() => (onToRoom || onBack)(), 2800);
+            setTimeout(() => (onToRoom || onBack)(), 4500);
         });
 
         socket.on('powerupCollected', ({ playerId, type }) => {
@@ -606,6 +607,8 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                             </p>
                         )}
 
+                        <RoundRewards compact={touchUI} />
+
                         {/* Rankings */}
                         <div style={{ marginBottom: '1.5rem' }}>
                             <h3 style={{ color: '#888', fontSize: '0.8rem', textTransform: 'uppercase', marginBottom: '8px', borderBottom: '1px solid #222', paddingBottom: '6px' }}>
@@ -705,7 +708,8 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         <div style={{ color: '#aab', fontSize: '0.85rem', marginTop: 4 }}>
                             {outReason(soloOut)}
                         </div>
-                        <div style={{ color: '#e8a030', fontSize: '0.8rem', marginTop: 18, letterSpacing: 1 }}>Returning to lobby…</div>
+                        <div style={{ maxWidth: 380, margin: '14px auto 0' }}><RoundRewards /></div>
+                        <div style={{ color: '#e8a030', fontSize: '0.8rem', marginTop: 6, letterSpacing: 1 }}>Returning to lobby…</div>
                     </div>
                 </div>
             )}

@@ -259,6 +259,10 @@ function resetPlayers(room) {
         p.slip = 0;
         p.scale = 1;
         p.isDashing = false;
+        p.roundKills = 0;
+        p.roundPowerups = 0;
+        p.roundDamage = 0;
+        p.survivalTime = 0;
         p.dashCooldown = 0;
         p.nitro = 0;
         p.stun = 0;
@@ -525,6 +529,7 @@ function updateBotAI(bot, room, now) {
 // ─── Physics helpers ───────────────────────────────────────────────────────
 function applyPowerup(type, player, room) {
     player.powerupsCollected++;
+    player.roundPowerups = (player.roundPowerups || 0) + 1;
     switch (type) {
         case 'SpeedBoost':
             player.speedMult = 1.6;
@@ -811,7 +816,7 @@ function eliminate(p, room, now, reason) {
     p.av = 0;
     room.eliminationOrder.push({ id: p.id, name: p.name });
     const killer = now - (p.lastHitAt || 0) < HIT_WINDOW_MS ? room.players[p.lastHitBy] : null;
-    if (killer && killer.id !== p.id) { killer.kills++; }
+    if (killer && killer.id !== p.id) { killer.kills++; killer.roundKills = (killer.roundKills || 0) + 1; }
     io.to(room.id).emit('playerEliminated', {
         id: p.id, name: p.name, x: p.x, y: p.y, reason,
         by: killer ? killer.name : null, byId: killer ? killer.id : null,
@@ -826,9 +831,26 @@ function eliminate(p, room, now, reason) {
         room.running = false;
         room.round = 0;
         room.scores = {};
+        sendRoundResult(room, p, rank, all.length);
         io.to(room.id).emit('soloOut', { rank, total: all.length, by: killer ? killer.name : null, reason });
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     }
+}
+
+// Each human gets their own result for the round — the client turns it into
+// coins, XP and challenge progress (progress is saved on the player's device).
+function sendRoundResult(room, p, rank, total) {
+    if (p.isBot || p.connected === false) return;
+    const humans = Object.values(room.players).filter(q => !q.isBot).length;
+    io.to(p.id).emit('roundResult', {
+        rank, total, won: rank === 1,
+        kills: p.roundKills || 0, powerups: p.roundPowerups || 0,
+        damage: Math.round(p.roundDamage || 0),
+        survival: Math.round((p.survivalTime || 0) / 1000),
+        carType: p.carType, online: humans > 1,
+        difficulty: room.settings.botDifficulty, bots: Object.values(room.players).filter(q => q.isBot).length,
+        round: room.round, maxRounds: room.maxRounds,
+    });
 }
 
 // Keep only the strongest hit per pair of cars (or car + fence) each tick, so
@@ -853,7 +875,7 @@ function damage(room, p, amount, attacker, now) {
     if (!p.alive || amount <= 0) return;
     if (p.shield) amount *= 0.25;                     // shield soaks most of it
     p.hp = Math.max(0, p.hp - amount);
-    if (attacker && attacker !== p) { markHit(p, attacker, now); attacker.damageDealt += amount; }
+    if (attacker && attacker !== p) { markHit(p, attacker, now); attacker.damageDealt += amount; attacker.roundDamage = (attacker.roundDamage || 0) + amount; }
     if (p.hp <= 0) {
         p.vx *= 0.2; p.vy *= 0.2;
         eliminate(p, room, now, 'wrecked');
@@ -1346,6 +1368,7 @@ function tickRoom(room, roomId, now) {
                 survivalTime: Math.round(p.survivalTime / 1000)
             }))
         });
+        rankings.forEach(r => { const p = room.players[r.id]; if (p) sendRoundResult(room, p, r.rank, rankings.length); });
         if (matchOver) io.to(room.id).emit('roomUpdate', roomSummary(room));
 
         // Auto-start next round after delay
