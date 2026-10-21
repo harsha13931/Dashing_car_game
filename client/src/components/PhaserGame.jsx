@@ -896,7 +896,7 @@ class ArenaScene extends Phaser.Scene {
             for (const b of this.emoteBubbles) {
                 const age = (time - b.t0) / 1000;
                 const car = this.carSprites.get(b.id);
-                if (age > 2.4 || !car) { b.obj.destroy(); b.dead = true; continue; }
+                if (age > 2.4 || !car || !car.alive) { b.obj.destroy(); b.dead = true; continue; }
                 const pop = Math.min(1, age / 0.15);
                 b.obj.setPosition(car.x, car.y - 78 - age * 10).setScale((0.6 + 0.4 * pop) / this.cameras.main.zoom)
                     .setAlpha(age > 1.9 ? (2.4 - age) / 0.5 : 1);
