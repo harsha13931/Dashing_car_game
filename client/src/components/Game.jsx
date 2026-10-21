@@ -5,6 +5,8 @@ import { soundManager } from '../utils/SoundManager';
 import { net } from '../net/netcode';
 import { NITRO_COOLDOWN, CAR_TYPES, ARENAS, GAME_MODES, HILL_TARGET } from '../../../shared/physics.mjs';
 import { RoundRewards, Coin } from './Rewards';
+import { ChatPanel, VoiceControls } from './Social';
+import { onChatMessage } from '../net/chat';
 import { completeTutorial, TUTORIAL_REWARD } from '../progress';
 
 export const EMOTES = ['GG', '😂', '😡', '🔥', '👋', '😱'];
@@ -38,6 +40,13 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     const [emoteOpen, setEmoteOpen] = useState(false);
     const lastElim = useRef(null);
     const [emoteFeed, setEmoteFeed] = useState([]);
+    const [chatOpen, setChatOpen] = useState(false);
+    // Room chat shows up in the same feed as emotes
+    useEffect(() => onChatMessage((m) => {
+        const key = `c${m.id}`;
+        setEmoteFeed(f => [...f.slice(-2), { key, mine: m.from === socket.id, name: m.name, text: m.text, chat: true }]);
+        setTimeout(() => setEmoteFeed(f => f.filter(x => x.key !== key)), 6000);
+    }), []);
     const [replay, setReplay] = useState(null);       // slow-mo of the round's final knock-out
     const sendEmote = (i) => { socket.emit('emote', { roomId: room?.id, e: i }); setEmoteOpen(false); soundManager.playClick(); };
 
@@ -315,7 +324,8 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
     // ─── Keyboard ───────────────────────────────────────────────────────
     useEffect(() => {
-        const onDown = e => { if (!e.repeat) { activeKeys.current.add(e.code); resolveInput(); } };
+        const typing = (e) => e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
+        const onDown = e => { if (!e.repeat && !typing(e)) { activeKeys.current.add(e.code); resolveInput(); } };
         const onUp = e => { activeKeys.current.delete(e.code); resolveInput(); };
         window.addEventListener('keydown', onDown);
         window.addEventListener('keyup', onUp);
@@ -404,6 +414,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     };
     useEffect(() => {
         const onKey = (e) => {
+            if (e.target && e.target.tagName === 'INPUT') return;      // typing in chat
             const n = parseInt(e.key);
             if (n >= 1 && n <= EMOTES.length && !e.repeat) sendEmote(n - 1);
         };
@@ -413,6 +424,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     useEffect(() => {
         if (!spectating) return;
         const onKey = (e) => {
+            if (e.target && e.target.tagName === 'INPUT') return;
             if (e.code === 'ArrowLeft' || e.code === 'KeyA') cycleSpectate(-1);
             if (e.code === 'ArrowRight' || e.code === 'KeyD') cycleSpectate(1);
         };
@@ -854,15 +866,17 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                 <div style={{ position: 'absolute', top: `calc(${EDGE_TOP} + 52px)`, right: EDGE_RIGHT, zIndex: 8, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, pointerEvents: 'none' }}>
                     {emoteFeed.map(m => (
                         <div key={m.key} style={{
-                            background: 'rgba(0,0,0,0.7)', borderRadius: 14, padding: '3px 10px', color: '#fff', fontSize: '0.8rem', fontWeight: 700,
+                            background: 'rgba(0,0,0,0.7)', borderRadius: 14, padding: '3px 10px', color: '#fff', fontSize: '0.8rem', fontWeight: 700, maxWidth: '40vw',
                             border: `1px solid ${m.mine ? 'rgba(79,216,255,0.6)' : 'rgba(255,255,255,0.15)'}`, animation: 'popIn 0.2s ease-out',
                         }}>
                             <span style={{ color: m.mine ? '#8fe3ff' : '#ffd27a' }}>{m.mine ? 'You' : m.name}</span>{' '}
-                            <span style={{ fontSize: m.text.length > 2 ? '0.85rem' : '1.1rem' }}>{m.text}</span>
+                            <span style={{ fontSize: m.chat || m.text.length > 2 ? '0.85rem' : '1.1rem', fontWeight: m.chat ? 600 : 700 }}>{m.text}</span>
                         </div>
                     ))}
                 </div>
             )}
+
+            {chatOpen && <ChatPanel roomId={room?.id} onClose={() => setChatOpen(false)} />}
 
             {/* ─── Emotes ───────────────────────────────────────────────── */}
             {!matchData && (
@@ -871,6 +885,13 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         width: 38, height: 38, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.2)',
                         background: emoteOpen ? 'rgba(255,216,77,0.25)' : 'rgba(0,0,0,0.55)', fontSize: '1.15rem', cursor: 'pointer',
                     }}>💬</button>
+                    <VoiceControls roomId={room?.id} round />
+                    {emoteOpen && (
+                        <button onClick={() => { setEmoteOpen(false); setChatOpen(true); }} aria-label="Type a message" style={{
+                            minWidth: 38, height: 38, borderRadius: 19, border: '1px solid rgba(255,255,255,0.2)', padding: '0 8px',
+                            background: 'rgba(0,0,0,0.7)', color: '#fff', fontSize: '1.05rem', cursor: 'pointer', animation: 'popIn 0.2s ease-out',
+                        }}>⌨️</button>
+                    )}
                     {emoteOpen && EMOTES.map((em, i) => (
                         <button key={em} onClick={() => sendEmote(i)} style={{
                             minWidth: 38, height: 38, borderRadius: 19, border: '1px solid rgba(255,255,255,0.2)', padding: '0 8px',

@@ -227,6 +227,7 @@ function roomSummary(room) {
             id: p.id, name: p.name, alive: p.alive, isBot: p.isBot,
             carType: p.carType, connected: p.connected !== false, cosmetics: p.cosmetics,
             kills: p.kills, powerupsCollected: p.powerupsCollected, teamPick: p.teamPick || 0,
+            voice: !!(room.voice && room.voice.has(p.id)), muted: !!p.voiceMuted,
         })),
         running: room.running,
         round: room.round,
@@ -678,6 +679,29 @@ function beginRound(room) {
     io.to(room.id).emit('matchStart', { count: room.countdown, round: room.round, maxRounds: room.maxRounds, arena: room.arenaKey, mode: room.mode });
 }
 
+// ─── Team Battle sides in the room: 4 places a side, bots per side ────────
+const TEAM_SIZE = 4;
+const sideCount = (room, t) => Object.values(room.players).filter(p => !p.isBot && p.teamPick === t).length + (room.settings.teamBots?.[t] || 0);
+// Give everyone a side and split the bots so the sides stay inside 4 places
+function syncTeams(room) {
+    if (room.settings.mode !== 'teams') return;
+    if (!room.settings.teamBots) room.settings.teamBots = { 1: 0, 2: 0 };
+    const tb = room.settings.teamBots;
+    for (const p of Object.values(room.players)) {
+        if (p.isBot || p.teamPick === 1 || p.teamPick === 2) continue;
+        p.teamPick = sideCount(room, 1) <= sideCount(room, 2) ? 1 : 2;
+    }
+    // bots: keep the total, trim any side that overflows, then fill the smaller side
+    let want = Math.min(room.settings.botCount, MAX_PLAYERS_PER_ROOM - Object.values(room.players).filter(p => !p.isBot).length);
+    for (const t of [1, 2]) tb[t] = Math.max(0, Math.min(tb[t], TEAM_SIZE - (sideCount(room, t) - tb[t])));
+    while (tb[1] + tb[2] > want) tb[tb[1] >= tb[2] ? 1 : 2]--;
+    while (tb[1] + tb[2] < want) {
+        const t = sideCount(room, 1) <= sideCount(room, 2) ? 1 : 2;
+        if (sideCount(room, t) >= TEAM_SIZE) { if (sideCount(room, 3 - t) >= TEAM_SIZE) break; tb[3 - t]++; } else tb[t]++;
+    }
+    room.settings.botCount = tb[1] + tb[2];
+}
+
 function setupMode(room) {
     const players = Object.values(room.players);
     if (room.mode === 'teams') {
@@ -685,6 +709,14 @@ function setupMode(room) {
         // rest (and the bots) balance out the sides
         if (room.round <= 1 || players.some(p => !p.team)) {
             const humans = players.filter(p => !p.isBot), bots = players.filter(p => p.isBot);
+            const tb = room.settings.teamBots;
+            if (tb && tb[1] + tb[2] === bots.length && humans.every(p => p.teamPick)) {
+                // the line-up chosen in the room
+                humans.forEach(p => { p.team = p.teamPick; });
+                bots.forEach((p, i) => { p.team = i < tb[1] ? 1 : 2; });
+                room.rosterDirty = true;
+                if (players.some(p => p.team === 1) && players.some(p => p.team === 2)) return finishSetup(room, players);
+            }
             let plan = PHYS.planTeams(humans.map(p => p.teamPick || 0), bots.length);
             if (!plan.red || !plan.blue) plan = PHYS.planTeams(humans.map(() => 0), bots.length);   // never an empty side
             humans.forEach((p, i) => { p.team = plan.humans[i]; });
@@ -693,6 +725,10 @@ function setupMode(room) {
     } else {
         for (const p of players) p.team = 0;
     }
+    finishSetup(room, players);
+}
+
+function finishSetup(room, players) {
     for (const p of players) p.hill = 0;
     room.hill = { holder: 0, contested: false };
     room.bomb = { holder: null, fuseEnd: 0, passAt: 0, nextAt: 0, count: 0 };
@@ -739,6 +775,8 @@ function removePlayer(room, id) {
     if (room.hostId === id || !room.players[room.hostId]) {
         room.hostId = (connectedHumans(room)[0] || humans[0]).id;
     }
+    if (room.voice && room.voice.delete(id)) io.to(room.id).emit('voice:left', { id });
+    syncTeams(room);
     io.to(room.id).emit('roomUpdate', roomSummary(room));
 }
 
@@ -773,6 +811,7 @@ io.on('connection', socket => {
         room.settings.botDifficulty = BOT_DIFFICULTY[botDifficulty] ? botDifficulty : 'medium';
         if (arena === 'random' || PHYS.ARENAS[arena]) room.settings.arena = arena;
         if (PHYS.GAME_MODES[mode]) room.settings.mode = mode;
+        syncTeams(room);
         if (training) {
             room.settings.mode = 'ffa';
             // Tutorial: one round against a single harmless practice bot
@@ -796,7 +835,9 @@ io.on('connection', socket => {
 
         socket.join(room.id);
         addPlayer(room, makePlayer(socket.id, name, false, 'medium', carType, cosmetics, sanitizeToken(token)));
+        syncTeams(room);
         cb({ roomId: room.id, player: room.players[socket.id] });
+        socket.emit('chatHistory', room.chat || []);
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
 
@@ -811,6 +852,21 @@ io.on('connection', socket => {
             for (const p of Object.values(room.players)) p.team = 0;      // new teams next match
         }
         if (settings.maxRounds !== undefined) room.maxRounds = Math.min(10, Math.max(1, parseInt(settings.maxRounds) || 3));
+        syncTeams(room);
+        io.to(room.id).emit('roomUpdate', roomSummary(room));
+    });
+
+    // Team Battle: the host adds / removes a bot on one side
+    socket.on('teamBot', ({ roomId, team, delta }) => {
+        const room = rooms[roomId];
+        if (!room || room.hostId !== socket.id || room.running || room.settings.mode !== 'teams') return;
+        if (team !== 1 && team !== 2) return;
+        syncTeams(room);
+        const tb = room.settings.teamBots;
+        const humans = Object.values(room.players).filter(p => !p.isBot).length;
+        if (delta > 0 && sideCount(room, team) < TEAM_SIZE && humans + tb[1] + tb[2] < MAX_PLAYERS_PER_ROOM) tb[team]++;
+        if (delta < 0 && tb[team] > 0) tb[team]--;
+        room.settings.botCount = tb[1] + tb[2];
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
 
@@ -819,8 +875,58 @@ io.on('connection', socket => {
         const room = rooms[roomId];
         const p = room && room.players[socket.id];
         if (!p || room.running) return;
+        if ((team === 1 || team === 2) && room.settings.mode === 'teams' && p.teamPick !== team && sideCount(room, team) >= TEAM_SIZE) {
+            socket.emit('notice', { text: `${team === 1 ? 'Red' : 'Blue'} team is full (4 places)` });
+            return;
+        }
         p.teamPick = team === 1 || team === 2 ? team : 0;
         p.team = 0;                                   // re-plan at the next match start
+        syncTeams(room);
+        io.to(room.id).emit('roomUpdate', roomSummary(room));
+    });
+
+    // ─── Text chat ───────────────────────────────────────────────────
+    socket.on('chat', ({ roomId, text }) => {
+        const room = rooms[roomId];
+        const p = room && room.players[socket.id];
+        if (!p || typeof text !== 'string') return;
+        const clean = text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
+        if (!clean) return;
+        const t = Date.now();
+        if (t - (p._chatAt || 0) < 700) return;            // no spamming
+        p._chatAt = t;
+        const msg = { id: ++room._uid, from: p.id, name: p.name, team: p.team || p.teamPick || 0, text: clean, t };
+        room.chat = (room.chat || []).concat(msg).slice(-40);
+        io.to(room.id).emit('chat', msg);
+    });
+
+    // ─── Voice chat: WebRTC peer-to-peer audio, the server only relays the handshake ──
+    socket.on('voice:join', ({ roomId }) => {
+        const room = rooms[roomId];
+        if (!room || !room.players[socket.id]) return;
+        room.voice = room.voice || new Set();
+        socket.emit('voice:peers', { peers: [...room.voice].filter(id => id !== socket.id && room.players[id]) });
+        room.voice.add(socket.id);
+        room.players[socket.id].voiceMuted = false;
+        io.to(room.id).emit('roomUpdate', roomSummary(room));
+    });
+    socket.on('voice:signal', ({ roomId, to, data }) => {
+        const room = rooms[roomId];
+        if (!room || !room.voice || !room.voice.has(socket.id) || !room.voice.has(to)) return;
+        if (JSON.stringify(data || {}).length > 20000) return;
+        io.to(to).emit('voice:signal', { from: socket.id, data });
+    });
+    socket.on('voice:mute', ({ roomId, muted }) => {
+        const room = rooms[roomId];
+        const p = room && room.players[socket.id];
+        if (!p) return;
+        p.voiceMuted = !!muted;
+        io.to(room.id).emit('roomUpdate', roomSummary(room));
+    });
+    socket.on('voice:leave', ({ roomId }) => {
+        const room = rooms[roomId];
+        if (!room || !room.voice || !room.voice.delete(socket.id)) return;
+        io.to(room.id).emit('voice:left', { id: socket.id });
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
 
@@ -859,6 +965,7 @@ io.on('connection', socket => {
         p.disconnectedAt = 0;
         if (!room.players[room.hostId] || room.players[room.hostId].connected === false) room.hostId = socket.id;
         socket.join(room.id);
+        socket.emit('chatHistory', room.chat || []);
         cb({ roomId: room.id, player: p, room: roomSummary(room) });
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
@@ -959,6 +1066,7 @@ io.on('connection', socket => {
             p.disconnectedAt = Date.now();
             p.inputs = { forward: 0, steer: 0, dash: false, shoot: false, drop: false };
             if (room.hostId === socket.id && connectedHumans(room).length) room.hostId = connectedHumans(room)[0].id;
+            if (room.voice && room.voice.delete(socket.id)) io.to(roomId).emit('voice:left', { id: socket.id });
             io.to(roomId).emit('roomUpdate', roomSummary(room));
         }
     });

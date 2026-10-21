@@ -6,6 +6,8 @@ import { socket } from './net/socket';
 import { getToken, saveRoom, clearRoom, savedRoom } from './net/session';
 import { soundManager } from './utils/SoundManager';
 import { applyRoundResult } from './progress';
+import { leaveVoice } from './net/voice';
+import { clearChat } from './net/chat';
 
 // Rewards are credited even if the results screen isn't showing
 socket.on('roundResult', (r) => { try { applyRoundResult(r); } catch (_) { /* ignore */ } });
@@ -91,6 +93,8 @@ export default function App() {
     }, [gameState]);
 
     const handleBackToLobby = () => {
+        leaveVoice();
+        clearChat();
         clearRoom();
         setGameState('lobby');
         setRoom(null);

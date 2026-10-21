@@ -6,7 +6,7 @@ import {
     loadGarage, saveGarage, cosmeticsFor, drawTopper, underglowColor,
 } from '../cosmetics';
 import { renderCar, lookKey } from '../carRender';
-import { CAR_TYPES as PHYS_CARS, ARENAS, GAME_MODES, MODE_KEYS, planTeams } from '../../../shared/physics.mjs';
+import { CAR_TYPES as PHYS_CARS, ARENAS, GAME_MODES, MODE_KEYS } from '../../../shared/physics.mjs';
 
 const ARENA_ICON = { random: '🎲', classic: '🏟️', ice: '❄️', box: '⬛', sinkhole: '🕳️', windmill: '🌀' };
 const ARENA_CHOICES = ['random', ...Object.keys(ARENAS)];
@@ -14,6 +14,9 @@ const arenaLabel = (k) => `${ARENA_ICON[k] || ''} ${k === 'random' ? 'Random' : 
 import { getToken, saveRoom, clearRoom } from '../net/session';
 import { useInstall, promptInstall, isIOS } from '../pwa';
 import { gfxSetting, setGfxSetting } from '../gfx';
+import { ChatPanel, ChatButton, VoiceControls, VoiceBadge } from './Social';
+import { leaveVoice } from '../net/voice';
+import { clearChat } from '../net/chat';
 import {
     useProfile, ownsCar, ownsItem, itemPrice, buyCar, buyItem, CAR_PRICES, dailyStatus,
 } from '../progress';
@@ -594,12 +597,91 @@ function GarageScreen({ car, cos: savedCos, onChange, onBack, onCycle, vp }) {
     );
 }
 
-const TeamTag = ({ team, auto }) => (
-    <span className="gtitle" style={{
-        display: 'inline-block', marginTop: 2, fontSize: '0.55rem', padding: '1px 6px', borderRadius: 6,
-        background: team === 1 ? 'rgba(255,77,61,0.25)' : 'rgba(61,139,255,0.25)', color: team === 1 ? '#ff8a7e' : '#8ab8ff',
-    }}>{team === 1 ? 'RED' : 'BLUE'}{auto ? ' · AUTO' : ''}</span>
-);
+// One player / bot / empty place in the room
+function PlayerCard({ p, room, vp }) {
+    return (
+        <div className="gpanel" style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', minHeight: 0, minWidth: 0, overflow: 'hidden', borderRadius: 14,
+            borderColor: p.id === socket.id ? 'rgba(255,216,77,0.7)' : 'rgba(255,255,255,0.08)',
+        }}>
+            <SlotCar carType={p.carType} cos={p.cosmetics} h={vp.landscape ? 36 : 44} />
+            <div style={{ minWidth: 0 }}>
+                <div className="gtitle" style={{
+                    fontSize: '0.8rem', color: p.id === socket.id ? '#ffd84d' : '#fff',
+                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>{p.name}{p.id === room.hostId ? ' 👑' : ''}<VoiceBadge p={p} /></div>
+                <div style={{ fontSize: '0.64rem', color: p.connected === false ? '#facc15' : '#8fa1b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {p.connected === false ? 'reconnecting…' : p.id === socket.id ? 'You' : (CAR_TYPES.find(c => c.key === p.carType)?.name || '')}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+const emptyCard = {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '5px 8px', minHeight: 0, borderRadius: 14,
+    border: '2px dashed rgba(255,255,255,0.12)', background: 'rgba(0,0,0,0.18)',
+};
+
+// Team Battle: a side with 4 places — players, bots, empty places to move into
+function TeamSide({ team, room, vp, isHost }) {
+    const col = team === 1 ? '#ff4d3d' : '#3d8bff';
+    const humans = (room.players || []).filter(p => !p.isBot && p.teamPick === team);
+    const bots = room.settings?.teamBots?.[team] || 0;
+    const count = humans.length + bots;
+    const mine = (room.players || []).find(p => p.id === socket.id);
+    const here = mine && mine.teamPick === team;
+    const roomFull = (room.players || []).filter(p => !p.isBot).length + (room.settings?.botCount || 0) >= 8;
+    const join = () => { click(); socket.emit('chooseTeam', { roomId: room.id, team }); };
+    const bot = (delta) => { click(); socket.emit('teamBot', { roomId: room.id, team, delta }); };
+    const places = [];
+    humans.forEach(p => places.push({ kind: 'human', p }));
+    for (let i = 0; i < bots; i++) places.push({ kind: 'bot' });
+    while (places.length < 4) places.push({ kind: 'open' });
+    return (
+        <div style={{
+            flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6, padding: 8, borderRadius: 16,
+            background: `linear-gradient(180deg, ${col}26, ${col}0d)`, border: `2px solid ${here ? col : `${col}55`}`,
+            boxShadow: here ? `0 0 14px ${col}55` : 'none',
+        }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                <span className="gtitle" style={{ color: team === 1 ? '#ff8a7e' : '#8ab8ff', fontSize: '0.9rem' }}>
+                    {team === 1 ? '🔴 RED' : '🔵 BLUE'} <span style={{ color: '#cfd8e3', fontSize: '0.75rem' }}>{count}/4</span>
+                </span>
+                {here ? <span className="gtitle" style={{ fontSize: '0.62rem', color: '#ffd84d' }}>YOUR TEAM</span>
+                    : count < 4 ? <button className="gbtn green" onClick={join} style={{ fontSize: '0.68rem', padding: '4px 10px', borderRadius: 10 }}>SWITCH HERE ⇄</button>
+                        : <span className="gtitle" style={{ fontSize: '0.62rem', color: '#8fa1b8' }}>FULL</span>}
+            </div>
+            <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gridAutoRows: 'minmax(46px, 1fr)', gap: 6 }}>
+                {places.map((pl, i) => {
+                    if (pl.kind === 'human') return <PlayerCard key={pl.p.id} p={pl.p} room={room} vp={vp} />;
+                    if (pl.kind === 'bot') return (
+                        <div key={`b${i}`} style={{ ...emptyCard, border: `2px solid ${col}44`, background: 'rgba(0,0,0,0.3)' }}>
+                            <span style={{ fontSize: '1.3rem' }}>🤖</span>
+                            <span className="gtitle" style={{ fontSize: '0.7rem', color: '#8fa1b8' }}>BOT</span>
+                            {isHost && <button onClick={() => bot(-1)} aria-label="Remove bot" style={{
+                                marginLeft: 'auto', width: 24, height: 24, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.2)',
+                                background: 'rgba(255,68,102,0.2)', color: '#ff8899', cursor: 'pointer', fontSize: '0.7rem',
+                            }}>✕</button>}
+                        </div>
+                    );
+                    return (
+                        <div key={`o${i}`} style={{ ...emptyCard, cursor: !here ? 'pointer' : 'default' }} onClick={!here ? join : undefined}>
+                            {!here && <span className="gtitle" style={{ fontSize: '0.62rem', color: '#7d8ba0' }}>TAP TO JOIN</span>}
+                            {here && !isHost && <span className="gtitle" style={{ fontSize: '0.62rem', color: '#5d6b80' }}>EMPTY</span>}
+                            {isHost && !roomFull && (
+                                <button onClick={(e) => { e.stopPropagation(); bot(1); }} style={{
+                                    padding: '3px 8px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(0,0,0,0.35)',
+                                    color: '#cfd8e3', fontSize: '0.66rem', fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer',
+                                }}>+ 🤖 BOT</button>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
 
 // ─── Room: player slots, rounds, bots, start ──────────────────────────────
 function RoomScreen({ room, vp, onLeave, onShare, copied }) {
@@ -609,19 +691,17 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
     const rounds = room.maxRounds || 3;
     const update = (settings) => socket.emit('updateSettings', { roomId: room.id, settings });
     const start = () => { click(); soundManager.playGo(); socket.emit('startMatch', { roomId: room.id }); };
+    const [chatOpen, setChatOpenUI] = useState(false);
 
-    // Team Battle: preview the sides exactly as the server will set them up
+    // Team Battle: two sides of 4 places
     const teamMode = room.settings?.mode === 'teams';
-    const botsShown = Math.min(bots, 8 - humans.length);
-    const plan = teamMode ? planTeams(humans.map(p => p.teamPick || 0), botsShown) : null;
-    const myPick = (humans.find(p => p.id === socket.id) || {}).teamPick || 0;
-    const pickTeam = (t) => { click(); socket.emit('chooseTeam', { roomId: room.id, team: t }); };
-    const teamsOk = !plan || (plan.red > 0 && plan.blue > 0);
+    const side = (t) => humans.filter(p => p.teamPick === t).length + (room.settings?.teamBots?.[t] || 0);
+    const teamsOk = !teamMode || (side(1) > 0 && side(2) > 0);
     const canStart = humans.length + bots >= 2 && teamsOk;
 
     const slots = [];
-    humans.forEach((p, i) => slots.push({ kind: 'human', p, team: plan ? plan.humans[i] : 0, auto: !p.teamPick }));
-    for (let i = 0; i < botsShown; i++) slots.push({ kind: 'bot', team: plan ? plan.bots[i] : 0 });
+    humans.forEach(p => slots.push({ kind: 'human', p }));
+    for (let i = 0; i < Math.min(bots, 8 - humans.length); i++) slots.push({ kind: 'bot' });
     if (slots.length < 8) slots.push({ kind: 'open' });            // one "+ invite" card is enough
     const cols = vp.landscape ? 4 : 2;
     const short = vp.landscape && vp.h < 430;         // phone in landscape: squeeze the spacing
@@ -632,10 +712,14 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
             padding: `${SAFE_TOP} ${SAFE_X} ${SAFE_BOTTOM}`, boxSizing: 'border-box', maxWidth: 900, margin: '0 auto',
         }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                <TopButton onClick={onLeave} label="Leave room">‹ LEAVE</TopButton>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <TopButton onClick={onLeave} label="Leave room">‹ LEAVE</TopButton>
+                    <ChatButton onClick={() => setChatOpenUI(true)} />
+                    <VoiceControls roomId={room.id} />
+                </div>
                 <div style={{ textAlign: 'center' }}>
                     <div className="gtitle" style={{ fontSize: '0.6rem', color: '#8fa1b8' }}>ROOM CODE</div>
-                    <div className="gtitle" style={{ fontSize: '1.5rem', letterSpacing: 4, color: '#fff' }}>{room.id}</div>
+                    <div className="gtitle" style={{ fontSize: short ? '1.25rem' : '1.5rem', letterSpacing: 4, color: '#fff' }}>{room.id}</div>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
                     <TopButton onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent(`Race me in Dash Arena! 🏎️💥 Room ${room.id}: ${window.location.origin}/?room=${room.id}`)}`, '_blank')}
@@ -644,65 +728,29 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
                 </div>
             </div>
 
-            <div style={{
-                flex: 1, minHeight: 0, display: 'grid', gap: 8, overflowY: 'auto',
-                gridTemplateColumns: `repeat(${cols}, 1fr)`, gridAutoRows: `minmax(${short ? 52 : 58}px, 92px)`, alignContent: 'safe center',
-            }}>
-                {slots.map((s, i) => (
-                    <div key={s.kind === 'human' ? s.p.id : `${s.kind}${i}`}
-                        onClick={s.kind === 'open' ? () => { click(); onShare(); } : undefined}
-                        className={s.kind === 'human' ? 'gpanel' : ''}
-                        style={{
-                            display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', minHeight: 0, overflow: 'hidden',
-                            borderRadius: 14, cursor: s.kind === 'open' ? 'pointer' : 'default',
-                            ...(s.kind === 'human' ? {
-                                borderColor: s.p.id === socket.id ? 'rgba(255,216,77,0.7)' : 'rgba(255,255,255,0.08)',
-                            } : {
-                                border: '2px dashed rgba(255,255,255,0.12)', background: 'rgba(0,0,0,0.18)',
-                            }),
-                            ...(s.team ? { boxShadow: `inset 4px 0 0 ${s.team === 1 ? '#ff4d3d' : '#3d8bff'}` } : {}),
-                        }}>
-                        {s.kind === 'human' && <>
-                            <SlotCar carType={s.p.carType} cos={s.p.cosmetics} h={vp.landscape ? 40 : 46} />
-                            <div style={{ minWidth: 0 }}>
-                                <div className="gtitle" style={{
-                                    fontSize: '0.85rem', color: s.p.id === socket.id ? '#ffd84d' : '#fff',
-                                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                                }}>{s.p.name}{s.p.id === room.hostId ? ' 👑' : ''}</div>
-                                <div style={{ fontSize: '0.68rem', color: s.p.connected === false ? '#facc15' : '#8fa1b8' }}>
-                                    {s.p.connected === false ? 'reconnecting…' : s.p.id === socket.id ? 'You' : (CAR_TYPES.find(c => c.key === s.p.carType)?.name || '')}
-                                </div>
-                                {s.team > 0 && <TeamTag team={s.team} auto={s.auto} />}
-                            </div>
-                        </>}
-                        {s.kind === 'bot' && <>
-                            <div style={{ fontSize: '1.6rem', width: 30, textAlign: 'center' }}>🤖</div>
-                            <div>
+            {teamMode ? (
+                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: vp.landscape ? 'row' : 'column', gap: 8 }}>
+                    <TeamSide team={1} room={room} vp={vp} isHost={isHost} />
+                    <TeamSide team={2} room={room} vp={vp} isHost={isHost} />
+                </div>
+            ) : (
+                <div style={{
+                    flex: 1, minHeight: 0, display: 'grid', gap: 8, overflowY: 'auto',
+                    gridTemplateColumns: `repeat(${cols}, 1fr)`, gridAutoRows: `minmax(${short ? 52 : 58}px, 92px)`, alignContent: 'safe center',
+                }}>
+                    {slots.map((s, i) => (
+                        s.kind === 'human' ? <PlayerCard key={s.p.id} p={s.p} room={room} vp={vp} />
+                        : s.kind === 'bot' ? (
+                            <div key={`bot${i}`} style={emptyCard}>
+                                <div style={{ fontSize: '1.6rem' }}>🤖</div>
                                 <div className="gtitle" style={{ fontSize: '0.75rem', color: '#8fa1b8' }}>BOT</div>
-                                {s.team > 0 && <TeamTag team={s.team} />}
                             </div>
-                        </>}
-                        {s.kind === 'open' && (
-                            <div className="gtitle" style={{ fontSize: '0.7rem', color: '#5d6b80', width: '100%', textAlign: 'center' }}>
-                                + INVITE
+                        ) : (
+                            <div key={`open${i}`} style={{ ...emptyCard, cursor: 'pointer' }} onClick={() => { click(); onShare(); }}>
+                                <div className="gtitle" style={{ fontSize: '0.7rem', color: '#5d6b80' }}>+ INVITE</div>
                             </div>
-                        )}
-                    </div>
-                ))}
-            </div>
-
-            {teamMode && (
-                <div className="gpanel" style={{ padding: short ? '5px 12px' : '8px 14px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
-                    <span className="gtitle" style={{ fontSize: '0.65rem', color: '#8fa1b8' }}>YOUR TEAM</span>
-                    {[[1, '🔴 RED', '#ff4d3d', plan.red], [2, '🔵 BLUE', '#3d8bff', plan.blue]].map(([t, label, col, n]) => (
-                        <button key={t} onClick={() => pickTeam(t)} className="gtitle" style={{
-                            flex: 1, minWidth: 110, padding: short ? '5px 10px' : '8px 10px', borderRadius: 12, cursor: 'pointer', fontFamily: 'inherit',
-                            fontSize: '0.85rem', color: '#fff', border: `2px solid ${myPick === t ? col : 'rgba(255,255,255,0.12)'}`,
-                            background: myPick === t ? `${col}55` : 'rgba(0,0,0,0.3)', boxShadow: myPick === t ? `0 0 12px ${col}88` : 'none',
-                        }}>{label} · {n}</button>
+                        )
                     ))}
-                    <Pill active={myPick === 0} onClick={() => pickTeam(0)}>Auto</Pill>
-                    {!teamsOk && <div style={{ width: '100%', fontSize: '0.7rem', color: '#ff8899', textAlign: 'center' }}>Both teams need at least one car — add a bot or switch team</div>}
                 </div>
             )}
 
@@ -717,11 +765,13 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
                             onClick={() => { if (isHost) { update({ maxRounds: n }); click(); } }}>{n}</Pill>
                     ))}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span className="gtitle" style={{ fontSize: '0.65rem', color: '#8fa1b8' }}>BOTS</span>
-                    <Stepper value={bots} min={0} max={8 - humans.length} disabled={!isHost}
-                        onChange={n => update({ botCount: n })} />
-                </div>
+                {!teamMode && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span className="gtitle" style={{ fontSize: '0.65rem', color: '#8fa1b8' }}>BOTS</span>
+                        <Stepper value={bots} min={0} max={8 - humans.length} disabled={!isHost}
+                            onChange={n => update({ botCount: n })} />
+                    </div>
+                )}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span className="gtitle" style={{ fontSize: '0.65rem', color: '#8fa1b8' }}>MODE</span>
                     <Pill active disabled={!isHost} onClick={() => {
@@ -746,7 +796,7 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
                     {canStart ? '▶ START MATCH' : !teamsOk ? 'BOTH TEAMS NEED A CAR' : 'NEED 2+ PLAYERS'}
                 </button>
             ) : (
-                <div className="gpanel gtitle" style={{ textAlign: 'center', padding: 14, color: '#ffd84d', fontSize: '0.9rem' }}>
+                <div className="gpanel gtitle" style={{ textAlign: 'center', padding: short ? 8 : 14, color: '#ffd84d', fontSize: '0.9rem', flexShrink: 0 }}>
                     WAITING FOR HOST TO START…
                 </div>
             )}
@@ -754,6 +804,8 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
                 {canStart ? `Push rivals through the fence · ${rounds} round${rounds > 1 ? 's' : ''} · most points wins`
                     : 'Invite a friend or add a bot to start'}
             </div>
+
+            {chatOpen && <ChatPanel roomId={room.id} onClose={() => setChatOpenUI(false)} />}
         </div>
     );
 }
@@ -920,6 +972,8 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
     }
 
     function leaveRoom() {
+        leaveVoice();
+        clearChat();
         socket.emit('leaveRoom', { roomId: room.id });
         clearRoom();
         setRoom(null);
