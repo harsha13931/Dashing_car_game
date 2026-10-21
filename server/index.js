@@ -213,6 +213,7 @@ function createRoom(hostId) {
             arenaRadius: ARENA_RADIUS,
             powerupInterval: POWERUP_INTERVAL,
             arena: 'random',          // or one arena key every round
+            mode: 'ffa',              // ffa | teams | koth | bomb
         }
     };
     return rooms[roomId];
@@ -322,7 +323,7 @@ function updateBotAI(bot, room, now) {
     const style = BOT_STYLE[bot.carType] || 'brawler';
     const smart = Math.random() < (bs.tactics ?? bs.dashSkill);   // easy bots mostly just chase
     const warmup = now < room.matchStartTime + FENCE_LOCK_MS;      // opening seconds: nobody can go out yet
-    const enemies = Object.values(room.players).filter(p => p.alive && p.id !== bot.id);
+    const enemies = Object.values(room.players).filter(p => p.alive && p.id !== bot.id && !mates(p, bot));
     const arenaR = room.arenaR || room.settings.arenaRadius;
     const env = room.env || PHYS.arenaEnv('classic', arenaR);
     const myR = Math.hypot(bot.x, bot.y);
@@ -395,6 +396,30 @@ function updateBotAI(bot, room, now) {
         }
     }
 
+    // ─── Hot Bomb: chase people while carrying it, run from whoever has it ─
+    if (room.mode === 'bomb' && room.bomb.holder) {
+        if (room.bomb.holder === bot.id) {
+            const prey = enemies.reduce((b, e) => {
+                const d = Math.hypot(e.x - bot.x, e.y - bot.y);
+                return d < b.d ? { e, d } : b;
+            }, { e: null, d: Infinity });
+            if (prey.e) {
+                const d = steerTo(prey.e.x + prey.e.vx * 0.3, prey.e.y + prey.e.vy * 0.3, 3);
+                if (prey.d < 320 && Math.abs(d) < 0.35 && Math.random() < bs.dashSkill) dash = true;
+                return finish();
+            }
+        } else {
+            const h = room.players[room.bomb.holder];
+            const hd = h ? Math.hypot(h.x - bot.x, h.y - bot.y) : Infinity;
+            if (h && hd < 420 && Math.random() < 0.4 + bs.accuracy * 0.6) {
+                const dx = bot.x - h.x, dy = bot.y - h.y;
+                steerTo(bot.x + (dx / hd) * 250 - bot.x * 0.35, bot.y + (dy / hd) * 250 - bot.y * 0.35, 3);
+                if (hd < 200) dash = true;
+                return finish();
+            }
+        }
+    }
+
     // ─── 3. Sidestep a car charging at us ──────────────────────────────
     for (const e of enemies) {
         const dx = bot.x - e.x, dy = bot.y - e.y;
@@ -457,8 +482,35 @@ function updateBotAI(bot, room, now) {
         return finish();
     }
 
+    // ─── King of the Hill: hold the zone, shove anyone else off it ─────
+    let forced = null;
+    if (room.mode === 'koth') {
+        const inZone = enemies.filter(e => Math.hypot(e.x, e.y) < PHYS.HILL_RADIUS + 40);
+        const sniper = (bs.personality === 'hunter' || style === 'dodger') && inZone.length >= 2;
+        if (sniper && myR > PHYS.HILL_RADIUS) {
+            // Crowded hill: hang back at rocket range and pick them off
+            const a = Math.atan2(bot.y, bot.x) + 0.4;
+            steerTo(Math.cos(a) * 300, Math.sin(a) * 300);
+            forward = 0.6;
+            maybeShoot();
+            return finish();
+        }
+        if (inZone.length) {
+            forced = inZone.reduce((b, e) => (Math.hypot(e.x - bot.x, e.y - bot.y) < Math.hypot(b.x - bot.x, b.y - bot.y) ? e : b));
+        } else if (myR > PHYS.HILL_RADIUS - 30) {
+            steerTo(0, 0);
+            if (myR < PHYS.HILL_RADIUS + 90) forward = 0.55;
+            return finish();
+        } else {
+            steerTo(Math.cos(now / 900) * 60, Math.sin(now / 900) * 60);
+            forward = 0.35;
+            maybeShoot();
+            return finish();
+        }
+    }
+
     // ─── 7. Attack: pick a victim ──────────────────────────────────────
-    let target = null, best = -Infinity;
+    let target = forced, best = forced ? Infinity : -Infinity;
     for (const e of enemies) {
         const d = Math.hypot(e.x - bot.x, e.y - bot.y);
         const edge = PHYS.edgeDistance(env, e.x, e.y);
@@ -469,7 +521,7 @@ function updateBotAI(bot, room, now) {
         if (score > best) { best = score; target = e; }
     }
     bs.targetId = target ? target.id : null;
-    if (warmup && target) {
+    if (warmup && target && !forced) {
         // Fence is locked: jostle for position near the middle instead of lining up a knock-out
         const a = Math.atan2(bot.y, bot.x) + 0.6;
         steerTo(Math.cos(a) * 260, Math.sin(a) * 260);
@@ -604,7 +656,9 @@ function beginRound(room) {
     room.matchStartTime = clock() + 3000;
     room.eliminationOrder = [];
     room.arenaR = room.settings.arenaRadius;
+    room.mode = room.settings.mode || 'ffa';
     room.arenaKey = pickArena(room);
+    setupMode(room);
     room.barAngle = 0;
     room.suddenDeath = false;
     room._shrinkAnnounced = false;
@@ -620,16 +674,34 @@ function beginRound(room) {
     const n = Object.keys(room.players).length;
     room.barAngle = Math.PI / Math.max(1, n);
     room.env = PHYS.arenaEnv(room.arenaKey, room.arenaR, room.barAngle);
-    io.to(room.id).emit('matchStart', { count: room.countdown, round: room.round, maxRounds: room.maxRounds, arena: room.arenaKey });
+    io.to(room.id).emit('matchStart', { count: room.countdown, round: room.round, maxRounds: room.maxRounds, arena: room.arenaKey, mode: room.mode });
+}
+
+function setupMode(room) {
+    const players = Object.values(room.players);
+    if (room.mode === 'teams') {
+        // Keep teams for the whole match; balance humans first, then bots
+        if (room.round <= 1 || players.some(p => !p.team)) {
+            const order = [...players.filter(p => !p.isBot), ...players.filter(p => p.isBot)];
+            order.forEach((p, i) => { p.team = (i % 2) + 1; });
+        }
+    } else {
+        for (const p of players) p.team = 0;
+    }
+    for (const p of players) p.hill = 0;
+    room.hill = { holder: 0, contested: false };
+    room.bomb = { holder: null, fuseEnd: 0, passAt: 0, nextAt: 0, count: 0 };
+    room.rosterDirty = true;
 }
 
 // Random arena each round (never the same twice in a row); round 1 of a
 // player's first match is always the classic ring
 function pickArena(room) {
     const want = room.settings.arena;
-    if (want && want !== 'random' && PHYS.ARENAS[want]) return want;
+    if (want && want !== 'random' && PHYS.ARENAS[want]) return room.mode === 'koth' && want === 'sinkhole' ? 'classic' : want;
     if (room.round <= 1 && !room._playedBefore) { room._playedBefore = true; return 'classic'; }
-    const keys = PHYS.ARENA_KEYS.filter(k => k !== room.arenaKey);
+    // (no sinkhole in King of the Hill — the hill is in the middle)
+    const keys = PHYS.ARENA_KEYS.filter(k => k !== room.arenaKey && !(room.mode === 'koth' && k === 'sinkhole'));
     return keys[Math.floor(Math.random() * keys.length)];
 }
 
@@ -684,7 +756,7 @@ function rekeyPlayer(room, oldId, newId) {
 io.on('connection', socket => {
     console.log(`[connect] ${socket.id}`);
 
-    socket.on('createRoom', ({ name, botCount, botDifficulty, carType, cosmetics, token, arena, training }, cb) => {
+    socket.on('createRoom', ({ name, botCount, botDifficulty, carType, cosmetics, token, arena, training, mode }, cb) => {
         if (typeof cb !== 'function') return;
         const room = createRoom(socket.id);
         if (!room) return cb({ error: 'Server full, try again later' });
@@ -695,7 +767,9 @@ io.on('connection', socket => {
         room.settings.botCount = Math.min(7, Math.max(0, Number.isNaN(requestedBots) ? 3 : requestedBots));
         room.settings.botDifficulty = BOT_DIFFICULTY[botDifficulty] ? botDifficulty : 'medium';
         if (arena === 'random' || PHYS.ARENAS[arena]) room.settings.arena = arena;
+        if (PHYS.GAME_MODES[mode]) room.settings.mode = mode;
         if (training) {
+            room.settings.mode = 'ffa';
             // Tutorial: one round against a single harmless practice bot
             room.settings.training = true;
             room.settings.botCount = 1;
@@ -727,6 +801,10 @@ io.on('connection', socket => {
         if (settings.botCount !== undefined) room.settings.botCount = Math.min(MAX_PLAYERS_PER_ROOM - 1, Math.max(0, parseInt(settings.botCount) || 0));
         if (settings.botDifficulty && BOT_DIFFICULTY[settings.botDifficulty]) room.settings.botDifficulty = settings.botDifficulty;
         if (settings.arena === 'random' || PHYS.ARENAS[settings.arena]) room.settings.arena = settings.arena;
+        if (PHYS.GAME_MODES[settings.mode] && settings.mode !== room.settings.mode) {
+            room.settings.mode = settings.mode;
+            for (const p of Object.values(room.players)) p.team = 0;      // new teams next match
+        }
         if (settings.maxRounds !== undefined) room.maxRounds = Math.min(10, Math.max(1, parseInt(settings.maxRounds) || 3));
         io.to(room.id).emit('roomUpdate', roomSummary(room));
     });
@@ -877,6 +955,9 @@ const OVERTIME_FRAC = 0.1;
 const ZAP_DPS = 20;                 // electric fence burns cars resting against it
 const SNAPSHOT_EVERY = 3;           // ticks → 20 snapshots a second (clients predict / smooth between)
 
+// Team Battle: same team = no damage, no knock-out credit, rockets pass through
+const mates = (a, b) => !!(a && b && a.team && a.team === b.team);
+
 function markHit(victim, attacker, now) {
     victim.lastHitAt = now;
     victim.lastHitBy = attacker.id;
@@ -907,7 +988,7 @@ function eliminate(p, room, now, reason) {
     // end the match and send them back to the lobby.
     const all = Object.values(room.players);
     const humans = all.filter(q => !q.isBot);
-    if (!p.isBot && humans.length === 1 && all.length > 1) {
+    if (!p.isBot && humans.length === 1 && all.length > 1 && room.mode !== 'teams') {
         const rank = all.filter(q => q.alive).length + 1;
         room.running = false;
         room.round = 0;
@@ -920,11 +1001,11 @@ function eliminate(p, room, now, reason) {
 
 // Each human gets their own result for the round — the client turns it into
 // coins, XP and challenge progress (progress is saved on the player's device).
-function sendRoundResult(room, p, rank, total) {
+function sendRoundResult(room, p, rank, total, teamWon) {
     if (p.isBot || p.connected === false) return;
     const humans = Object.values(room.players).filter(q => !q.isBot).length;
     io.to(p.id).emit('roundResult', {
-        rank, total, won: rank === 1,
+        rank, total, won: teamWon !== undefined ? teamWon : rank === 1, mode: room.mode,
         kills: p.roundKills || 0, powerups: p.roundPowerups || 0,
         damage: Math.round(p.roundDamage || 0),
         survival: Math.round((p.survivalTime || 0) / 1000),
@@ -972,7 +1053,7 @@ function explode(room, x, y, owner, direct, now) {
         if (!p.alive) continue;
         const d = Math.hypot(p.x - x, p.y - y);
         const isDirect = p === direct;
-        if (!isDirect && (d > BLAST_RADIUS || (owner && p.id === owner.id))) continue;
+        if (!isDirect && (d > BLAST_RADIUS || (owner && p.id === owner.id) || mates(p, owner))) continue;
         const fall = isDirect ? 1 : 1 - d / BLAST_RADIUS;
         const push = (isDirect ? 430 : 330 * fall) / PHYS.carMass(p);
         const nx = d > 1 ? (p.x - x) / d : 1, ny = d > 1 ? (p.y - y) / d : 0;
@@ -983,6 +1064,63 @@ function explode(room, x, y, owner, direct, now) {
         damage(room, p, isDirect ? ROCKET_DIRECT_DMG : ROCKET_SPLASH_DMG * fall, owner, now);
     }
     io.to(room.id).emit('explosion', { x, y, ids: hit });
+}
+
+// ─── Game modes ───────────────────────────────────────────────────────────
+const BOMB_FIRST_MS = 4000;        // first bomb a few seconds after GO
+const BOMB_GAP_MS = 2500;          // next bomb after a blast
+
+function giveBomb(room, to, now, from = null) {
+    const b = room.bomb;
+    if (from) {
+        if (from.speedTimer <= 0 && from.megaTimer <= 0) from.speedMult = 1;
+        io.to(room.id).emit('bombPass', { from: from.id, to: to.id });
+    }
+    b.holder = to.id;
+    b.passAt = now + 700;
+    // the bomb carrier gets a little extra speed to chase people down
+    to.speedMult = Math.max(to.speedMult, 1.15);
+}
+
+function updateMode(room, now) {
+    const alive = Object.values(room.players).filter(p => p.alive);
+    if (room.mode === 'koth') {
+        // Alone in the zone: full speed. Crowded: whoever is nearest the middle scores at half speed.
+        const inside = alive.filter(p => Math.hypot(p.x, p.y) < PHYS.HILL_RADIUS)
+            .sort((a, b) => Math.hypot(a.x, a.y) - Math.hypot(b.x, b.y));
+        room.hill.contested = inside.length > 1;
+        room.hill.holder = inside.length ? inside[0].num : 0;
+        if (inside.length) inside[0].hill = (inside[0].hill || 0) + DT * (inside.length > 1 ? 0.5 : 1);
+    } else if (room.mode === 'bomb') {
+        const b = room.bomb;
+        const holder = b.holder && room.players[b.holder];
+        if (holder && !holder.alive) b.holder = null;           // carrier went out some other way
+        if (!b.holder) {
+            if (!b.nextAt) b.nextAt = now + (b.count ? BOMB_GAP_MS : BOMB_FIRST_MS);
+            if (now >= b.nextAt && alive.length > 1) {
+                b.nextAt = 0;
+                b.count++;
+                b.fuseEnd = now + Math.max(9, 17 - alive.length) * 1000;
+                giveBomb(room, alive[Math.floor(Math.random() * alive.length)], now);
+            }
+        } else if (now >= b.fuseEnd) {
+            // BOOM: the carrier is out and everyone nearby is blasted away
+            const h = room.players[b.holder];
+            b.holder = null;
+            if (h.speedTimer <= 0 && h.megaTimer <= 0) h.speedMult = 1;
+            for (const p of alive) {
+                if (p === h) continue;
+                const d = Math.hypot(p.x - h.x, p.y - h.y);
+                if (d > 230) continue;
+                const f = 1 - d / 230, nx = (p.x - h.x) / (d || 1), ny = (p.y - h.y) / (d || 1);
+                p.vx += nx * 520 * f / PHYS.carMass(p); p.vy += ny * 520 * f / PHYS.carMass(p);
+                p.stun = Math.max(p.stun || 0, 0.4 * f);
+                damage(room, p, 12 * f, null, now);
+            }
+            io.to(room.id).emit('explosion', { x: h.x, y: h.y, big: 1, ids: [h.id] });
+            eliminate(h, room, now, 'bomb');
+        }
+    }
 }
 
 function updateArena(room, now) {
@@ -1083,7 +1221,7 @@ const r1 = (n) => Math.round(n * 10) / 10;
 const r2 = (n) => Math.round(n * 100) / 100;
 
 function rosterOf(room) {
-    return Object.values(room.players).map(p => [p.num, p.id, p.name, p.carType, p.isBot ? 1 : 0, p.cosmetics]);
+    return Object.values(room.players).map(p => [p.num, p.id, p.name, p.carType, p.isBot ? 1 : 0, p.cosmetics, p.team || 0]);
 }
 
 function sendSnapshot(room, now) {
@@ -1098,6 +1236,10 @@ function sendSnapshot(room, now) {
         rd: room.round, mr: room.maxRounds,
         lv: room.countdown > 0 ? 0 : 1,
         ak: PHYS.ARENA_KEYS.indexOf(room.arenaKey),
+        md: PHYS.MODE_KEYS.indexOf(room.mode || 'ffa'),
+        hl: room.mode === 'koth' ? [room.hill.holder, room.hill.contested ? 1 : 0] : undefined,
+        bm: room.mode === 'bomb' && room.bomb.holder && room.players[room.bomb.holder]
+            ? [room.players[room.bomb.holder].num, r1(Math.max(0, room.bomb.fuseEnd - now) / 1000)] : undefined,
         ba: Math.round((room.barAngle || 0) * 1000) / 1000,
         fl: room.countdown > 0 ? FENCE_LOCK_MS / 1000 : r1(Math.max(0, FENCE_LOCK_MS - (now - room.matchStartTime)) / 1000),   // fence-lock seconds left          // cars can move (clients only predict while live)
         p: Object.values(room.players).map(p => [
@@ -1105,7 +1247,7 @@ function sendSnapshot(room, now) {
             Math.round(p.vx), Math.round(p.vy), r2(p.av),
             (p.alive ? 1 : 0) | (p.shield ? 2 : 0) | (p.nitro > 0 ? 4 : 0) | (p.skid ? 8 : 0) | (p.magnetTimer > 0 ? 16 : 0) | (p.bladeTimer > 0 ? 32 : 0) | (p.inputs.forward < -0.05 ? 64 : 0) | (p.bumperTimer > 0 ? 128 : 0),
             r2(p.dashCooldown), r1(p.shootCooldown), r2(p.nitro), r2(p.slip), r2(p.stun),
-            Math.round(p.speedMult * 100), Math.round(p.scale * 100), WEAPON_CODE[p.weapon] || 0, p.kills, Math.ceil(p.hp), r1(Math.max(0, p.bladeTimer)), r1(p.bumperTimer || 0),
+            Math.round(p.speedMult * 100), Math.round(p.scale * 100), WEAPON_CODE[p.weapon] || 0, p.kills, Math.ceil(p.hp), r1(Math.max(0, p.bladeTimer)), r1(p.bumperTimer || 0), r1(p.hill || 0),
         ]),
         u: room.powerups.map(pu => [pu.id, PU_TYPES.indexOf(pu.type), Math.round(pu.x), Math.round(pu.y), Math.max(0, Math.round(pu.landAt - now))]),
         j: room.projectiles.map(pr => [pr.id, Math.round(pr.x), Math.round(pr.y), Math.round(pr.vx), Math.round(pr.vy)]),
@@ -1153,6 +1295,7 @@ function tickRoom(room, roomId, now) {
 
     updateArena(room, now);
     updatePlanes(room, now);
+    updateMode(room, now);
 
     // ─── Update AI bots ────────────────────────────────────────────────
     for (const id in room.players) {
@@ -1254,6 +1397,16 @@ function tickRoom(room, roomId, now) {
         },
         onPair: (A, B, r) => {
             const a = A.p, b = B.p;
+            // Hot Bomb: touching passes it on (with a short no-pass-back window)
+            const bomb = room.bomb;
+            if (room.mode === 'bomb' && bomb.holder && now >= bomb.passAt && (bomb.holder === a.id || bomb.holder === b.id)) {
+                const from = bomb.holder === a.id ? a : b, to = from === a ? b : a;
+                giveBomb(room, to, now, from);
+            }
+            if (mates(a, b)) {
+                if (r.impact > 90) addFx(fx, a.id < b.id ? a.id + b.id : b.id + a.id, { impact: r.impact, x: r.cx, y: r.cy, type: 'car', ids: [a.id, b.id] });
+                return;
+            }
             if (r.aPushesB) markHit(b, a, now);
             if (r.bPushesA) markHit(a, b, now);
             if (r.impact > 60) { a.damageDealt += r.impact * 0.5; b.damageDealt += r.impact * 0.5; }
@@ -1347,7 +1500,7 @@ function tickRoom(room, roomId, now) {
 
         for (const id in room.players) {
             const p = room.players[id];
-            if (!p.alive || p.id === proj.ownerId) continue;
+            if (!p.alive || p.id === proj.ownerId || mates(p, room.players[proj.ownerId])) continue;
             if (Math.hypot(p.x - proj.x, p.y - proj.y) < 36 * p.scale * p.carStats.size) {
                 room.projectiles.splice(i, 1);
                 explode(room, proj.x, proj.y, room.players[proj.ownerId], p, now);
@@ -1364,7 +1517,7 @@ function tickRoom(room, roomId, now) {
             if (!(a.bumperTimer > 0)) continue;
             const ring = PHYS.CAR_HALF_LEN * a.carStats.size * a.scale + 30;
             for (const b of alive) {
-                if (b === a || !b.alive) continue;
+                if (b === a || !b.alive || mates(a, b)) continue;
                 const d = Math.hypot(b.x - a.x, b.y - a.y);
                 const reach = ring + PHYS.CAR_HALF_WID * b.carStats.size * b.scale;
                 if (d > reach || d < 1) continue;
@@ -1391,7 +1544,7 @@ function tickRoom(room, roomId, now) {
             if (a.bladeTimer <= 0) continue;
             const reachA = PHYS.CAR_HALF_LEN * a.carStats.size * a.scale + 24;
             for (const b of alive) {
-                if (b === a || !b.alive) continue;
+                if (b === a || !b.alive || mates(a, b)) continue;
                 const d = Math.hypot(b.x - a.x, b.y - a.y);
                 const reachB = PHYS.CAR_HALF_WID * b.carStats.size * b.scale + 12;
                 if (d > reachA + reachB || d < 1) continue;
@@ -1438,31 +1591,44 @@ function tickRoom(room, roomId, now) {
     if (room._tick % SNAPSHOT_EVERY === 0) sendSnapshot(room, now);
 
     // ─── Win condition ─────────────────────────────────────────────────
-    const aliveCount = Object.values(room.players).filter(p => p.alive).length;
-    const totalPlayers = Object.keys(room.players).length;
+    const everyone = Object.values(room.players);
+    const aliveNow = everyone.filter(p => p.alive);
+    const aliveCount = aliveNow.length;
+    const totalPlayers = everyone.length;
+    const teamsLeft = new Set(aliveNow.map(p => p.team));
+    const king = room.mode === 'koth' ? aliveNow.find(p => p.hill >= PHYS.HILL_TARGET) : null;
+    const teamOver = room.mode === 'teams' && totalPlayers > 1 && teamsLeft.size <= 1;
 
-    if ((totalPlayers > 1 && aliveCount <= 1) || (totalPlayers === 1 && aliveCount === 0)) {
+    if (teamOver || king || (totalPlayers > 1 && aliveCount <= 1) || (totalPlayers === 1 && aliveCount === 0)) {
         sendSnapshot(room, now);     // make sure everyone sees the final state
         room.running = false;
         // Last car standing — or, if the final cars went out together, the last one out
-        const winner = Object.values(room.players).find(p => p.alive)
-            || (room.eliminationOrder.length ? room.players[room.eliminationOrder.pop().id] : null);
-
-        // Score: 1st=10, 2nd=6, 3rd=4, 4th=3, 5th=2, rest=1
-        const scoreTable = [10, 6, 4, 3, 2, 1, 1, 1];
-        if (winner) room.eliminationOrder.push({ id: winner.id, name: winner.name });
-        const rankings = [...room.eliminationOrder].reverse();
-        rankings.forEach((r, i) => {
-            r.rank = i + 1;
-            r.score = scoreTable[i] || 1;
-            room.scores[r.id] = (room.scores[r.id] || 0) + r.score;
+        let winner = king || aliveNow[0]
+            || (room.eliminationOrder.length ? room.players[room.eliminationOrder[room.eliminationOrder.length - 1].id] : null);
+        // Finishing order: best first
+        const outIdx = new Map(room.eliminationOrder.map((e, i) => [e.id, i]));
+        const order = everyone.slice().sort((a, b) => {
+            if (a === winner) return -1;
+            if (b === winner) return 1;
+            if (room.mode === 'teams' && winner && (a.team === winner.team) !== (b.team === winner.team)) return a.team === winner.team ? -1 : 1;
+            if (a.alive !== b.alive) return a.alive ? -1 : 1;
+            if (room.mode === 'koth' && Math.abs((b.hill || 0) - (a.hill || 0)) > 0.05) return (b.hill || 0) - (a.hill || 0);
+            return (outIdx.get(b.id) ?? -1) - (outIdx.get(a.id) ?? -1);
         });
+        const winTeam = room.mode === 'teams' && winner ? winner.team : 0;
+        // Score: 1st=10, 2nd=6, 3rd=4, 4th=3, 5th=2, rest=1 (Team Battle: every winner gets 8)
+        const scoreTable = [10, 6, 4, 3, 2, 1, 1, 1];
+        const rankings = order.map((p, i) => ({ id: p.id, name: p.name, rank: i + 1, team: p.team || 0,
+            score: winTeam ? (p.team === winTeam ? 8 : 2) : (scoreTable[i] || 1), hill: room.mode === 'koth' ? Math.floor(p.hill || 0) : undefined }));
+        rankings.forEach(r => { room.scores[r.id] = (room.scores[r.id] || 0) + r.score; });
+        if (winTeam) winner = { id: winner.id, name: winTeam === 1 ? 'RED TEAM' : 'BLUE TEAM' };
 
         const matchOver = room.round >= room.maxRounds;
 
         io.to(room.id).emit('matchEnd', {
             winnerId: winner?.id || null,
             winnerName: winner?.name || null,
+            winTeam, mode: room.mode,
             rankings,
             scores: room.scores,
             round: room.round,
@@ -1477,7 +1643,7 @@ function tickRoom(room, roomId, now) {
                 survivalTime: Math.round(p.survivalTime / 1000)
             }))
         });
-        rankings.forEach(r => { const p = room.players[r.id]; if (p) sendRoundResult(room, p, r.rank, rankings.length); });
+        rankings.forEach(r => { const p = room.players[r.id]; if (p) sendRoundResult(room, p, r.rank, rankings.length, winTeam ? p.team === winTeam : undefined); });
         if (matchOver) io.to(room.id).emit('roomUpdate', roomSummary(room));
 
         // Auto-start next round after delay

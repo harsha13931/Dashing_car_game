@@ -51,6 +51,17 @@ export const ARENAS = {
     windmill: { name: 'Windmill',     tip: 'Dodge the spinning bar', shape: 'circle', bar: { len: 0.6, w: 30, speed: 0.55 } },
 };
 export const ARENA_KEYS = Object.keys(ARENAS);
+
+// ─── Game modes ───────────────────────────────────────────────────────────
+export const GAME_MODES = {
+    ffa:   { name: 'Last Car Standing', icon: '🏁', tip: 'Knock everyone out — last car standing wins' },
+    teams: { name: 'Team Battle',       icon: '⚔️', tip: 'Red vs Blue — knock out the other team' },
+    koth:  { name: 'King of the Hill',  icon: '👑', tip: 'Hold the centre zone to score — alone scores double' },
+    bomb:  { name: 'Hot Bomb',          icon: '💣', tip: 'Bump someone to pass the bomb before it blows!' },
+};
+export const MODE_KEYS = Object.keys(GAME_MODES);
+export const HILL_RADIUS = 150;       // px — the King of the Hill zone
+export const HILL_TARGET = 15;        // s held to win the round
 const SQUARE_HALF = 0.89;           // square arenas have about the same floor area as the ring
 
 // R = current fence radius, barAngle = where the windmill bar points now
@@ -418,7 +429,7 @@ export const ROCKET_CONE = 0.62;            // rad either side of the nose
 export function pickRocketTarget(shooter, cars) {
     let best = null, bestScore = Infinity;
     for (const c of cars) {
-        if (!c.alive || c.id === shooter.id) continue;
+        if (!c.alive || c.id === shooter.id || (shooter.team && c.team === shooter.team)) continue;
         const dx = c.x - shooter.x, dy = c.y - shooter.y;
         const d = Math.hypot(dx, dy);
         if (d > ROCKET_RANGE || d < 20) continue;

@@ -5,7 +5,7 @@
 // says. Other cars are extrapolated from their last known speed and smoothed,
 // so they glide between the 20 updates a second.
 
-import { DT, CAR_TYPES, driveCar, stepCars, arenaEnv, ARENA_KEYS, ARENAS } from '../../../shared/physics.mjs';
+import { DT, CAR_TYPES, driveCar, stepCars, arenaEnv, ARENA_KEYS, ARENAS, MODE_KEYS } from '../../../shared/physics.mjs';
 import { socket } from './socket';
 
 const PU_TYPES = ['SpeedBoost', 'Shield', 'MegaPush', 'Oil', 'Reverse', 'Magnet', 'Repair', 'Blades', 'Bumper'];
@@ -134,8 +134,8 @@ class NetClient {
     onSnapshot(m) {
         if (m.ro) {
             this.roster.clear();
-            for (const [num, id, name, carType, isBot, cosmetics] of m.ro) {
-                this.roster.set(num, { id, name, carType, isBot: !!isBot, cosmetics });
+            for (const [num, id, name, carType, isBot, cosmetics, team] of m.ro) {
+                this.roster.set(num, { id, name, carType, isBot: !!isBot, cosmetics, team: team || 0 });
             }
         }
         const players = [];
@@ -143,7 +143,7 @@ class NetClient {
             const r = this.roster.get(a[0]);
             if (!r) continue;
             players.push({
-                id: r.id, name: r.name, isBot: r.isBot, carType: r.carType, cosmetics: r.cosmetics,
+                id: r.id, name: r.name, isBot: r.isBot, carType: r.carType, cosmetics: r.cosmetics, team: r.team, num: a[0], hill: a[20] || 0,
                 x: a[1], y: a[2], angle: a[3], vx: a[4], vy: a[5], av: a[6],
                 alive: !!(a[7] & 1), shield: !!(a[7] & 2), isDashing: !!(a[7] & 4),
                 skid: !!(a[7] & 8), magnetTimer: (a[7] & 16) ? 1 : 0, blades: !!(a[7] & 32), braking: !!(a[7] & 64), bumper: !!(a[7] & 128),
@@ -167,6 +167,9 @@ class NetClient {
             live: !!m.lv,
             fenceLock: m.fl || 0,
             arena: ARENA_KEYS[m.ak] || 'classic',
+            mode: MODE_KEYS[m.md] || 'ffa',
+            hill: m.hl ? { holder: m.hl[0], contested: !!m.hl[1] } : null,
+            bomb: m.bm ? { holder: m.bm[0], fuse: m.bm[1] } : null,
             barAngle: m.ba || 0,
         };
         this.snap = snap;
