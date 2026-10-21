@@ -30,7 +30,8 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     const [nextIn, setNextIn] = useState(0);
     const [goFlash, setGoFlash] = useState(false);
     const [spectateId, setSpectateId] = useState(null);
-    const [soloOut, setSoloOut] = useState(null);     // solo run ended → heading back to lobby
+    const [soloOut, setSoloOut] = useState(null);     // solo: you're out → choose spectate or lobby
+    const [sawOutCard, setSawOutCard] = useState(false);
     const [modeKey, setModeKey] = useState(() => (early && GAME_MODES[early.mode] ? early.mode : 'ffa'));
     const [arenaInfo, setArenaInfo] = useState(() => (early && ARENAS[early.arena] ? { ...ARENAS[early.arena], key: early.arena } : null));
     const followRef = useRef(null);
@@ -124,9 +125,9 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
         socket.on('soloOut', (data) => {
             setSoloOut(data);
+            setSawOutCard(true);
             soundManager.stopEngine();
             soundManager.playLose();
-            setTimeout(() => (onToRoom || onBack)(), 4500);
         });
 
         socket.on('powerupCollected', ({ playerId, type }) => {
@@ -196,6 +197,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             setFeed([]);
             setArenaInfo(ARENAS[arena] ? { ...ARENAS[arena], key: arena } : null);
             setReplay(null); lastElim.current = null;
+            setSoloOut(null); setSawOutCard(false);
             setBanner(null);
             setMyElim(null);
             setSpectateId(null);
@@ -207,6 +209,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
         socket.on('matchEnd', (data) => {
             soundManager.stopEngine();
+            setSoloOut(null);
             // Winning hit: replay the last knock-out in slow motion before the results
             const le = lastElim.current;
             if (le && net.serverNow() - le.at < 1500) {
@@ -592,7 +595,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                 )}
 
                 {/* Eliminated overlay */}
-                {me && !meAlive && rankings.length === 0 && !soloOut && (
+                {me && !meAlive && rankings.length === 0 && !soloOut && !sawOutCard && (
                     <div style={{
                         position: 'absolute', top: '24%', left: '50%', transform: 'translate(-50%, -50%)',
                         animation: 'fadeOutLate 4s forwards',
@@ -809,7 +812,12 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                             {outReason(soloOut)}
                         </div>
                         <div style={{ maxWidth: 380, margin: '14px auto 0' }}><RoundRewards /></div>
-                        <div style={{ color: '#e8a030', fontSize: '0.8rem', marginTop: 6, letterSpacing: 1 }}>Returning to lobby…</div>
+                        <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 10 }}>
+                            <button className="gbtn blue" onClick={() => { soundManager.playClick(); setSoloOut(null); }}
+                                style={{ fontSize: '1rem', padding: '10px 20px' }}>👁 SPECTATE</button>
+                            <button className="gbtn dark" onClick={() => { soundManager.playClick(); socket.emit('leaveRoom', { roomId: room?.id }); onBack(); }}
+                                style={{ fontSize: '1rem', padding: '10px 20px' }}>🏠 LOBBY</button>
+                        </div>
                     </div>
                 </div>
             )}

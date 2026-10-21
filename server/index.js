@@ -263,6 +263,7 @@ function resetPlayers(room) {
         p.scale = 1;
         p.isDashing = false;
         p.roundKills = 0;
+        p.paidRound = -1;
         p.roundPowerups = 0;
         p.roundDamage = 0;
         p.survivalTime = 0;
@@ -984,18 +985,16 @@ function eliminate(p, room, now, reason) {
         by: killer ? killer.name : null, byId: killer ? killer.id : null,
     });
 
-    // Solo vs bots: once the only human is out there's nothing to watch —
-    // end the match and send them back to the lobby.
+    // Solo vs bots: your place is final the moment you're out, so pay out now and
+    // let the player choose — keep watching the bots, or head back to the lobby.
+    // (Team Battle waits for the end of the round: your team can still win it.)
     const all = Object.values(room.players);
     const humans = all.filter(q => !q.isBot);
     if (!p.isBot && humans.length === 1 && all.length > 1 && room.mode !== 'teams') {
         const rank = all.filter(q => q.alive).length + 1;
-        room.running = false;
-        room.round = 0;
-        room.scores = {};
         sendRoundResult(room, p, rank, all.length);
-        io.to(room.id).emit('soloOut', { rank, total: all.length, by: killer ? killer.name : null, reason });
-        io.to(room.id).emit('roomUpdate', roomSummary(room));
+        p.paidRound = room.round;
+        io.to(p.id).emit('soloOut', { rank, total: all.length, by: killer ? killer.name : null, byId: killer ? killer.id : null, reason });
     }
 }
 
@@ -1643,7 +1642,10 @@ function tickRoom(room, roomId, now) {
                 survivalTime: Math.round(p.survivalTime / 1000)
             }))
         });
-        rankings.forEach(r => { const p = room.players[r.id]; if (p) sendRoundResult(room, p, r.rank, rankings.length, winTeam ? p.team === winTeam : undefined); });
+        rankings.forEach(r => {
+            const p = room.players[r.id];
+            if (p && p.paidRound !== room.round) sendRoundResult(room, p, r.rank, rankings.length, winTeam ? p.team === winTeam : undefined);
+        });
         if (matchOver) io.to(room.id).emit('roomUpdate', roomSummary(room));
 
         // Auto-start next round after delay
