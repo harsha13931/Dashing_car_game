@@ -141,8 +141,12 @@ export function VoiceBadge({ p }) {
     const v = useVoice();
     if (!p.voice) return null;
     const talking = v.speaking.has(p.id) && !p.muted;
+    const link = v.joined && p.id !== socket.id ? v.links[p.id] : null;
+    if (link === 'connecting') {
+        return <span title="Connecting voice…" style={{ fontSize: '0.7rem', marginLeft: 4, opacity: 0.7 }}>🎙⏳</span>;
+    }
     return (
-        <span title={p.muted ? 'Muted' : 'In voice chat'} style={{
+        <span title={p.muted ? 'Muted' : link === 'relay' ? 'In voice (through the server)' : 'In voice chat'} style={{
             fontSize: '0.75rem', marginLeft: 4, padding: '0 4px', borderRadius: 6,
             background: talking ? 'rgba(77,255,136,0.35)' : 'transparent', boxShadow: talking ? '0 0 8px rgba(77,255,136,0.8)' : 'none',
         }}>{p.muted ? '🔇' : '🎙'}</span>
