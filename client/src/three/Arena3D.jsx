@@ -412,7 +412,7 @@ class View3D {
         let e = this.cars.get(p.id);
         if (e && e.key !== key) { this.removeCar(p.id); e = null; }
         if (e) return e;
-        const car = buildCar(p.carType, look, this.envTex);
+        const car = buildCar(p.carType, look, this.envTex, { low: this.low });
         car.group.traverse(o => { if (o.isMesh) { o.castShadow = !this.low; } });
         this.scene.add(car.group);
         const ring = new THREE.Mesh(this.geo.ring, new THREE.MeshBasicMaterial({ color: 0xff4d3d, transparent: true, opacity: 0.7, depthWrite: false }));
