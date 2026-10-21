@@ -17,11 +17,11 @@ export const SUBSTEPS = 4;
 //   stability — shrugs off hits: shorter loss of grip and harder to shove through the fence
 export const CAR_TYPES = {
     sports:   { name: 'Venom GT',      role: 'All-rounder', maxSpeed: 1.2,  accel: 1.15, turn: 1.15, mass: 1.0,  dashForce: 1.0,  size: 0.9,  hp: 118, stability: 1.15, desc: 'Good at everything' },
-    muscle:   { name: 'Thunder V8',    role: 'Bruiser',     maxSpeed: 1.12, accel: 1.05, turn: 0.9,  mass: 1.2,  dashForce: 1.3,  size: 1.1,  hp: 120, stability: 1.15, desc: 'Brutal rams, wide turns' },
-    truck:    { name: 'War Rig',       role: 'Tank',        maxSpeed: 0.82, accel: 0.8,  turn: 0.78, mass: 1.35, dashForce: 1.45, size: 1.35, hp: 122, stability: 1.35, desc: 'Nearly impossible to push' },
+    muscle:   { name: 'Thunder V8',    role: 'Bruiser',     maxSpeed: 1.12, accel: 1.05, turn: 0.9,  mass: 1.2,  dashForce: 1.3,  size: 1.1,  hp: 121, stability: 1.15, desc: 'Brutal rams, wide turns' },
+    truck:    { name: 'War Rig',       role: 'Tank',        maxSpeed: 0.82, accel: 0.8,  turn: 0.78, mass: 1.35, dashForce: 1.45, size: 1.35, hp: 125, stability: 1.35, desc: 'Nearly impossible to push' },
     rally:    { name: 'Dust Devil',    role: 'Grip King',   maxSpeed: 1.1,  accel: 1.15, turn: 1.3,  mass: 1.05, dashForce: 1.0,  size: 0.95, hp: 118, stability: 1.45, desc: 'Shakes off hits instantly' },
-    kart:     { name: 'Pocket Rocket', role: 'Dodger',      maxSpeed: 1.25, accel: 1.45, turn: 1.4,  mass: 0.95, dashForce: 0.9,  size: 0.75, hp: 118, stability: 1.4,  desc: 'Tiny, quick, hard to catch' },
-    suv:      { name: 'Iron Shield',   role: 'Defender',    maxSpeed: 0.95, accel: 0.9,  turn: 0.92, mass: 1.3,  dashForce: 1.2,  size: 1.2,  hp: 122, stability: 1.25, desc: 'Heavy armour, slow start' },
+    kart:     { name: 'Pocket Rocket', role: 'Dodger',      maxSpeed: 1.25, accel: 1.45, turn: 1.4,  mass: 0.95, dashForce: 0.9,  size: 0.75, hp: 117, stability: 1.4,  desc: 'Tiny, quick, hard to catch' },
+    suv:      { name: 'Iron Shield',   role: 'Defender',    maxSpeed: 0.95, accel: 0.9,  turn: 0.92, mass: 1.3,  dashForce: 1.2,  size: 1.2,  hp: 125, stability: 1.25, desc: 'Heavy armour, slow start' },
     drift:    { name: 'Sidewinder',    role: 'Drifter',     maxSpeed: 1.1,  accel: 1.1,  turn: 1.55, mass: 1.0,  dashForce: 1.05, size: 0.95, hp: 118, stability: 1.1,  desc: 'Fastest turns, likes to slide' },
     supercar: { name: 'Phantom X',     role: 'Rocket',      maxSpeed: 1.45, accel: 1.3,  turn: 1.05, mass: 1.0,  dashForce: 1.25, size: 0.85, hp: 116, stability: 1.15, desc: 'Top speed, big nitro hits' },
 };

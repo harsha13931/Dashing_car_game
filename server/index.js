@@ -1634,7 +1634,7 @@ function tickRoom(room, roomId, now) {
                 const base = Math.min(17, (r.impact - 155) * 0.024);
                 const mA = PHYS.carMass(a), mB = PHYS.carMass(b);
                 // (weight helps, but only a little — light cars shouldn't melt)
-                let dA = base * Math.min(1.08, (mB / mA) ** 0.2), dB = base * Math.min(1.08, (mA / mB) ** 0.2);
+                let dA = base * Math.min(1.1, (mB / mA) ** 0.25), dB = base * Math.min(1.1, (mA / mB) ** 0.25);
                 if (r.aPushesB && !r.bPushesA) dA *= 0.4;
                 else if (r.bPushesA && !r.aPushesB) dB *= 0.4;
                 damage(room, b, dB, r.aPushesB ? a : null, now);
