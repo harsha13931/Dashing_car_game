@@ -13,6 +13,7 @@ const ARENA_CHOICES = ['random', ...Object.keys(ARENAS)];
 const arenaLabel = (k) => `${ARENA_ICON[k] || ''} ${k === 'random' ? 'Random' : ARENAS[k].name}`;
 import { getToken, saveRoom, clearRoom } from '../net/session';
 import { useInstall, promptInstall, isIOS } from '../pwa';
+import { gfxSetting, setGfxSetting } from '../gfx';
 import {
     useProfile, ownsCar, ownsItem, itemPrice, buyCar, buyItem, CAR_PRICES, dailyStatus,
 } from '../progress';
@@ -620,7 +621,11 @@ function RoomScreen({ room, vp, onLeave, onShare, copied }) {
                     <div className="gtitle" style={{ fontSize: '0.6rem', color: '#8fa1b8' }}>ROOM CODE</div>
                     <div className="gtitle" style={{ fontSize: '1.5rem', letterSpacing: 4, color: '#fff' }}>{room.id}</div>
                 </div>
-                <TopButton onClick={onShare} color="blue" label="Invite">{copied ? '✓ COPIED' : '🔗 INVITE'}</TopButton>
+                <div style={{ display: 'flex', gap: 6 }}>
+                    <TopButton onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent(`Race me in Dash Arena! 🏎️💥 Room ${room.id}: ${window.location.origin}/?room=${room.id}`)}`, '_blank')}
+                        color="green" label="Share on WhatsApp">WhatsApp</TopButton>
+                    <TopButton onClick={onShare} color="blue" label="Invite">{copied ? '✓ COPIED' : '🔗 INVITE'}</TopButton>
+                </div>
             </div>
 
             <div style={{
@@ -775,6 +780,7 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
     const [botCount, setBotCount] = useState(3);
     const [botDifficulty, setBotDifficulty] = useState('medium');
     const [arena, setArena] = useState('random');
+    const [gfx, setGfx] = useState(gfxSetting);
     const [error, setError] = useState('');
     const [copied, setCopied] = useState(false);
     const [settings, setSettings] = useState(soundManager.settings);
@@ -837,9 +843,12 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
         click();
         setError('');
         if (!socket.connected) socket.connect();
+        const training = mode === 'training';
+        if (training) mode = 'bots';
         socket.emit('createRoom', {
             name: playerName(), botCount: mode === 'bots' ? botCount : 0, botDifficulty,
-            carType, cosmetics, token: getToken(), arena: mode === 'bots' ? arena : 'random',
+            carType: training && !ownsCar(carType) ? 'sports' : carType, cosmetics, token: getToken(),
+            arena: mode === 'bots' ? arena : 'random', training,
         }, (res) => {
             if (!res || res.error) return setError(res?.error || 'Could not create a room');
             saveRoom(res.roomId);
@@ -934,6 +943,12 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
         const owned = ownsCar(carType);
         const buttons = (
             <div style={{ display: 'flex', flexDirection: 'column', gap: L ? 12 : 14, width: '100%' }}>
+                {!profile.tutorialDone && (
+                    <button className="gbtn green" onClick={() => createRoom('training')} disabled={!connected}
+                        style={{ fontSize: '0.85rem', padding: '8px', animation: 'tapPulse 1.6s ease-in-out infinite' }}>
+                        🎓 NEW? 1-MIN TRAINING · +150 <Coin size={14} />
+                    </button>
+                )}
                 {owned ? (
                     <button className="gbtn yellow" onClick={() => openPlay('online')}
                         style={{ fontSize: L ? '1.15rem' : '1.4rem', padding: L ? '12px' : '16px' }}>▶ PLAY ONLINE</button>
@@ -1139,6 +1154,15 @@ export default function Lobby({ room, setRoom, setPlayer, connected, connError }
                     <Toggle label="🔊 Sound effects" on={settings.sound} onChange={v => setSetting('sound', v)} />
                     <Toggle label="🎵 Music" on={settings.music} onChange={v => setSetting('music', v)} />
                     <Toggle label="📳 Vibration" on={settings.vibration} onChange={v => setSetting('vibration', v)} />
+                    <Label>Graphics</Label>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                        {[['auto', 'Auto'], ['high', 'High'], ['low', 'Smooth (low)']].map(([k, l]) => (
+                            <Pill key={k} active={gfx === k} onClick={() => { setGfxSetting(k); setGfx(k); click(); }}>{l}</Pill>
+                        ))}
+                    </div>
+                    <Label>Tutorial</Label>
+                    <button className="gbtn dark" onClick={() => { setSheet(null); createRoom('training'); }} disabled={!connected}
+                        style={{ width: '100%', fontSize: '0.85rem', padding: 10 }}>🎓 PLAY TRAINING AGAIN</button>
                     <Label>Touch controls</Label>
                     <div style={{ display: 'flex', gap: 6 }}>
                         {[['buttons', 'Pedals'], ['joystick', 'Joystick']].map(([k, l]) => (

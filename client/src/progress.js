@@ -240,4 +240,13 @@ const rewardSubs = new Set();
 export function onReward(fn) { rewardSubs.add(fn); return () => rewardSubs.delete(fn); }
 export const getLastReward = () => lastReward;
 
-export function markTutorialDone() { load().tutorialDone = true; save(); }
+export const TUTORIAL_REWARD = 150;
+// First time through the training: bonus coins (once)
+export function completeTutorial() {
+    const p = load();
+    if (p.tutorialDone) return 0;
+    p.tutorialDone = true;
+    p.coins += TUTORIAL_REWARD;
+    save();
+    return TUTORIAL_REWARD;
+}

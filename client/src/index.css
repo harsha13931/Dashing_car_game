@@ -355,3 +355,5 @@ h4 {
     45%, 70% { transform: rotate(-90deg); }
     100% { transform: rotate(0deg); }
 }
+@keyframes popIn { from { transform: scale(0.85); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes popInX { from { transform: translateX(-50%) scale(0.85); opacity: 0; } to { transform: translateX(-50%) scale(1); opacity: 1; } }

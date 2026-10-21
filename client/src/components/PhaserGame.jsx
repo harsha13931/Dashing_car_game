@@ -6,6 +6,7 @@ import { renderCar, renderShadow, renderBrakeGlow, lookKey, resolveLook, CAR_TEX
 import { PAINTS, underglowColor } from '../cosmetics';
 import { net, PLANE_SPEED, DROP_FALL_MS } from '../net/netcode';
 import { pickRocketTarget, CAR_TYPES, ARENAS, arenaEnv } from '../../../shared/physics.mjs';
+import { isLowGfx, switchToLowAuto } from '../gfx';
 
 function hexToInt(hex) {
     if (!hex || hex[0] !== '#') return 0xffffff;
@@ -35,6 +36,8 @@ function cssToInt(col) {
 }
 // ─── Car art ───────────────────────────────────────────────────────────────
 // Same sizes the physics uses, so what you see is what you hit
+const EMOTE_TEXT = ['GG', '😂', '😡', '🔥', '👋', '😱'];
+
 const TYPE_SIZE = Object.fromEntries(Object.entries(CAR_TYPES).map(([k, c]) => [k, c.size]));
 // The physics box is 88×46 world px × size; the drawn car is 264×144 px,
 // so this scale makes what you see match what you hit.
@@ -570,11 +573,12 @@ class ArenaScene extends Phaser.Scene {
             scale: { start: 1.3, end: 0 }, alpha: { start: 1, end: 0 },
             lifespan: 520, tint: [0xfff3b0, 0xffb347, 0xff5a1a, 0xd62a12], blendMode: 'ADD', emitting: false,
         }).setDepth(9);
-        this.rocketTrail = this.add.particles(0, 0, 'puff', {
+        this.rocketTrail = this.lowWrap(this.add.particles(0, 0, 'puff', {
             speed: { min: 2, max: 18 }, angle: { min: 0, max: 360 },
             scale: { start: 0.28, end: 0.9 }, alpha: { start: 0.45, end: 0 },
             lifespan: 700, tint: 0xcfcfcf, blendMode: 'NORMAL', emitting: false,
-        }).setDepth(5.5);
+        }).setDepth(5.5));
+        for (const em of [this.smoke, this.flame, this.spark, this.darkSmoke, this.fire, this.blast]) this.lowWrap(em);
         this.confetti = this.add.particles(0, 0, 'spark', {
             speed: { min: 80, max: 260 }, angle: { min: 0, max: 360 }, gravityY: 120,
             scale: { start: 0.8, end: 0.2 }, alpha: { start: 1, end: 0 }, rotate: { min: 0, max: 360 },
@@ -647,6 +651,20 @@ class ArenaScene extends Phaser.Scene {
         socket.on('explosion', this._onExplosion);
         socket.on('collision', this._onCollision);
         socket.on('playerEliminated', this._onEliminated);
+        // Emote bubbles float above the car that sent them
+        this.emoteBubbles = [];
+        this._onEmote = ({ id, e }) => {
+            const text = EMOTE_TEXT[e];
+            if (!text) return;
+            for (const b of this.emoteBubbles) if (b.id === id) { b.obj.destroy(); b.dead = true; }
+            const obj = this.add.text(0, 0, text, {
+                fontFamily: 'Arial, sans-serif', fontStyle: 'bold', fontSize: text.length > 2 ? '22px' : '34px', color: '#ffffff',
+                backgroundColor: 'rgba(15,18,26,0.85)', padding: { x: 10, y: 4 }, stroke: '#000', strokeThickness: 2,
+            }).setOrigin(0.5, 1).setDepth(21);
+            this.emoteBubbles = this.emoteBubbles.filter(b => !b.dead);
+            this.emoteBubbles.push({ id, obj, t0: this.time.now });
+        };
+        socket.on('emote', this._onEmote);
         socket.on('powerupCollected', this._onPickup);
     }
 
@@ -796,6 +814,19 @@ class ArenaScene extends Phaser.Scene {
         return entry;
     }
 
+    // Low graphics: emit far fewer particles
+    lowWrap(em) {
+        const emit = em.emitParticleAt.bind(em);
+        em.emitParticleAt = (x, y, n = 1) => {
+            if (isLowGfx()) {
+                n = n > 2 ? Math.round(n * 0.35) : (Math.random() < 0.4 ? n : 0);
+                if (n <= 0) return null;
+            }
+            return emit(x, y, n);
+        };
+        return em;
+    }
+
     // Lazily-created flame emitter per trail color (so each car's trail is its own color)
     getFlame(colorInt) {
         if (!this._flameByColor) this._flameByColor = new Map();
@@ -806,6 +837,7 @@ class ArenaScene extends Phaser.Scene {
                 scale: { start: 0.6, end: 0 }, alpha: { start: 0.9, end: 0 },
                 lifespan: 340, tint: colorInt, blendMode: 'ADD', emitting: false,
             }).setDepth(3);
+            this.lowWrap(em);
             this._flameByColor.set(colorInt, em);
         }
         return em;
@@ -813,7 +845,16 @@ class ArenaScene extends Phaser.Scene {
 
     update(time, delta) {
         net.step(delta);                          // advance your predicted car
-        const snap = net.snap || this.store.snapshot;
+        // Auto graphics: if the frame rate stays low, switch to the light effects
+        this._fpsT = (this._fpsT || 0) + delta;
+        if (this._fpsT > 3000) {
+            if (this._fpsWarm && this.game.loop.actualFps < 38) this._slow = (this._slow || 0) + 1; else this._slow = 0;
+            this._fpsWarm = true;
+            this._fpsT = 0;
+            if (this._slow >= 2) switchToLowAuto();
+        }
+        const snap = net.view() || this.store.snapshot;
+        net._replayView = snap && snap.replay ? snap : null;
         if (!snap || !snap.players) return;
 
         const arenaR = snap.arenaRadius || 1000;
@@ -824,6 +865,19 @@ class ArenaScene extends Phaser.Scene {
             this.lastArenaKey = snap.arena;
         }
         this.drawBar(snap);
+
+        // Emote bubbles: pop in, hover above the car, fade out
+        if (this.emoteBubbles && this.emoteBubbles.length) {
+            for (const b of this.emoteBubbles) {
+                const age = (time - b.t0) / 1000;
+                const car = this.carSprites.get(b.id);
+                if (age > 2.4 || !car) { b.obj.destroy(); b.dead = true; continue; }
+                const pop = Math.min(1, age / 0.15);
+                b.obj.setPosition(car.x, car.y - 78 - age * 10).setScale((0.6 + 0.4 * pop) / this.cameras.main.zoom)
+                    .setAlpha(age > 1.9 ? (2.4 - age) / 0.5 : 1);
+            }
+            this.emoteBubbles = this.emoteBubbles.filter(b => !b.dead);
+        }
 
         const k = 1 - Math.pow(0.000001, delta / 1000); // smoothing factor (snappy, still filters jitter)
         const seen = new Set();
@@ -869,7 +923,7 @@ class ArenaScene extends Phaser.Scene {
             const braking = p.alive && (isMeNow && net.local ? net.cur.forward < -0.05 : p.braking);
             e.brake.setVisible(braking).setScale(scale).setPosition(e.x, e.y).setRotation(rot);
             const fx = Math.cos(e.a), fy = Math.sin(e.a);
-            e.beam.setVisible(p.alive).setScale(0.55 * sizeMult).setRotation(rot)
+            e.beam.setVisible(p.alive && !isLowGfx()).setScale(0.55 * sizeMult).setRotation(rot)
                 .setPosition(e.x + fx * 44 * sizeMult, e.y + fy * 44 * sizeMult)
                 .setAlpha(stage >= 2 ? 0.06 : 0.13);
             // Neon underglow
@@ -984,7 +1038,7 @@ class ArenaScene extends Phaser.Scene {
                 }
 
                 // Skid marks: continuous streaks from both rear tyres
-                if (skidding || dashing || p.slip > 0) {
+                if ((skidding || dashing || p.slip > 0) && !isLowGfx()) {
                     const ax = e.x - Math.cos(e.a) * 28 * sizeMult, ay = e.y - Math.sin(e.a) * 28 * sizeMult;
                     const px = -Math.sin(e.a) * 17 * sizeMult, py = Math.cos(e.a) * 17 * sizeMult;
                     const L = [ax + px, ay + py], R = [ax - px, ay - py];
@@ -1269,6 +1323,7 @@ class ArenaScene extends Phaser.Scene {
         socket.off('collision', this._onCollision);
         socket.off('explosion', this._onExplosion);
         socket.off('playerEliminated', this._onEliminated);
+        socket.off('emote', this._onEmote);
         socket.off('powerupCollected', this._onPickup);
     }
 }

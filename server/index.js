@@ -310,6 +310,15 @@ function updateBotAI(bot, room, now) {
     if (bs.thinkTimer > 0) return;
     bs.thinkTimer = bs.reactionTime + Math.random() * 0.1;
 
+    // Training dummy: cruises slowly round the middle, never attacks
+    if (room.settings.training) {
+        const a = Math.atan2(bot.y, bot.x) + 0.5;
+        const r = Math.min(320, (room.arenaR || 850) * 0.4);
+        const d = wrapAngle(Math.atan2(Math.sin(a) * r - bot.y, Math.cos(a) * r - bot.x) - bot.angle);
+        bot.inputs = { forward: 0.45, steer: Math.max(-1, Math.min(1, d * 2.5)), dash: false, shoot: false, drop: false };
+        return;
+    }
+
     const style = BOT_STYLE[bot.carType] || 'brawler';
     const smart = Math.random() < (bs.tactics ?? bs.dashSkill);   // easy bots mostly just chase
     const warmup = now < room.matchStartTime + FENCE_LOCK_MS;      // opening seconds: nobody can go out yet
@@ -675,7 +684,7 @@ function rekeyPlayer(room, oldId, newId) {
 io.on('connection', socket => {
     console.log(`[connect] ${socket.id}`);
 
-    socket.on('createRoom', ({ name, botCount, botDifficulty, carType, cosmetics, token, arena }, cb) => {
+    socket.on('createRoom', ({ name, botCount, botDifficulty, carType, cosmetics, token, arena, training }, cb) => {
         if (typeof cb !== 'function') return;
         const room = createRoom(socket.id);
         if (!room) return cb({ error: 'Server full, try again later' });
@@ -686,6 +695,14 @@ io.on('connection', socket => {
         room.settings.botCount = Math.min(7, Math.max(0, Number.isNaN(requestedBots) ? 3 : requestedBots));
         room.settings.botDifficulty = BOT_DIFFICULTY[botDifficulty] ? botDifficulty : 'medium';
         if (arena === 'random' || PHYS.ARENAS[arena]) room.settings.arena = arena;
+        if (training) {
+            // Tutorial: one round against a single harmless practice bot
+            room.settings.training = true;
+            room.settings.botCount = 1;
+            room.settings.botDifficulty = 'easy';
+            room.settings.arena = 'classic';
+            room.maxRounds = 1;
+        }
 
         cb({ roomId: room.id, player: room.players[socket.id] });
         io.to(room.id).emit('roomUpdate', roomSummary(room));
@@ -712,6 +729,18 @@ io.on('connection', socket => {
         if (settings.arena === 'random' || PHYS.ARENAS[settings.arena]) room.settings.arena = settings.arena;
         if (settings.maxRounds !== undefined) room.maxRounds = Math.min(10, Math.max(1, parseInt(settings.maxRounds) || 3));
         io.to(room.id).emit('roomUpdate', roomSummary(room));
+    });
+
+    // Quick emotes (rate-limited)
+    socket.on('emote', ({ roomId, e }) => {
+        const room = rooms[roomId];
+        const p = room && room.players[socket.id];
+        const idx = parseInt(e);
+        if (!p || !(idx >= 0 && idx < EMOTE_COUNT)) return;
+        const t = Date.now();
+        if (t - (p._emoteAt || 0) < 1200) return;
+        p._emoteAt = t;
+        io.to(room.id).emit('emote', { id: p.id, e: idx });
     });
 
     socket.on('leaveRoom', ({ roomId }) => {
@@ -766,7 +795,8 @@ io.on('connection', socket => {
                 ? availableNames.splice(Math.floor(Math.random() * availableNames.length), 1)[0]
                 : `Bot_${i + 1}`;
             const botCar = botCarTypes[Math.floor(Math.random() * botCarTypes.length)];
-            addPlayer(room, makePlayer(botId, botName, true, room.settings.botDifficulty, botCar, randomBotLook()));
+            const training = room.settings.training;
+            addPlayer(room, makePlayer(botId, training ? 'Practice Bot' : botName, true, room.settings.botDifficulty, training ? 'kart' : botCar, randomBotLook()));
         }
 
         if (room.round >= room.maxRounds) { room.round = 0; room.scores = {}; }
@@ -808,6 +838,11 @@ io.on('connection', socket => {
             shoot: !!input?.shoot,
             drop: !!input?.drop
         };
+        // A quick tap can be released before the next tick — remember it until it's used
+        // (only when it's ready — a press during the recharge shouldn't fire later by itself)
+        if (p.inputs.dash && p.dashCooldown <= 0) p.tapDash = true;
+        if (p.inputs.shoot && p.shootCooldown <= 0) p.tapShoot = true;
+        if (p.inputs.drop) p.tapDrop = true;
         p.lastProcessedInput = seq || (p.lastProcessedInput + 1);
     };
 
@@ -847,12 +882,22 @@ function markHit(victim, attacker, now) {
     victim.lastHitBy = attacker.id;
 }
 
+const EMOTE_COUNT = 6;                 // GG 😂 😡 🔥 👋 😱 (list lives in the client)
+function botEmote(room, bot, idx, chance) {
+    if (!bot || !bot.isBot || Math.random() > chance) return;
+    setTimeout(() => { if (rooms[room.id]) io.to(room.id).emit('emote', { id: bot.id, e: idx }); }, 350 + Math.random() * 500);
+}
+
 function eliminate(p, room, now, reason) {
     p.alive = false;
     p.av = 0;
     room.eliminationOrder.push({ id: p.id, name: p.name });
     const killer = now - (p.lastHitAt || 0) < HIT_WINDOW_MS ? room.players[p.lastHitBy] : null;
-    if (killer && killer.id !== p.id) { killer.kills++; killer.roundKills = (killer.roundKills || 0) + 1; }
+    if (killer && killer.id !== p.id) {
+        killer.kills++; killer.roundKills = (killer.roundKills || 0) + 1;
+        botEmote(room, killer, Math.random() < 0.5 ? 1 : 0, 0.35);     // 😂 / GG
+    }
+    botEmote(room, p, Math.random() < 0.6 ? 2 : 5, killer && !killer.isBot ? 0.3 : 0.1);   // 😡 / 😱
     io.to(room.id).emit('playerEliminated', {
         id: p.id, name: p.name, x: p.x, y: p.y, reason,
         by: killer ? killer.name : null, byId: killer ? killer.id : null,
@@ -1089,6 +1134,7 @@ function tickRoom(room, roomId, now) {
 
     // Countdown — cars sit on the grid, but clients still get the scene
     if (room.countdown > 0) {
+        for (const p of Object.values(room.players)) p.tapDash = p.tapShoot = p.tapDrop = false;
         if (!room._cdlast || now - room._cdlast >= 1000) {
             room.countdown -= 1;
             room._cdlast = now;
@@ -1125,7 +1171,11 @@ function tickRoom(room, roomId, now) {
         }
         p.survivalTime = now - room.matchStartTime;
 
-        const inp = p.inputs;
+        const inp = p.isBot ? p.inputs : {
+            ...p.inputs,
+            dash: p.inputs.dash || !!p.tapDash, shoot: p.inputs.shoot || !!p.tapShoot, drop: p.inputs.drop || !!p.tapDrop,
+        };
+        p.tapDash = p.tapShoot = p.tapDrop = false;
         tickTimers(p);
         if (PHYS.driveCar(p, inp, room.env)) p.dashesUsed++;
 
@@ -1437,7 +1487,7 @@ function tickRoom(room, roomId, now) {
                 if (!r || r.running) return;
                 r.round++;
                 beginRound(r);
-            }, 6000 / SIM_SPEED);
+            }, 8000 / SIM_SPEED);   // time for the replay + results
         }
     }
 }

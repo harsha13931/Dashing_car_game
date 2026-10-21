@@ -4,7 +4,10 @@ import { socket } from '../net/socket';
 import { soundManager } from '../utils/SoundManager';
 import { net } from '../net/netcode';
 import { NITRO_COOLDOWN, CAR_TYPES, ARENAS } from '../../../shared/physics.mjs';
-import { RoundRewards } from './Rewards';
+import { RoundRewards, Coin } from './Rewards';
+import { completeTutorial, TUTORIAL_REWARD } from '../progress';
+
+export const EMOTES = ['GG', '😂', '😡', '🔥', '👋', '😱'];
 
 // Screen-edge offsets that respect phone notches / home indicators
 const EDGE_TOP = 'max(10px, env(safe-area-inset-top))';
@@ -30,6 +33,10 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     const [soloOut, setSoloOut] = useState(null);     // solo run ended → heading back to lobby
     const [arenaInfo, setArenaInfo] = useState(() => (early && ARENAS[early.arena] ? { ...ARENAS[early.arena], key: early.arena } : null));
     const followRef = useRef(null);
+    const [emoteOpen, setEmoteOpen] = useState(false);
+    const lastElim = useRef(null);
+    const [replay, setReplay] = useState(null);       // slow-mo of the round's final knock-out
+    const sendEmote = (i) => { socket.emit('emote', { roomId: room?.id, e: i }); setEmoteOpen(false); soundManager.playClick(); };
 
     const inputRef = useRef({ forward: 0, steer: 0, dash: false, shoot: false });
     const seqRef = useRef(0);
@@ -72,6 +79,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         net.reset();
         // HUD state comes from the netcode module (20 updates/s)
         const unsub = net.subscribe(snap => setSnapshot(snap));
+        const cleanups = [];
         if (net.snap) setSnapshot(net.snap);
 
         // Engine + tyre audio follow your own (predicted) car every 50 ms
@@ -124,13 +132,25 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         });
 
         socket.on('playerEliminated', ({ id, name, by, byId, reason }) => {
+            lastElim.current = { id, name, by, byId, at: net.serverNow() };
             if (id === socket.id) { soundManager.playElimination(); soundManager.vibrate([80, 60, 160]); }
             else if (byId === socket.id) soundManager.playPowerup();   // your knock-out!
             const key = `${id}-${Date.now()}`;
             setFeed(f => [...f.slice(-3), { key, id, name, by, byId, reason }]);
             setTimeout(() => setFeed(f => f.filter(e => e.key !== key)), 4500);
-            if (id === socket.id) setMyElim({ by, reason });
+            if (id === socket.id) {
+                setMyElim({ by, reason, byId });
+                if (byId) setSpectateId(byId);          // kill-cam: watch whoever got you
+            }
         });
+
+        const onGfxLow = () => {
+            const b = { title: 'SMOOTH MODE ON', sub: 'Lighter effects so the game runs smoother (change in Settings)', color: '#63e38e' };
+            setBanner(b);
+            setTimeout(() => setBanner(cur => (cur === b ? null : cur)), 3200);
+        };
+        window.addEventListener('dash-gfx-low', onGfxLow);
+        cleanups.push(() => window.removeEventListener('dash-gfx-low', onGfxLow));
 
         socket.on('arenaEvent', ({ type }) => {
             const b = type === 'suddenDeath'
@@ -160,6 +180,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             if (mr) setMaxRounds(mr);
             setFeed([]);
             setArenaInfo(ARENAS[arena] ? { ...ARENAS[arena], key: arena } : null);
+            setReplay(null); lastElim.current = null;
             setBanner(null);
             setMyElim(null);
             setSpectateId(null);
@@ -171,11 +192,20 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
         socket.on('matchEnd', (data) => {
             soundManager.stopEngine();
+            // Winning hit: replay the last knock-out in slow motion before the results
+            const le = lastElim.current;
+            if (le && net.serverNow() - le.at < 1500) {
+                const ms = net.startReplay(le.at - 1800, le.at + 400, 0.55);
+                if (ms > 0) {
+                    setReplay({ victim: le.id, name: le.name, by: le.by, until: Date.now() + ms });
+                    setTimeout(() => setReplay(r => (r && Date.now() >= r.until - 50 ? null : r)), ms);
+                }
+            }
             setRankings(data.rankings || []);
             setMatchData(data);
             setCountdown(0);
             if (data.maxRounds) setMaxRounds(data.maxRounds);
-            if (!data.matchOver) setNextIn(6);
+            if (!data.matchOver) setNextIn(8);
             const myRank = (data.rankings || []).findIndex(r => r.id === socket.id);
             if (myRank === 0) soundManager.playWin();
             else soundManager.playLose();
@@ -183,6 +213,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
 
         return () => {
             unsub();
+            cleanups.forEach(fn => fn());
             clearInterval(audioTimer);
             socket.off('airdrop');
             socket.off('rocketFired');
@@ -339,10 +370,11 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
     const alivePlayers = (snapshot.players || []).filter(p => p.alive && p.id !== socket.id)
         .sort((a, b) => (a.isBot - b.isBot) || a.name.localeCompare(b.name));   // humans first
     const spectating = !!me && !meAlive && !soloOut && !matchData;
-    const target = spectating
-        ? (alivePlayers.find(p => p.id === spectateId) || alivePlayers[0] || null)
+    const watching = !!me && !meAlive && !matchData;        // (solo: the camera still shows who got you)
+    const target = watching
+        ? (alivePlayers.find(p => p.id === spectateId) || (soloOut ? null : alivePlayers[0]) || null)
         : null;
-    const followId = target ? target.id : socket.id;
+    const followId = replay ? replay.victim : target ? target.id : socket.id;
     followRef.current = followId;
     const cycleSpectate = (dir) => {
         if (!alivePlayers.length) return;
@@ -350,6 +382,14 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
         setSpectateId(alivePlayers[(i + dir + alivePlayers.length) % alivePlayers.length].id);
         soundManager.playClick();
     };
+    useEffect(() => {
+        const onKey = (e) => {
+            const n = parseInt(e.key);
+            if (n >= 1 && n <= EMOTES.length && !e.repeat) sendEmote(n - 1);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [room?.id]);
     useEffect(() => {
         if (!spectating) return;
         const onKey = (e) => {
@@ -533,6 +573,7 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         ELIMINATED
                         <div style={{ fontSize: '0.9rem', color: '#ccc', fontWeight: 600, textShadow: '0 2px 4px #000' }}>
                             {outReason(myElim)}
+                            {myElim?.byId && <div style={{ fontSize: '0.7rem', color: '#ffd27a', letterSpacing: 2, marginTop: 4 }}>🎥 KILL CAM</div>}
 
                         </div>
                     </div>
@@ -589,7 +630,21 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
             )}
 
             {/* ─── Round End / Match End Screen ─────────────────────────── */}
-            {rankings.length > 0 && matchData && (
+            {replay && (
+                <div className="full-screen" style={{ zIndex: 10, pointerEvents: 'auto' }} onClick={() => { net.stopReplay(); setReplay(null); }}>
+                    <div style={{ position: 'absolute', left: 0, right: 0, top: 0, height: '9%', background: '#000' }} />
+                    <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '9%', background: '#000' }} />
+                    <div className="gtitle" style={{ position: 'absolute', top: '11%', left: EDGE_LEFT, color: '#ff4d5e', fontSize: '1.1rem', letterSpacing: 3, animation: 'tapPulse 1s ease-in-out infinite' }}>
+                        ● REPLAY
+                    </div>
+                    <div className="gtitle" style={{ position: 'absolute', bottom: '12%', left: 0, right: 0, textAlign: 'center', color: '#fff', fontSize: '1.05rem', textShadow: '0 2px 6px #000' }}>
+                        WINNING HIT{replay.by ? ` · ${replay.by} knocks out ${replay.name}` : ` · ${replay.name} is out`}
+                    </div>
+                    <div style={{ position: 'absolute', top: '11%', right: EDGE_RIGHT, color: '#9ab', fontSize: '0.75rem', fontWeight: 700 }}>TAP TO SKIP ▸</div>
+                </div>
+            )}
+
+            {rankings.length > 0 && matchData && !replay && (
                 <div className="full-screen center" style={{ background: 'rgba(0,0,0,0.85)', zIndex: 10, pointerEvents: 'auto' }}>
                     <div className="gpanel" style={{
                         padding: touchUI ? '1.1rem 1.2rem' : '2rem 2.5rem',
@@ -743,6 +798,25 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                         background: 'rgba(255,68,102,0.12)', color: '#ff6680', fontWeight: 700, fontSize: '0.72rem',
                         fontFamily: 'inherit', cursor: 'pointer',
                     }}>LEAVE</button>
+                </div>
+            )}
+
+            {room?.settings?.training && <TrainingCoach me={me} touchUI={touchUI} live={countdown <= 0} over={!!matchData || !!soloOut} />}
+
+            {/* ─── Emotes ───────────────────────────────────────────────── */}
+            {!matchData && (
+                <div style={{ position: 'absolute', top: `calc(${EDGE_TOP} + ${touchUI ? 128 : 160}px)`, left: EDGE_LEFT, zIndex: 8, display: 'flex', gap: 6, pointerEvents: 'auto' }}>
+                    <button onClick={() => setEmoteOpen(o => !o)} aria-label="Emotes" style={{
+                        width: 38, height: 38, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.2)',
+                        background: emoteOpen ? 'rgba(255,216,77,0.25)' : 'rgba(0,0,0,0.55)', fontSize: '1.15rem', cursor: 'pointer',
+                    }}>💬</button>
+                    {emoteOpen && EMOTES.map((em, i) => (
+                        <button key={em} onClick={() => sendEmote(i)} style={{
+                            minWidth: 38, height: 38, borderRadius: 19, border: '1px solid rgba(255,255,255,0.2)', padding: '0 8px',
+                            background: 'rgba(0,0,0,0.7)', color: '#fff', fontSize: em.length > 2 ? '0.85rem' : '1.15rem', fontWeight: 800,
+                            fontFamily: 'inherit', cursor: 'pointer', animation: 'popIn 0.2s ease-out',
+                        }}>{em}</button>
+                    ))}
                 </div>
             )}
 
@@ -901,6 +975,60 @@ export default function Game({ room, player, onBack, onToRoom, startInfo }) {
                     Trap ready: {me.weapon === 'oil' ? 'OIL SLICK' : 'REVERSE'} — press Q to drop
                 </div>
             )}
+        </div>
+    );
+}
+
+// ─── Training: step-by-step tips that tick off as you do them ─────────────
+function TrainingCoach({ me, touchUI, live, over }) {
+    const [step, setStep] = useState(0);
+    const [reward, setReward] = useState(null);
+    const dist = useRef({ d: 0, x: null, y: null });
+    useEffect(() => {
+        const onFire = ({ id }) => { if (id === socket.id) setStep(s => (s === 2 ? 3 : s)); };
+        socket.on('rocketFired', onFire);
+        return () => socket.off('rocketFired', onFire);
+    }, []);
+    useEffect(() => {
+        if (!me || !live) return;
+        const d = dist.current;
+        if (d.x !== null) d.d += Math.hypot(me.x - d.x, me.y - d.y);
+        d.x = me.x; d.y = me.y;
+        if (step === 0 && d.d > 900) setStep(1);
+        if (step === 1 && me.isDashing) setStep(2);
+    });
+    useEffect(() => {
+        if (over && reward === null) setReward(completeTutorial());
+    }, [over]);
+
+    const steps = [
+        { title: 'DRIVE', text: touchUI ? 'Put your thumb on the left side and point where you want to go' : 'Drive with the arrow keys (or WASD)' },
+        { title: 'NITRO', text: touchUI ? 'Tap NITRO for a big speed boost' : 'Press SPACE for a nitro boost' },
+        { title: 'FIRE', text: touchUI ? 'Tap FIRE to launch twin rockets at the bot' : 'Press F (or Shift) to fire rockets' },
+        { title: 'KNOCK IT OUT', text: 'Ram the Practice Bot through the fence (it unlocks after 8 s) — or wreck it with rockets!' },
+    ];
+    if (over) {
+        return (
+            <div className="gpanel" style={{ position: 'absolute', top: '12%', left: '50%', transform: 'translateX(-50%)', zIndex: 12, padding: '10px 18px', textAlign: 'center', pointerEvents: 'none' }}>
+                <div className="gtitle" style={{ color: '#63e38e', fontSize: '1.1rem' }}>🎓 TRAINING COMPLETE!</div>
+                {reward > 0 && <div className="gtitle" style={{ color: '#ffd84d', marginTop: 4 }}>+{TUTORIAL_REWARD} <Coin size={15} /> bonus</div>}
+            </div>
+        );
+    }
+    if (!live) return null;
+    const cur = steps[Math.min(step, steps.length - 1)];
+    return (
+        <div className="gpanel" style={{
+            position: 'absolute', top: `calc(${EDGE_TOP} + 50px)`, left: '50%', transform: 'translateX(-50%)', zIndex: 7,
+            padding: '8px 16px', textAlign: 'center', pointerEvents: 'none', maxWidth: '62vw', animation: 'popInX 0.3s ease-out',
+        }} key={step}>
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginBottom: 4 }}>
+                {steps.map((s, i) => (
+                    <span key={s.title} style={{ width: 8, height: 8, borderRadius: 4, background: i < step ? '#63e38e' : i === step ? '#ffd84d' : 'rgba(255,255,255,0.2)' }} />
+                ))}
+            </div>
+            <div className="gtitle" style={{ color: '#ffd84d', fontSize: '0.95rem' }}>🎓 {cur.title}</div>
+            <div style={{ color: '#fff', fontSize: '0.82rem', marginTop: 2 }}>{cur.text}</div>
         </div>
     );
 }
